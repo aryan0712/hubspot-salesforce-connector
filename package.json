@@ -1,0 +1,42 @@
+{
+  "name": "crm-sync",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Bidirectional Salesforce <-> HubSpot migration and real-time sync engine",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "start": "node dist/server.js",
+    "build": "tsc -p tsconfig.json",
+    "db:local": "tsx src/db/local.ts",
+    "db:migrate": "tsx src/db/migrate.ts",
+    "db:import-legacy": "tsx src/db/importLegacy.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "migrate": "tsx src/cli/migrate.ts",
+    "demo": "tsx src/cli/demo.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "echo \"(add eslint)\" && exit 0"
+  },
+  "dependencies": {
+    "axios": "^1.7.7",
+    "dotenv": "^16.4.5",
+    "express": "^5.2.1",
+    "pg": "^8.22.0",
+    "pino": "^9.5.0",
+    "pino-pretty": "^11.3.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.9.0",
+    "@types/pg": "^8.20.0",
+    "embedded-postgres": "^18.4.0-beta.17",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "vitest": "^4.1.10"
+  }
+}
