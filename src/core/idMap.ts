@@ -60,22 +60,21 @@ export function naturalKey(record: CanonicalRecord): string | undefined {
   return naturalKeyQuery(record)?.key;
 }
 
-const NATURAL_KEY_FIELDS: Record<CanonicalType, string[]> = {
-  contact: ['email'],
-  company: ['domain'],
-  deal: ['name', 'closeDate'],
-};
+/**
+ * Natural-key config per canonical object. No object type is pre-registered here — the
+ * built-in defaults (contact/company/deal) are seeded as ordinary data by
+ * core/defaultObjects.ts + the object mapping store, same as any custom object a tenant adds.
+ */
+const NATURAL_KEY_FIELDS: Record<CanonicalType, string[]> = {};
 
-export function isAllowedNaturalKeyField(type: CanonicalType, field: string): boolean {
+export function isAllowedNaturalKeyField(_type: CanonicalType, field: string): boolean {
   const key = field.replace(/[^a-z0-9]/gi, '').toLowerCase();
   if (!key) return false;
-  if (type === 'deal' && key === 'closedate') return true;
   if (key.includes('external') && key.endsWith('id')) return true;
   if (
     key === 'id' ||
     ['type', 'industry', 'website', 'annualrevenue', 'revenue'].includes(key) ||
-    /(modified|activity|created|updated|timestamp|description|notes?|ownerid|recordtype|status|stage|pipeline|amount|employee|count|isdeleted)/.test(key) ||
-    /(date|time)$/.test(key)
+    /(modified|activity|created|updated|timestamp|description|notes?|ownerid|recordtype|status|stage|pipeline|amount|employee|count|isdeleted)/.test(key)
   ) {
     return false;
   }
@@ -91,13 +90,13 @@ export function configureNaturalKeyFields(type: CanonicalType, fields: string[])
 }
 
 export function naturalKeyFields(type: CanonicalType): string[] {
-  return [...NATURAL_KEY_FIELDS[type]];
+  return [...(NATURAL_KEY_FIELDS[type] ?? [])];
 }
 
 export function naturalKeyQuery(record: CanonicalRecord): NaturalKeyQuery | undefined {
   const f = record.fields;
   const criteria: { field: string; value: string }[] = [];
-  for (const field of NATURAL_KEY_FIELDS[record.type]) {
+  for (const field of NATURAL_KEY_FIELDS[record.type] ?? []) {
     const raw = f[field];
     if (typeof raw !== 'string' && typeof raw !== 'number') return undefined;
     const value = normalizeKeyValue(field, String(raw));

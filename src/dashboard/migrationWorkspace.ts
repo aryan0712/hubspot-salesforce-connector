@@ -195,7 +195,10 @@ export const migrationWorkspaceCss = `
   .issue-list{border-top:1px solid #eaeff4}
   .issue-row{display:grid;grid-template-columns:90px minmax(180px,220px) minmax(0,1fr);gap:18px;align-items:start;padding:15px 20px;border-bottom:1px solid #f0f3f7}
   .issue-row:last-child{border-bottom:0}.issue-row>.pill{width:100%;justify-content:center;margin-top:1px}
+  .issue-row.actionable{cursor:pointer}.issue-row.actionable:hover{background:#fafcfd}
   .issue-context,.issue-message{min-width:0}.issue-object{display:block;color:var(--text);font-size:13px;line-height:1.35;text-transform:capitalize}
+  .issue-field{display:inline-block;margin-top:4px;padding:2px 7px;border-radius:5px;background:#fff2ec;color:var(--orange-dark);font:11px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;overflow-wrap:anywhere}
+  #field-map-rows tr.highlight-row{background:#fff2ec;transition:background 2s ease}
   .issue-code{display:block;margin-top:4px;font:11px/1.35 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--muted);overflow-wrap:anywhere;word-break:break-word}
   .issue-message{color:var(--text);font-size:13px;line-height:1.5;overflow-wrap:anywhere}
   .preflight-blocked{margin:18px 20px;padding:18px;border:1px solid #f3d5cc;border-radius:9px;background:#fff8f5}

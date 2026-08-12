@@ -26,7 +26,13 @@ async function ensureDatabase(): Promise<void> {
       [databaseName],
     );
     if (!result.rows[0]?.exists) {
-      await client.query(`CREATE DATABASE ${client.escapeIdentifier(databaseName)}`);
+      // Explicit UTF8 + template0: the cluster's default template1 encoding follows the OS
+      // codepage (WIN1252 on typical Windows setups), which silently rejects field labels or
+      // other CRM text containing characters outside that codepage.
+      await client.query(
+        `CREATE DATABASE ${client.escapeIdentifier(databaseName)}
+         ENCODING 'UTF8' LC_COLLATE 'C' LC_CTYPE 'C' TEMPLATE template0`,
+      );
     }
   } finally {
     await client.end();

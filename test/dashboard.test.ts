@@ -145,7 +145,7 @@ describe('operations dashboard', () => {
     expect(html).toContain('id="natural-key-advanced"');
     expect(html).toContain('Advanced: build a composite key');
     expect(html).toContain('id="natural-key-warning"');
-    expect(html).toContain('Company domain');
+    expect(html).toContain('Domain');
     expect(html).toContain('Email address');
     expect(html).toContain('Shared external ID');
     expect(html).toContain('blockedNaturalKeyField');

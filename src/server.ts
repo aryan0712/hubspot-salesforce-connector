@@ -1,4 +1,5 @@
 import express, { type Request, type Response } from 'express';
+import axios from 'axios';
 import crypto from 'node:crypto';
 import { createPkce } from './core/pkce.js';
 import { env } from './config/env.js';
@@ -20,6 +21,7 @@ import { PublicError } from './core/publicError.js';
 import { MigrationCopilot, validateOpenAIKey } from './ai/migrationCopilot.js';
 import { keyFingerprint } from './db/postgresAiSettingsStore.js';
 import { isAllowedNaturalKeyField } from './core/idMap.js';
+import { isRegisteredCanonicalObject, slugifyCanonicalObject } from './core/objectRegistry.js';
 
 /**
  * HTTP surface:
@@ -237,31 +239,31 @@ async function main(): Promise<void> {
     const normalized = (value: string): string =>
       value.toLowerCase().replace(/[^a-z0-9]/g, '').replace(/s$/, '');
     const rows = await Promise.all(sources.map(async (source) => {
+      // A canonicalType means this native object is already a registered mapping; otherwise
+      // we still suggest a plausible target by name so the operator can register the pair.
       const target = source.canonicalType
         ? targets.find((candidate) => candidate.canonicalType === source.canonicalType)
         : targets.find((candidate) =>
             normalized(candidate.id) === normalized(source.id) ||
             normalized(candidate.label) === normalized(source.label));
-      const sourceRules = source.canonicalType
-        ? await app.mappingStore.get(from, source.canonicalType)
+      const registered = Boolean(source.canonicalType);
+      const sourceRules = registered
+        ? await app.mappingStore.get(from, source.canonicalType!)
         : [];
-      const targetRules = source.canonicalType
-        ? await app.mappingStore.get(to, source.canonicalType)
+      const targetRules = registered
+        ? await app.mappingStore.get(to, source.canonicalType!)
         : [];
       const mapped = new Set(sourceRules.map((rule) => rule.canonical));
       const mappedFields = targetRules.filter((rule) => mapped.has(rule.canonical)).length;
       return {
         source,
         target,
-        supported: Boolean(source.canonicalType && target?.canonicalType === source.canonicalType),
+        supported: Boolean(target),
+        registered,
         canonicalType: source.canonicalType,
         mappedFields,
         totalMappedFields: Math.max(sourceRules.length, targetRules.length),
-        reason: source.canonicalType
-          ? target
-            ? undefined
-            : 'No supported target binding'
-          : 'Generic object execution is not enabled yet',
+        reason: target ? undefined : 'No matching object found in the other CRM',
       };
     }));
     res.json({ from, to, rows, sourceCount: sources.length, targetCount: targets.length });
@@ -626,7 +628,7 @@ async function main(): Promise<void> {
     try {
       await ensureLiveInit();
       const from = (req.body?.from as SystemId) ?? 'salesforce';
-      const types = (req.body?.types as ('contact' | 'company' | 'deal')[]) ?? ['contact'];
+      const types = (req.body?.types as CanonicalType[]) ?? ['contact'];
       if (!isSystem(from) || !types.every(isType)) {
         return res.status(400).json({ error: 'invalid_migration_scope' });
       }
@@ -795,7 +797,7 @@ async function main(): Promise<void> {
   // ---------------- Mapping Studio + sync operations ----------------
   server.get('/api/mappings/:system/:type', (req, res) => {
     const system = req.params.system as SystemId;
-    const type = req.params.type as 'contact' | 'company' | 'deal';
+    const type = req.params.type as CanonicalType;
     if (!isSystem(system) || !isType(type)) {
       return res.status(400).json({ error: 'bad_mapping_target' });
     }
@@ -803,7 +805,7 @@ async function main(): Promise<void> {
   });
   server.put('/api/mappings/:system/:type', requireRole('operator'), async (req, res) => {
     const system = req.params.system as SystemId;
-    const type = req.params.type as 'contact' | 'company' | 'deal';
+    const type = req.params.type as CanonicalType;
     if (!isSystem(system) || !isType(type) || !Array.isArray(req.body?.rules)) {
       return res.status(400).json({ error: 'invalid_mapping' });
     }
@@ -823,7 +825,7 @@ async function main(): Promise<void> {
   });
   server.get('/api/schema/:system/:type', async (req, res) => {
     const system = req.params.system as SystemId;
-    const type = req.params.type as 'contact' | 'company' | 'deal';
+    const type = req.params.type as CanonicalType;
     if (!isSystem(system) || !isType(type)) {
       return res.status(400).json({ error: 'bad_schema_target' });
     }
@@ -831,19 +833,56 @@ async function main(): Promise<void> {
     res.json({ system, type, fields: await app.connectors[system].describe(type) });
   });
   server.get('/api/value-mappings/:type/:field', (req, res) => {
-    const type = req.params.type as 'contact' | 'company' | 'deal';
+    const type = req.params.type as CanonicalType;
     if (!isType(type)) return res.status(400).json({ error: 'bad_object_type' });
     res.json({
       entries: app.valueMappings?.list(type, String(req.params.field)) ?? [],
     });
   });
+
+  // The object registry: which canonical objects exist and their native name per CRM.
+  // Selecting a not-yet-registered row in the Step 2 catalog calls POST here first.
+  server.get('/api/object-mappings', (_req, res) => {
+    res.json({ entries: app.objectMappings?.list() ?? [] });
+  });
+  server.post('/api/object-mappings', requireRole('operator'), async (req, res) => {
+    if (!app.objectMappings) return res.status(503).json({ error: 'postgres_required' });
+    const label = String(req.body?.label ?? '').trim();
+    const salesforceObject = String(req.body?.salesforceObject ?? '').trim();
+    const hubspotObject = String(req.body?.hubspotObject ?? '').trim();
+    if (!label || label.length > 120 || (!salesforceObject && !hubspotObject)) {
+      return res.status(400).json({ error: 'invalid_object_mapping' });
+    }
+    const canonicalObject = slugifyCanonicalObject(label);
+    const registration = await app.objectMappings.create({
+      canonicalObject,
+      label,
+      salesforceObject: salesforceObject || undefined,
+      hubspotObject: hubspotObject || undefined,
+    });
+    const config = app.syncConfig.get();
+    if (!config.objects[canonicalObject]) {
+      await app.syncConfig.update({
+        ...config,
+        objects: { ...config.objects, [canonicalObject]: { enabled: true, direction: 'bidirectional' } },
+      });
+    }
+    await app.operations?.recordAudit({
+      actorId: res.locals.auth?.actorId,
+      action: 'object_mapping.created',
+      resourceType: 'object_mapping',
+      resourceId: canonicalObject,
+      detail: { label, salesforceObject, hubspotObject },
+    });
+    res.status(201).json(registration);
+  });
   server.get('/api/object-mappings/:type', (req, res) => {
-    const type = req.params.type as 'contact' | 'company' | 'deal';
+    const type = req.params.type as CanonicalType;
     if (!isType(type)) return res.status(400).json({ error: 'bad_object_type' });
-    res.json({ type, naturalKeyFields: app.objectMappings?.get(type) ?? [] });
+    res.json({ type, naturalKeyFields: app.objectMappings?.getNaturalKeyFields(type) ?? [] });
   });
   server.put('/api/object-mappings/:type', requireRole('operator'), async (req, res) => {
-    const type = req.params.type as 'contact' | 'company' | 'deal';
+    const type = req.params.type as CanonicalType;
     const fields = req.body?.naturalKeyFields as string[];
     if (!app.objectMappings) return res.status(503).json({ error: 'postgres_required' });
     if (
@@ -872,11 +911,11 @@ async function main(): Promise<void> {
         message: `${invalid} is not a stable field mapped in both CRMs`,
       });
     }
-    await app.objectMappings.set(type, normalizedFields);
-    res.json({ ok: true, type, naturalKeyFields: app.objectMappings.get(type) });
+    await app.objectMappings.setNaturalKeyFields(type, normalizedFields);
+    res.json({ ok: true, type, naturalKeyFields: app.objectMappings.getNaturalKeyFields(type) });
   });
   server.put('/api/value-mappings/:type/:field', requireRole('operator'), async (req, res) => {
-    const type = req.params.type as 'contact' | 'company' | 'deal';
+    const type = req.params.type as CanonicalType;
     if (!app.valueMappings) return res.status(503).json({ error: 'postgres_required' });
     if (!isType(type) || !Array.isArray(req.body?.entries)) {
       return res.status(400).json({ error: 'invalid_value_mapping' });
@@ -886,7 +925,7 @@ async function main(): Promise<void> {
   });
   server.post('/api/preflight', requireRole('operator'), async (req, res) => {
     const from = req.body?.from as SystemId;
-    const types = req.body?.types as ('contact' | 'company' | 'deal')[];
+    const types = req.body?.types as CanonicalType[];
     if (!isSystem(from) || !Array.isArray(types) || !types.every(isType)) {
       return res.status(400).json({ error: 'invalid_preflight_scope' });
     }
@@ -1045,6 +1084,17 @@ async function main(): Promise<void> {
       }
       return;
     }
+    if (axios.isAxiosError(err)) {
+      const vendorMessage = extractVendorErrorMessage(err.response?.data) ?? err.message;
+      logger.error(
+        { err, requestId, vendorStatus: err.response?.status, vendorBody: err.response?.data },
+        'CRM API request failed',
+      );
+      if (!res.headersSent) {
+        res.status(502).json({ error: 'crm_api_error', detail: vendorMessage, requestId });
+      }
+      return;
+    }
     logger.error({ err, requestId }, 'request failed');
     if (!res.headersSent) {
       res.status(500).json({ error: 'internal_error', requestId });
@@ -1066,12 +1116,25 @@ function connInfo(c: Awaited<ReturnType<typeof connections.get>>): {
   return { environment: c.environment, accountLabel: c.accountLabel, connectedAt: c.connectedAt };
 }
 
+/**
+ * Salesforce error responses are `[{ message, errorCode }, ...]`; HubSpot's are
+ * `{ message, category }`. Pull the human-readable message out of either shape so a live
+ * CRM API failure surfaces its actual cause instead of a generic internal_error.
+ */
+function extractVendorErrorMessage(data: unknown): string | undefined {
+  const first = Array.isArray(data) ? data[0] : data;
+  if (first && typeof first === 'object' && typeof (first as Record<string, unknown>).message === 'string') {
+    return (first as Record<string, unknown>).message as string;
+  }
+  return undefined;
+}
+
 function isSystem(value: string): value is SystemId {
   return value === 'salesforce' || value === 'hubspot';
 }
 
-function isType(value: string): value is 'contact' | 'company' | 'deal' {
-  return value === 'contact' || value === 'company' || value === 'deal';
+function isType(value: string): boolean {
+  return isRegisteredCanonicalObject(value);
 }
 
 function migrationPlanInput(

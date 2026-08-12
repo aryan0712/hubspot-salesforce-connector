@@ -43,13 +43,17 @@ export class PostgresSyncConfigStore implements SyncConfigStore {
 }
 
 function mergeConfig(defaults: SyncConfig, saved: Partial<SyncConfig>): SyncConfig {
+  const types = new Set([...Object.keys(defaults.objects), ...Object.keys(saved.objects ?? {})]);
+  const objects: SyncConfig['objects'] = {};
+  for (const type of types) {
+    const merged = { ...defaults.objects[type], ...saved.objects?.[type] };
+    if (merged.enabled !== undefined && merged.direction !== undefined) {
+      objects[type] = merged as SyncConfig['objects'][string];
+    }
+  }
   return {
     conflictStrategy: saved.conflictStrategy ?? defaults.conflictStrategy,
     sourceOfTruth: saved.sourceOfTruth ?? defaults.sourceOfTruth,
-    objects: {
-      contact: { ...defaults.objects.contact, ...saved.objects?.contact },
-      company: { ...defaults.objects.company, ...saved.objects?.company },
-      deal: { ...defaults.objects.deal, ...saved.objects?.deal },
-    },
+    objects,
   };
 }

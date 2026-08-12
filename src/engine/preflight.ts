@@ -91,7 +91,7 @@ export class PreflightService {
           severity: rule.toCanonical || rule.fromCanonical ? 'warning' : 'error',
           code: 'FIELD_TYPE_MISMATCH',
           field: rule.canonical,
-          message: `${source.type} → ${target.type} requires a transform`,
+          message: `${rule.canonical}: ${source.type} → ${target.type} requires a transform`,
         });
       }
       if (source?.options?.length && target?.options?.length) {

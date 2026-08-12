@@ -32,11 +32,7 @@ type NativeRecord = Record<string, FieldValue> & { __id: string; __modifiedAt: s
 
 export class MockConnector implements CRMConnector {
   readonly system: SystemId;
-  private store = new Map<CanonicalType, Map<string, NativeRecord>>([
-    ['contact', new Map()],
-    ['company', new Map()],
-    ['deal', new Map()],
-  ]);
+  private store = new Map<CanonicalType, Map<string, NativeRecord>>();
   private listeners: ((e: ChangeEvent) => void)[] = [];
   private associations = new Map<string, ConnectorAssociation[]>();
 
@@ -53,8 +49,18 @@ export class MockConnector implements CRMConnector {
     this.listeners.push(fn);
   }
 
+  /** Lazily creates the per-type bucket so any canonical type works, not just a fixed set. */
+  private bucket(type: CanonicalType): Map<string, NativeRecord> {
+    let map = this.store.get(type);
+    if (!map) {
+      map = new Map();
+      this.store.set(type, map);
+    }
+    return map;
+  }
+
   async list(type: CanonicalType, cursor?: string): Promise<RecordPage> {
-    const all = [...this.store.get(type)!.values()];
+    const all = [...this.bucket(type).values()];
     const pageSize = 100;
     const start = cursor ? Number(cursor) : 0;
     const slice = all.slice(start, start + pageSize);
@@ -64,7 +70,7 @@ export class MockConnector implements CRMConnector {
   }
 
   async read(type: CanonicalType, sourceId: string): Promise<CanonicalRecord | null> {
-    const n = this.store.get(type)!.get(sourceId);
+    const n = this.bucket(type).get(sourceId);
     return n ? this.canonicalize(type, n) : null;
   }
 
@@ -92,9 +98,9 @@ export class MockConnector implements CRMConnector {
       deal: { salesforce: 'Opportunity', hubspot: 'deals', label: 'Deal' },
     };
     const objects: CRMObjectDescriptor[] = (Object.keys(names) as CanonicalType[]).map((type) => ({
-      id: names[type][this.system],
-      label: names[type].label,
-      pluralLabel: `${names[type].label}s`,
+      id: names[type]![this.system],
+      label: names[type]!.label,
+      pluralLabel: `${names[type]!.label}s`,
       custom: false,
       queryable: true,
       createable: true,
@@ -158,14 +164,14 @@ export class MockConnector implements CRMConnector {
   async upsert(record: CanonicalRecord, targetId?: string) {
     const native = fromCanonicalFields(this.system, record.type, record.fields);
     const id = targetId ?? `${this.system}-${crypto.randomUUID().slice(0, 8)}`;
-    const existing = this.store.get(record.type)!.get(id);
+    const existing = this.bucket(record.type).get(id);
     const merged: NativeRecord = {
       ...(existing ?? {}),
       ...native,
       __id: id,
       __modifiedAt: new Date().toISOString(),
     };
-    this.store.get(record.type)!.set(id, merged);
+    this.bucket(record.type).set(id, merged);
     const operation = existing ? 'updated' : 'created';
     this.emit({
       system: this.system,
@@ -178,7 +184,7 @@ export class MockConnector implements CRMConnector {
   }
 
   async remove(type: CanonicalType, sourceId: string) {
-    this.store.get(type)!.delete(sourceId);
+    this.bucket(type).delete(sourceId);
     return { system: this.system, type, targetId: sourceId, operation: 'deleted' as const };
   }
 
@@ -191,19 +197,19 @@ export class MockConnector implements CRMConnector {
     const rec = { ...fields } as unknown as CanonicalRecord['fields'];
     const native = fromCanonicalFields(this.system, type, rec);
     const id = `${this.system}-${crypto.randomUUID().slice(0, 8)}`;
-    this.store.get(type)!.set(id, { ...native, __id: id, __modifiedAt: new Date().toISOString() });
+    this.bucket(type).set(id, { ...native, __id: id, __modifiedAt: new Date().toISOString() });
     return id;
   }
 
   /** Test helper: force a record's modified timestamp (to script conflict scenarios). */
   setModifiedAt(type: CanonicalType, id: string, iso: string): void {
-    const n = this.store.get(type)!.get(id);
+    const n = this.bucket(type).get(id);
     if (n) n.__modifiedAt = iso;
   }
 
   /** Test helper: read the raw native value of a field. */
   peek(type: CanonicalType, id: string, nativeField: string): FieldValue | undefined {
-    return this.store.get(type)!.get(id)?.[nativeField];
+    return this.bucket(type).get(id)?.[nativeField];
   }
 
   /** Test helper for relationship migration. */
