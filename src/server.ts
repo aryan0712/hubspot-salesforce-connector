@@ -555,6 +555,54 @@ async function main(): Promise<void> {
     },
   );
 
+  /**
+   * Runs a real (non-preview) migration for a small, operator-chosen number of records —
+   * an alternative to the exactly-one-record canary above. Reuses MigrationEngine.run(), the
+   * same execution path the full migration uses, just scoped down. A successful batch marks
+   * the plan's canary verified (same field the single-record test sets), which is what
+   * unlocks "Run full migration" below — either path satisfies that gate.
+   */
+  server.post('/api/migration-plans/:id/test-batch/execute', requireRole('operator'), async (req, res) => {
+    if (req.body?.confirm !== true) {
+      return res.status(400).json({ error: 'explicit_confirmation_required' });
+    }
+    const plan = await app.migrationPlans.get(String(req.params.id));
+    if (!plan) return res.status(404).json({ error: 'migration_plan_not_found' });
+    const type = String(req.body?.type ?? '');
+    const count = Number(req.body?.count);
+    if (!isType(type) || !plan.types.includes(type)) {
+      return res.status(400).json({ error: 'invalid_test_record_type' });
+    }
+    if (!Number.isInteger(count) || count < 1 || count > 500) {
+      return res.status(400).json({ error: 'invalid_batch_count' });
+    }
+    await ensureLiveInit();
+    const check = await app.preflight.run(plan.source, type);
+    if (!check.ok) {
+      return res.status(409).json({ error: 'preflight_failed', checks: [check] });
+    }
+    const quota = await app.operations?.quota('records_migrated', count);
+    if (quota && !quota.allowed) {
+      return res.status(429).json({ error: 'plan_limit_exceeded', quota });
+    }
+    const report = await app.migration.run({
+      from: plan.source,
+      types: [type],
+      limitPerType: count,
+      dryRun: false,
+    });
+    await app.migrationPlans.saveCanaryPreview(plan.id, plan.revision, type, `batch:${report.runId}`, report.runId);
+    await app.migrationPlans.finishCanary(plan.id, plan.revision, report.runId);
+    await app.operations?.recordAudit({
+      actorId: res.locals.auth?.actorId,
+      action: 'migration_plan.batch_executed',
+      resourceType: 'migration_plan',
+      resourceId: plan.id,
+      detail: { revision: plan.revision, runId: report.runId, type, count },
+    });
+    res.json(report);
+  });
+
   server.post('/api/migration-plans/:id/preview', requireRole('operator'), async (req, res) => {
     const plan = await app.migrationPlans.get(String(req.params.id));
     if (!plan) return res.status(404).json({ error: 'migration_plan_not_found' });

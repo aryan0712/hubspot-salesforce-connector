@@ -225,6 +225,12 @@ export const migrationWorkspaceCss = `
   .execution-safety{display:flex;align-items:flex-start;gap:10px;padding:14px 20px;background:var(--nav);color:#fff}
   .execution-safety p{margin:0;color:#c5d0da;font-size:12px;line-height:1.5}.execution-safety b{white-space:nowrap}
   .test-record-controls{display:grid;grid-template-columns:minmax(160px,.55fr) minmax(260px,1.45fr);gap:12px;padding:18px 20px;border-bottom:1px solid #eaeff4;background:#fafcfd}
+  .batch-migrate{padding:18px 20px;border-bottom:1px solid #eaeff4;background:#fafcfd}
+  .batch-migrate-head{display:flex;align-items:center;gap:14px}.batch-migrate-head>div{margin-right:auto}
+  .batch-migrate-head p{margin:4px 0 0;color:var(--muted);font-size:12px}.batch-migrate-head label{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-2)}
+  .batch-migrate-head input{width:80px}
+  .batch-result{margin-top:14px;padding:14px 16px;border-radius:8px;background:#eef9f7;border:1px solid #ccebe6;font-size:13px;line-height:1.6}
+  .batch-result.error{background:#fdf1ee;border-color:#f3d5cc;color:var(--red)}
   .test-record-preview{padding:18px 20px;border-bottom:1px solid #eaeff4}
   .test-record-preview[hidden],.test-record-result[hidden],.full-migration[hidden]{display:none}
   .test-record-head{display:flex;align-items:center;gap:12px;margin-bottom:14px}.test-record-head b{margin-right:auto}
@@ -243,6 +249,7 @@ export const migrationWorkspaceCss = `
   .typed-confirmation-card label{display:block;color:var(--text);font-size:12px;font-weight:700}.typed-confirmation-card label code{color:var(--red)}
   .typed-confirmation-card input{width:100%;margin-top:7px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;text-transform:uppercase}
   .typed-confirmation-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:18px}
+  .typed-confirm-error{display:block;margin-top:8px;color:var(--red);font-size:12px}.typed-confirm-error[hidden]{display:none}
   @media(max-width:1050px){
     .builder-shell{grid-template-columns:1fr}.workspace-steps{position:static;flex-direction:row;overflow-x:auto}
     .workspace-step{min-width:155px}.coverage-card{grid-template-columns:minmax(210px,.55fr) minmax(0,1.45fr)}
@@ -447,6 +454,13 @@ export function migrationWorkspaceHtml(): string {
                   <label>Object<select id="test-record-type"></select></label>
                   <label>Source record<select id="test-record-source" disabled><option>Choose an object first</option></select></label>
                 </div>
+                <section class="batch-migrate">
+                  <div class="batch-migrate-head"><div><b>Migrate a batch</b><p>Reads this many records of the selected object from the source and creates/updates them in the destination CRM immediately, after typed confirmation.</p></div>
+                    <label>Records<input id="batch-count" type="number" min="1" max="500" value="5"></label>
+                    <button id="execute-batch" class="danger">Migrate batch</button>
+                  </div>
+                  <div class="batch-result" id="batch-result" hidden></div>
+                </section>
                 <section class="test-record-preview" id="test-record-preview" hidden>
                   <div class="test-record-head"><b>Proposed destination action</b><span class="pill" id="test-record-action">—</span><button id="execute-canary" class="danger" disabled>Test 1 record</button></div>
                   <div class="test-record-fields" id="test-record-fields"></div>
@@ -491,9 +505,10 @@ export function migrationWorkspaceHtml(): string {
             <label>Type <code id="typed-confirm-token"></code> to continue
               <input id="typed-confirm-input" type="text" autocomplete="off" spellcheck="false">
             </label>
+            <span class="typed-confirm-error" id="typed-confirm-error" hidden>Type it exactly as shown, then try again.</span>
             <div class="typed-confirmation-actions">
               <button class="secondary" id="typed-confirm-cancel">Cancel</button>
-              <button class="danger" id="typed-confirm-submit" disabled>Confirm</button>
+              <button class="danger" id="typed-confirm-submit">Confirm</button>
             </div>
           </div>
         </section>
