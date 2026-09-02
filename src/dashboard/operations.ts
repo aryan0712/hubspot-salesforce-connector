@@ -165,9 +165,9 @@ export function operationsHtml(): string {
     async function loadMetrics(){const [s,q]=await Promise.all([api('/api/status'),api('/api/sync/stats')]);$('metrics').innerHTML=
       metric('Ready',s.ready?'Yes':'No',s.ready?'create':'error')+metric('Queued',q.queued)+metric('Retrying',q.retry,'retry')+
       metric('Manual review',q.manualReview,'ambiguous')+metric('Dead letter',q.deadLetter,'dead_letter')+metric('Synced',s.stats.synced)}
-    const migrationState={plan:null,dirty:true,catalog:[],selected:new Set(),selectionInitialized:false,selectedRow:null,metadata:new Map(),mapping:null,fieldLoadToken:0,valueLoadToken:0,preflight:null,copilot:null,preview:null,canaryPreview:null,canaryVerified:false,currentStep:'scope',visited:new Set(['scope']),transformRow:null,savedPlans:[],runs:[]};
+    const migrationState={plan:null,dirty:true,catalog:[],targets:[],selected:new Set(),selectionInitialized:false,selectedRow:null,metadata:new Map(),mapping:null,fieldLoadToken:0,valueLoadToken:0,preflight:null,copilot:null,preview:null,canaryPreview:null,canaryVerified:false,currentStep:'scope',visited:new Set(['scope']),transformRow:null,savedPlans:[],runs:[]};
     const migrationSteps=['scope','objects','fields','values','validate','preview'];
-    const transformIds=['identity','domain','lowercase','trim','number','boolean','iso-date','phone'];
+    const transformIds=['identity','domain','lowercase','trim','number','boolean','yes-no','iso-date','phone'];
     const transformMeta={
       identity:['Identity','Keep the value unchanged'],
       trim:['Trim','Remove leading and trailing spaces'],
@@ -175,6 +175,7 @@ export function operationsHtml(): string {
       domain:['Extract domain','Remove protocol, path, and www'],
       number:['Parse number','Convert numeric text to a number'],
       boolean:['Parse boolean','Convert true, 1, or yes to true'],
+      'yes-no':['Yes/No ↔ boolean','true ↔ "yes", false ↔ "no" (e.g. a HubSpot checkbox stored as yes/no)'],
       'iso-date':['ISO date','Convert a valid date to ISO-8601'],
       phone:['Normalize phone','Keep digits and a leading plus sign']
     };
@@ -206,10 +207,19 @@ export function operationsHtml(): string {
     document.querySelectorAll('[data-migrate-open]').forEach(button=>button.onclick=()=>selectMigrateTab(button.dataset.migrateOpen));
 
     async function loadCatalog(){const source=$('mig-from').value;$('object-rows').innerHTML='<tr><td colspan="6" class="empty">Discovering CRM objects…</td></tr>';
-      try{const result=await api('/api/object-catalog?from='+encodeURIComponent(source));migrationState.catalog=result.rows;
+      try{const result=await api('/api/object-catalog?from='+encodeURIComponent(source));migrationState.catalog=result.rows;migrationState.targets=result.targets||[];
         if(!migrationState.selectionInitialized){migrationState.selected=new Set(result.rows.filter(row=>row.registered).map(row=>row.canonicalType));migrationState.selectionInitialized=true}
         renderCatalog();refreshObjectSelectors();updateMigrationSummary()}
       catch(e){$('object-rows').innerHTML='<tr><td colspan="6" class="empty">'+esc(e.message)+'</td></tr>'}}
+    // Shared by the catalog checkbox and the manual target picker: registers row.source paired
+    // with whatever row.target currently is (auto-matched or manually chosen) as a canonical object.
+    async function registerCatalogMapping(row){const from=$('mig-from').value,to=from==='salesforce'?'hubspot':'salesforce',body={label:row.source.label};body[from+'Object']=row.source.id;if(row.target)body[to+'Object']=row.target.id;
+      const registration=await api('/api/object-mappings',{method:'POST',body:JSON.stringify(body)});row.canonicalType=registration.canonicalObject;row.registered=true;migrationState.metadata.clear();return registration}
+    async function confirmManualTarget(row){const select=$('manual-target'),targetId=select&&select.value;if(!targetId)return;const target=(migrationState.targets||[]).find(t=>t.id===targetId);if(!target)return;
+      const button=$('manual-target-confirm');button.disabled=true;button.textContent='Mapping…';
+      try{row.target=target;row.supported=true;await registerCatalogMapping(row);migrationState.selected.add(row.canonicalType);markPlanDirty();renderCatalog();refreshObjectSelectors();queuePlanAutosave();await selectCatalogRow(row)}
+      catch(err){setDraftStatus(err.message,'error')}
+      finally{const btn=$('manual-target-confirm');if(btn){btn.disabled=false;btn.textContent='Map to this object'}}}
     function renderCatalog(){const query=$('catalog-search').value.trim().toLowerCase(),filter=$('catalog-filter').value;
       const visible=migrationState.catalog.filter(row=>{const selected=row.canonicalType&&migrationState.selected.has(row.canonicalType);const text=(row.source.label+' '+row.source.id+' '+(row.target?.label||'')).toLowerCase();
         return (!query||text.includes(query))&&(filter==='all'||filter==='supported'&&row.supported||filter==='unsupported'&&!row.supported||filter==='selected'&&selected)});
@@ -224,8 +234,7 @@ export function operationsHtml(): string {
         if(box.checked){
           if(!row.canonicalType){
             box.disabled=true;
-            try{const from=$('mig-from').value,to=from==='salesforce'?'hubspot':'salesforce',body={label:row.source.label};body[from+'Object']=row.source.id;if(row.target)body[to+'Object']=row.target.id;
-              const registration=await api('/api/object-mappings',{method:'POST',body:JSON.stringify(body)});row.canonicalType=registration.canonicalObject;row.registered=true;migrationState.metadata.clear()}
+            try{await registerCatalogMapping(row)}
             catch(err){box.checked=false;box.disabled=false;setDraftStatus(err.message,'error');return}
           }
           migrationState.selected.add(row.canonicalType)
@@ -238,12 +247,15 @@ export function operationsHtml(): string {
       try{const source=await getMetadata($('mig-from').value,row.source.id);renderObjectDetail(source,row)}catch(e){$('object-detail').innerHTML='<div class="empty">'+esc(e.message)+'</div>'}}
     function renderObjectDetail(meta,row){const required=meta.fields.filter(f=>f.required).length,enums=meta.fields.filter(f=>f.options?.length).length,total=row.totalMappedFields||0,mapped=row.mappedFields||0,missing=Math.max(0,total-mapped),coverage=total?Math.round(mapped/total*100):0,ready=row.registered&&missing===0;
       const fieldRows=meta.fields.map(f=>'<tr><td>'+esc(f.label)+'</td><td class="api-name">'+esc(f.name)+'</td><td>'+esc(f.type)+'</td><td>'+[f.required?'Required':'',f.readOnly?'Read only':'',f.unique?'Unique':'',f.calculated?'Calculated':''].filter(Boolean).map(x=>'<span class="pill">'+x+'</span>').join(' ')+'</td></tr>').join('');
+      const manualTarget=row.supported?'':'<div class="manual-target"><b>No automatic match found</b><p>Pick which object in the destination CRM this should map to, then it becomes selectable for migration.</p><div class="manual-target-controls"><select id="manual-target"><option value="">Choose a destination object…</option>'+(migrationState.targets||[]).slice().sort((a,b)=>a.label.localeCompare(b.label)).map(t=>'<option value="'+esc(t.id)+'">'+esc(t.label)+' · '+esc(t.id)+'</option>').join('')+'</select><button id="manual-target-confirm">Map to this object</button></div></div>';
       $('object-detail').innerHTML='<div class="detail-head"><div><h2>'+esc(meta.object.label)+'</h2><div class="detail-meta"><span class="pill">'+(meta.object.custom?'Custom':'Standard')+'</span><span class="pill">'+esc(meta.object.id)+'</span><span class="pill '+(ready?'completed':row.registered?'ambiguous':'queued')+'">'+(ready?'Ready':row.registered?'Needs mapping':row.supported?'Not yet mapped':'Catalog only')+'</span></div></div><button class="secondary" id="open-object-fields" '+(!row.registered?'disabled':'')+'>Review mappings</button></div>'+
+        manualTarget+
         '<div class="metadata-grid"><div class="metadata-item"><span>Mapping coverage</span><b>'+mapped+' / '+(total||'—')+'</b></div><div class="metadata-item"><span>Required fields</span><b>'+required+'</b></div><div class="metadata-item"><span>Picklists</span><b>'+enums+'</b></div></div>'+
         '<div class="readiness-panel"><div class="readiness-summary"><b>'+(ready?'Ready for preflight':row.supported?missing+' mappings need attention':'Not available for execution')+'</b><p>'+(ready?'Core field coverage is complete. Required fields and values are validated during preflight.':row.supported?'Finish these mappings in the next step before generating a preview.':'This object is visible for schema inspection but the migration engine does not execute it yet.')+'</p><div class="readiness-progress"><span style="width:'+coverage+'%"></span></div></div>'+
         '<div class="readiness-checks"><div class="readiness-check"><span class="mini-dot '+(row.supported?'':'off')+'"></span><span><b>Engine support</b>'+(row.supported?'Migration supported':'Catalog only')+'</span></div><div class="readiness-check"><span class="mini-dot '+(row.target?'':'off')+'"></span><span><b>Target binding</b>'+esc(row.target?.label||'No target match')+'</span></div><div class="readiness-check"><span class="mini-dot '+(missing?'warning':'')+'"></span><span><b>Field mappings</b>'+(missing?missing+' still need review':'Core coverage complete')+'</span></div></div></div>'+
         '<details class="schema-disclosure"><summary>View source schema ('+meta.fields.length+' fields)</summary><div class="schema-drawer-section"><h3>Source fields</h3><div class="scroll"><table><thead><tr><th>Field</th><th>API name</th><th>Type</th><th>Flags</th></tr></thead><tbody>'+fieldRows+'</tbody></table></div></div></details>';
-      const open=$('open-object-fields');if(open)open.onclick=()=>{selectMigrationStep('fields');$('field-object').value=row.canonicalType;loadFieldWorkspace(row.canonicalType)}}
+      const open=$('open-object-fields');if(open)open.onclick=()=>{selectMigrationStep('fields');$('field-object').value=row.canonicalType;loadFieldWorkspace(row.canonicalType)}
+      const manualConfirm=$('manual-target-confirm');if(manualConfirm)manualConfirm.onclick=()=>confirmManualTarget(row)}
 
     function selectedCatalogRows(){return migrationState.catalog.filter(row=>row.canonicalType&&migrationState.selected.has(row.canonicalType)&&row.supported)}
     function mappingObjectState(row){if(!row.totalMappedFields||!row.mappedFields)return {key:'review',label:'Not started',dot:'off'};if(row.mappedFields<row.totalMappedFields)return {key:'review',label:'Needs review',dot:'warning'};return {key:'complete',label:'Complete',dot:''}}
@@ -274,7 +286,7 @@ export function operationsHtml(): string {
     function updateFieldObjectPosition(){const select=$('field-object'),count=select.options.length,index=select.selectedIndex;$('field-object-position').textContent=count&&index>=0?(index+1)+' of '+count:'No objects'}
     async function moveFieldObject(delta){const select=$('field-object'),next=select.selectedIndex+delta;if(next<0||next>=select.options.length)return;if(migrationState.mapping?.dirty)await saveFieldMappings(false);select.selectedIndex=next;await loadFieldWorkspace(select.value)}
     $('save-next-field-object').onclick=async()=>{try{if(migrationState.mapping?.dirty)await saveFieldMappings(false);await moveFieldObject(1)}catch(e){setDraftStatus(e.message,'error')}};
-    function previewTransform(id,value){if(!id||id==='identity')return value;if(id==='trim')return typeof value==='string'?value.trim():value;if(id==='lowercase')return typeof value==='string'?value.trim().toLowerCase():value;if(id==='domain'){if(typeof value!=='string'||!value)return value;try{const url=new URL(value.includes('://')?value:'http://'+value);return url.hostname.replace(/^www\\./,'').toLowerCase()}catch{return value.toLowerCase()}}if(id==='number'){if(value===null||value==='')return null;const parsed=Number(value);return Number.isFinite(parsed)?parsed:value}if(id==='boolean'){if(typeof value==='boolean'||value===null)return value;if(typeof value==='string')return ['true','1','yes'].includes(value.toLowerCase());return Boolean(value)}if(id==='iso-date'){const parsed=new Date(value);return Number.isNaN(parsed.getTime())?value:parsed.toISOString()}if(id==='phone')return typeof value==='string'?value.trim().replace(/[^\\d+]/g,''):value;return value}
+    function previewTransform(id,value){if(!id||id==='identity')return value;if(id==='trim')return typeof value==='string'?value.trim():value;if(id==='lowercase')return typeof value==='string'?value.trim().toLowerCase():value;if(id==='domain'){if(typeof value!=='string'||!value)return value;try{const url=new URL(value.includes('://')?value:'http://'+value);return url.hostname.replace(/^www\\./,'').toLowerCase()}catch{return value.toLowerCase()}}if(id==='number'){if(value===null||value==='')return null;const parsed=Number(value);return Number.isFinite(parsed)?parsed:value}if(id==='boolean'){if(typeof value==='boolean'||value===null)return value;if(typeof value==='string')return ['true','1','yes'].includes(value.toLowerCase());return Boolean(value)}if(id==='yes-no'){if(typeof value==='boolean')return value?'yes':'no';if(typeof value==='string')return ['yes','true','1'].includes(value.toLowerCase());return value}if(id==='iso-date'){const parsed=new Date(value);return Number.isNaN(parsed.getTime())?value:parsed.toISOString()}if(id==='phone')return typeof value==='string'?value.trim().replace(/[^\\d+]/g,''):value;return value}
     function previewValue(value){return typeof value==='string'?value:JSON.stringify(value)}
     function updateTransformPreview(){const sample=$('transform-sample').value;if(!sample){$('transform-forward-result').textContent='Enter a sample value';return}const forward=previewTransform($('transform-target-from').value,previewTransform($('transform-source-to').value,sample));$('transform-forward-result').textContent=previewValue(forward)}
     function openTransformLab(button){const row=button.closest('tr'),canonical=row.querySelector('.canonical').value,source=row.querySelector('.source-native').selectedOptions[0]?.textContent||'Unmapped source',target=row.querySelector('.target-native').selectedOptions[0]?.textContent||'Unmapped target';migrationState.transformRow=row;$('transform-field-name').textContent=canonical+' transform';$('transform-field-path').textContent=source+' → '+target;for(const [id,cls] of [['transform-source-to','source-to'],['transform-target-from','target-from']]){$(id).innerHTML=transformOptionList(row.querySelector('.'+cls).value)}$('transform-lab').hidden=false;updateTransformPreview()}
@@ -364,9 +376,11 @@ export function operationsHtml(): string {
         migrationState.plan=await api('/api/migration-plans/'+migrationState.plan.id);
         const stats=result.perType[type]||{read:0,reconciled:0,errors:0,actions:{}};
         const actionSummary=Object.entries(stats.actions).map(([action,n])=>n+' '+action).join(', ')||'no changes';
+        const failedRecords=(result.plans||[]).filter(p=>p.action==='error');
+        const errorList=failedRecords.length?'<div class="batch-error-list">'+failedRecords.map(p=>'<div class="batch-error-row"><b>'+esc(p.sourceId)+'</b><span>'+esc(p.warnings[p.warnings.length-1]||'Unknown error')+'</span></div>').join('')+'</div>':'';
         $('batch-result').className='batch-result'+(stats.errors?' error':'');
         $('batch-result').hidden=false;
-        $('batch-result').innerHTML='<b>'+stats.reconciled+' of '+stats.read+' records migrated</b><br>'+esc(actionSummary)+(stats.errors?' · '+stats.errors+' error'+(stats.errors===1?'':'s'):'');
+        $('batch-result').innerHTML='<b>'+stats.reconciled+' of '+stats.read+' records migrated</b><br>'+esc(actionSummary)+(stats.errors?' · '+stats.errors+' error'+(stats.errors===1?'':'s'):'')+errorList;
         showCanaryPassed(stats.reconciled+' of '+stats.read+' '+testTypeLabel(type)+' record(s) migrated ('+actionSummary+').');
         $('test-result-title').textContent=stats.reconciled+' of '+stats.read+' records migrated';
         await Promise.all([loadRuns(),loadMetrics(),loadSavedPlans()]);
@@ -377,7 +391,7 @@ export function operationsHtml(): string {
     };
     async function generatePreview(){if(!currentCanaryPassed()){$('mig-status').textContent='Pass the one-record test before preparing the full migration.';return}try{const plan=await ensurePlan();$('mig-status').textContent='Preparing full migration…';$('preview').disabled=true;const result=await api('/api/migration-plans/'+plan.id+'/preview',{method:'POST'});migrationState.preview=result;migrationState.plan=await api('/api/migration-plans/'+plan.id);renderPlans(result.plans);renderPreviewActions(result.plans);$('execute').disabled=result.plans.some(p=>p.action==='ambiguous')||!result.plans.length;$('mig-status').textContent=result.runId.slice(0,8)+' · '+result.plans.length+' records ready for review';$('summary-preflight').textContent='Passed';updateMigrationStepper();await loadRuns();await loadSavedPlans()}catch(e){$('mig-status').textContent=e.message;updateMigrationStepper()}finally{$('preview').disabled=false}}
     $('preview').onclick=generatePreview;$('side-preview').onclick=()=>goMigrationStep('preview');
-    function renderPreviewActions(plans){const actions=['create','update','match','skip','conflict','ambiguous'];const counts=Object.fromEntries(actions.map(action=>[action,plans.filter(p=>p.action===action).length]));$('preview-actions').innerHTML=actions.map(action=>'<div class="preview-action"><b>'+counts[action]+'</b><span>'+action+'</span></div>').join('')}
+    function renderPreviewActions(plans){const actions=['create','update','match','skip','conflict','ambiguous','error'];const counts=Object.fromEntries(actions.map(action=>[action,plans.filter(p=>p.action===action).length]));$('preview-actions').innerHTML=actions.map(action=>'<div class="preview-action"><b>'+counts[action]+'</b><span>'+action+'</span></div>').join('')}
     function renderPlans(plans){$('plans').innerHTML=plans.length?plans.map(p=>'<tr><td><span class="pill '+p.action+'">'+esc(p.action)+'</span></td><td>'+esc(p.type)+'</td><td>'+esc(p.naturalKey||'—')+
       '</td><td>'+esc(p.targetId||'new')+'</td><td>'+esc(p.fieldDiff.map(d=>d.field).join(', ')||p.warnings.join('; ')||'No changes')+'</td></tr>').join(''):'<tr><td colspan="5" class="empty">No records in this scope.</td></tr>'}
     $('execute').onclick=async()=>{if(!migrationState.plan||!migrationState.preview)return;const confirmed=await requestTypedConfirmation({title:'Run full migration',message:'This writes every reviewed record in the prepared migration to the destination CRM.',token:'EXECUTE',buttonLabel:'Run migration'});if(!confirmed)return;try{$('execute').disabled=true;$('mig-status').textContent='Rechecking the prepared migration…';const result=await api('/api/migration-plans/'+migrationState.plan.id+'/execute',{method:'POST',body:JSON.stringify({confirm:true})});$('mig-status').textContent='Completed '+result.runId.slice(0,8);$('summary-preview').textContent='Migration complete';await Promise.all([loadRuns(),loadMetrics(),loadSavedPlans()])}catch(e){$('mig-status').textContent=e.message}};

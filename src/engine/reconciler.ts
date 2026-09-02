@@ -21,7 +21,9 @@ export type PlannedAction =
   | 'match'
   | 'skip'
   | 'conflict'
-  | 'ambiguous';
+  | 'ambiguous'
+  /** The write was attempted (or couldn't even be planned) and failed; see warnings for why. */
+  | 'error';
 
 export interface FieldDiff {
   field: string;

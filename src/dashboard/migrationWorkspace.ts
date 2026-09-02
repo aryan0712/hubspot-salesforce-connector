@@ -91,6 +91,9 @@ export const migrationWorkspaceCss = `
   .object-detail{border-top:1px solid #eaeff4;background:#fafcfd;padding:18px 20px}
   .detail-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:14px}
   .detail-meta{display:flex;gap:8px;flex-wrap:wrap;margin-top:7px}
+  .manual-target{margin-bottom:14px;padding:14px 16px;border:1px solid #f3d5cc;border-radius:9px;background:#fff8f5}
+  .manual-target b{display:block;font-size:13px;color:var(--text)}.manual-target p{margin:4px 0 12px;color:var(--text-2);font-size:12px}
+  .manual-target-controls{display:flex;gap:10px}.manual-target-controls select{flex:1;min-width:0}
   .metadata-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
   .metadata-item{background:#fff;border:1px solid var(--border);border-radius:8px;padding:12px}
   .metadata-item span{display:block;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.05em}
@@ -231,6 +234,11 @@ export const migrationWorkspaceCss = `
   .batch-migrate-head input{width:80px}
   .batch-result{margin-top:14px;padding:14px 16px;border-radius:8px;background:#eef9f7;border:1px solid #ccebe6;font-size:13px;line-height:1.6}
   .batch-result.error{background:#fdf1ee;border-color:#f3d5cc;color:var(--red)}
+  .batch-error-list{margin-top:10px;max-height:220px;overflow-y:auto;border-top:1px solid #f3d5cc}
+  .batch-error-row{padding:8px 0;border-bottom:1px solid #f3d5cc}
+  .batch-error-row:last-child{border-bottom:0}
+  .batch-error-row b{display:block;font:11px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--text);font-weight:600}
+  .batch-error-row span{display:block;margin-top:2px;color:var(--red);font-size:12px}
   .test-record-preview{padding:18px 20px;border-bottom:1px solid #eaeff4}
   .test-record-preview[hidden],.test-record-result[hidden],.full-migration[hidden]{display:none}
   .test-record-head{display:flex;align-items:center;gap:12px;margin-bottom:14px}.test-record-head b{margin-right:auto}
@@ -398,6 +406,7 @@ export function migrationWorkspaceHtml(): string {
                       <span class="mapping-spacer"></span>
                       <button id="auto-map-all" class="secondary">Auto-map selected objects</button>
                       <button id="auto-map" class="secondary">Auto-map this object</button>
+                      <button id="remove-all-fields" class="danger">Remove all</button>
                       <button id="save-field-map">Save mappings</button>
                     </div>
                     <div class="mapping-change-notice" id="field-map-notice" hidden><span id="field-map-notice-text"></span><button id="undo-field-removal" class="secondary">Undo last removal</button></div>

@@ -18,6 +18,7 @@ export type TransformId =
   | 'trim'
   | 'number'
   | 'boolean'
+  | 'yes-no'
   | 'iso-date'
   | 'phone';
 
@@ -184,6 +185,15 @@ function transform(id: TransformId | undefined, value: FieldValue): FieldValue {
     if (typeof value === 'boolean' || value === null) return value;
     if (typeof value === 'string') return ['true', '1', 'yes'].includes(value.toLowerCase());
     return Boolean(value);
+  }
+  if (id === 'yes-no') {
+    // Same transform id works in both directions -- the input's own type tells us which way
+    // we're going: a native "yes"/"no" string coming in becomes a canonical boolean, and a
+    // canonical boolean going out becomes the literal "yes"/"no" string the field expects
+    // (e.g. a HubSpot custom property defined as an enumeration with options [yes, no]).
+    if (typeof value === 'boolean') return value ? 'yes' : 'no';
+    if (typeof value === 'string') return ['yes', 'true', '1'].includes(value.toLowerCase());
+    return value;
   }
   if (id === 'iso-date') {
     if (typeof value !== 'string' && typeof value !== 'number') return value;

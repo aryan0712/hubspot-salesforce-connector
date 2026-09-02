@@ -22,6 +22,7 @@ import { MigrationCopilot, validateOpenAIKey } from './ai/migrationCopilot.js';
 import { keyFingerprint } from './db/postgresAiSettingsStore.js';
 import { isAllowedNaturalKeyField } from './core/idMap.js';
 import { isRegisteredCanonicalObject, slugifyCanonicalObject } from './core/objectRegistry.js';
+import { extractVendorErrorMessage } from './core/vendorError.js';
 
 /**
  * HTTP surface:
@@ -266,7 +267,7 @@ async function main(): Promise<void> {
         reason: target ? undefined : 'No matching object found in the other CRM',
       };
     }));
-    res.json({ from, to, rows, sourceCount: sources.length, targetCount: targets.length });
+    res.json({ from, to, rows, targets, sourceCount: sources.length, targetCount: targets.length });
   });
 
   server.get('/api/object-catalog/:system/:objectId', async (req, res) => {
@@ -1169,14 +1170,6 @@ function connInfo(c: Awaited<ReturnType<typeof connections.get>>): {
  * `{ message, category }`. Pull the human-readable message out of either shape so a live
  * CRM API failure surfaces its actual cause instead of a generic internal_error.
  */
-function extractVendorErrorMessage(data: unknown): string | undefined {
-  const first = Array.isArray(data) ? data[0] : data;
-  if (first && typeof first === 'object' && typeof (first as Record<string, unknown>).message === 'string') {
-    return (first as Record<string, unknown>).message as string;
-  }
-  return undefined;
-}
-
 function isSystem(value: string): value is SystemId {
   return value === 'salesforce' || value === 'hubspot';
 }
