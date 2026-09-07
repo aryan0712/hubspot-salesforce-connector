@@ -62,16 +62,30 @@ export class SalesforceConnector implements CRMConnector {
     logger.info('Salesforce connector ready');
   }
 
-  async list(type: CanonicalType, cursor?: string): Promise<RecordPage> {
-    // cursor, when present, is a nextRecordsUrl path returned by a prior query.
+  async list(type: CanonicalType, cursor?: string, modifiedSince?: string): Promise<RecordPage> {
+    // cursor, when present, is a nextRecordsUrl path returned by a prior query (it already
+    // encodes any WHERE clause from the query that started the page sequence).
     const url = cursor
       ? cursor
-      : `/query?q=${encodeURIComponent(this.soql(type))}`;
+      : `/query?q=${encodeURIComponent(this.soql(type, modifiedSince))}`;
     const { data } = await this.http.get(cursor ? cursor.replace(`/services/data/${API_VERSION}`, '') : url);
     const records: CanonicalRecord[] = (data.records as Record<string, unknown>[]).map((r) =>
       this.canonicalize(type, r),
     );
     return { records, nextCursor: data.done ? undefined : data.nextRecordsUrl };
+  }
+
+  /** Uses Salesforce's recycle-bin listing (retained ~15 days), scoped to this object type. */
+  async listDeletedSince(
+    type: CanonicalType,
+    since: string,
+  ): Promise<{ sourceId: string; occurredAt: string }[]> {
+    const sobject = requireNativeObjectName('salesforce', type);
+    const { data } = await this.http.get(`/sobjects/${sobject}/deleted`, {
+      params: { start: since, end: new Date().toISOString() },
+    });
+    const records = (data.deletedRecords as { id: string; deletedDate: string }[] | undefined) ?? [];
+    return records.map((r) => ({ sourceId: r.id, occurredAt: r.deletedDate }));
   }
 
   async read(type: CanonicalType, sourceId: string): Promise<CanonicalRecord | null> {
@@ -292,10 +306,11 @@ export class SalesforceConnector implements CRMConnector {
 
   // ----------------- internals -----------------
 
-  private soql(type: CanonicalType): string {
+  private soql(type: CanonicalType, modifiedSince?: string): string {
     const fields = excludeAlwaysQueriedFields(nativeFields('salesforce', type));
     const sobject = requireNativeObjectName('salesforce', type);
-    return `SELECT Id, LastModifiedDate, ${fields.join(', ')} FROM ${sobject}`;
+    const where = modifiedSince ? ` WHERE LastModifiedDate > ${modifiedSince}` : '';
+    return `SELECT Id, LastModifiedDate, ${fields.join(', ')} FROM ${sobject}${where}`;
   }
 
   private canonicalize(type: CanonicalType, native: Record<string, unknown>): CanonicalRecord {

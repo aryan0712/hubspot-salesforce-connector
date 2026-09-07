@@ -186,23 +186,26 @@ describe('operations dashboard', () => {
     expect(html).not.toContain('<b>Associations</b>');
   });
 
-  it('exposes migration-only field transforms with a live preview', () => {
+  it('exposes both forward and reverse field transforms with live previews', () => {
+    // Sync is bidirectional (see Reconciler), so a genuinely bidirectional transform like
+    // yes-no needs both directions configurable, not just the forward (migration) pipeline --
+    // otherwise a change made in the target CRM can't convert back correctly on the way in.
     const html = operationsHtml();
     for (const id of [
       'transform-lab',
       'transform-source-to',
       'transform-target-from',
+      'transform-target-to',
+      'transform-source-from',
       'transform-sample',
       'transform-forward-result',
+      'transform-sample-reverse',
+      'transform-reverse-result',
     ]) {
       expect(html).toContain(`id="${id}"`);
     }
-    expect(html).toContain('Migration path');
-    expect(html).toContain('Migration result');
-    expect(html).not.toContain('Reverse sync');
-    expect(html).not.toContain('id="transform-target-to"');
-    expect(html).not.toContain('id="transform-source-from"');
-    expect(html).not.toContain('transform-reverse-result');
+    expect(html).toContain('Forward');
+    expect(html).toContain('Reverse');
     for (const transform of [
       'identity',
       'domain',
@@ -210,6 +213,7 @@ describe('operations dashboard', () => {
       'trim',
       'number',
       'boolean',
+      'yes-no',
       'iso-date',
       'phone',
     ]) {

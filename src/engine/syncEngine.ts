@@ -11,6 +11,7 @@ import type {
 import type { ActivityLog } from '../observability/activity.js';
 import type { AssociationEngine } from './associationEngine.js';
 import type { GovernanceStore } from './governanceStore.js';
+import { friendlyErrorMessage } from '../core/vendorError.js';
 
 export interface SyncEngineOptions {
   concurrency?: number;
@@ -154,7 +155,8 @@ export class SyncEngine {
       await this.opts.associations?.syncRecord(record);
       await this.store.complete(job.id);
     } catch (err) {
-      const message = errorMessage(err);
+      const targetSystem = job.event.system === 'salesforce' ? 'HubSpot' : 'Salesforce';
+      const message = errorMessage(err, targetSystem);
       if (err instanceof AmbiguousNaturalKeyError) {
         await this.store.manualReview(job.id, message);
         return;
@@ -171,6 +173,6 @@ export class SyncEngine {
   }
 }
 
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message.slice(0, 2000) : String(err).slice(0, 2000);
+function errorMessage(err: unknown, targetSystemLabel?: string): string {
+  return friendlyErrorMessage(err, targetSystemLabel).slice(0, 2000);
 }

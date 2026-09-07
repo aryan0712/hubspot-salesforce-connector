@@ -1,4 +1,4 @@
-import type { ChangeEvent } from '../../core/types.js';
+import type { ChangeEvent, SystemId } from '../../core/types.js';
 import type { SyncEngine } from '../../engine/syncEngine.js';
 import { logger } from '../../logger.js';
 
@@ -15,9 +15,27 @@ export interface SalesforceCdcTransport {
   ): AsyncIterable<CdcEnvelope>;
 }
 
+/**
+ * Persists an opaque per-(system, stream) cursor. Originally Salesforce Pub/Sub replay ids
+ * only; the scheduled sync poller (see engine/syncPoller.ts) reuses this same store/table
+ * for both systems, storing an ISO "last polled at" timestamp as the cursor value instead.
+ */
 export interface ReplayCursorStore {
-  get(system: 'salesforce', stream: string): Promise<string | undefined>;
-  commit(system: 'salesforce', stream: string, replayId: string): Promise<void>;
+  get(system: SystemId, stream: string): Promise<string | undefined>;
+  commit(system: SystemId, stream: string, replayId: string): Promise<void>;
+}
+
+/** In-memory ReplayCursorStore for mock mode / tests — mirrors the other InMemory*Store stand-ins. */
+export class InMemoryReplayCursorStore implements ReplayCursorStore {
+  private cursors = new Map<string, string>();
+
+  async get(system: SystemId, stream: string): Promise<string | undefined> {
+    return this.cursors.get(`${system}:${stream}`);
+  }
+
+  async commit(system: SystemId, stream: string, replayId: string): Promise<void> {
+    this.cursors.set(`${system}:${stream}`, replayId);
+  }
 }
 
 /**

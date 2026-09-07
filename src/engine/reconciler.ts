@@ -1,7 +1,8 @@
 import type { CRMConnector } from '../core/connector.js';
-import type { CanonicalRecord, ChangeEvent, SystemId } from '../core/types.js';
+import type { CanonicalRecord, ChangeEvent, SystemId, UpsertResult } from '../core/types.js';
 import {
   contentHash,
+  naturalKeyFields,
   naturalKeyQuery,
   newCanonicalId,
   type IdMapStore,
@@ -13,6 +14,7 @@ import { logger } from '../logger.js';
 import type { ActivityLog } from '../observability/activity.js';
 import type { CanonicalType, FieldValue } from '../core/types.js';
 import { fieldRules } from '../core/mapping.js';
+import { extractDuplicateValueConflict } from '../core/vendorError.js';
 import type { GovernanceStore } from './governanceStore.js';
 
 export type PlannedAction =
@@ -102,7 +104,7 @@ export class Reconciler {
 
     // (3) Conflict resolution against the counterpart's current state.
     let winner: CanonicalRecord = source;
-    const targetId = link.ids[to];
+    let targetId = link.ids[to];
     if ((this.opts.readCounterpartForConflict ?? true) && targetId) {
       const counterpart = await this.connectors[to].read(source.type, targetId);
       if (counterpart) {
@@ -139,8 +141,41 @@ export class Reconciler {
       }
     }
 
-    // (4) Write the winner to the counterpart system.
-    const result = await this.connectors[to].upsert(winner, targetId);
+    // (4) Write the winner to the counterpart system. If the write fails because another
+    // record over there already owns the natural-key value we're setting (a stale link, or
+    // a duplicate findByNaturalKey missed on first sync), self-heal: re-point to the record
+    // the target system itself just confirmed owns that value and retry against it, instead
+    // of failing outright and waiting on manual review. Only for a field actually configured
+    // as this object's natural key -- a collision on some other unique field isn't a safe
+    // signal that the two records are the same person/company/deal.
+    let result: UpsertResult;
+    try {
+      result = await this.connectors[to].upsert(winner, targetId);
+    } catch (err) {
+      const conflict = extractDuplicateValueConflict(err);
+      const conflictField = conflict && nativeToNaturalKeyField(to, source.type, conflict.property);
+      if (conflict && conflictField && conflict.conflictingId !== targetId) {
+        logger.warn(
+          {
+            canonicalId: link.canonicalId,
+            from,
+            to,
+            previousTargetId: targetId,
+            conflictingId: conflict.conflictingId,
+            field: conflictField,
+          },
+          'natural-key conflict on write -- re-linking to the existing record',
+        );
+        targetId = conflict.conflictingId;
+        result = await this.connectors[to].upsert(winner, targetId);
+        this.opts.activity?.record({
+          kind: 'info',
+          message: `${source.type}: re-linked to an existing ${to} record on matching "${conflictField}" (the previous link was stale)`,
+        });
+      } else {
+        throw err;
+      }
+    }
     link.ids[to] = result.targetId;
     link.hashes[to] = contentHash(winner.fields);
     link.modifiedAt[to] = new Date().toISOString();
@@ -297,6 +332,25 @@ export class Reconciler {
     }
     return link;
   }
+}
+
+/**
+ * Maps a native field name (as named in a vendor error, e.g. HubSpot's "email") back to the
+ * canonical field, and returns it only if that canonical field is one of this object's
+ * configured natural-key fields -- the one signal strong enough to auto-resolve a write
+ * conflict without a human, since it's the same rule the app already uses to match records
+ * across systems in the first place.
+ */
+function nativeToNaturalKeyField(
+  system: SystemId,
+  type: CanonicalType,
+  nativeName: string,
+): string | undefined {
+  const rule = fieldRules(system, type).find(
+    (r) => r.native.toLowerCase() === nativeName.toLowerCase(),
+  );
+  if (!rule) return undefined;
+  return naturalKeyFields(type).includes(rule.canonical) ? rule.canonical : undefined;
 }
 
 function diffFields(

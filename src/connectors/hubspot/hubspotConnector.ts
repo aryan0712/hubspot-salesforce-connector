@@ -96,9 +96,29 @@ export class HubSpotConnector implements CRMConnector {
     logger.info('HubSpot connector ready');
   }
 
-  async list(type: CanonicalType, cursor?: string): Promise<RecordPage> {
+  async list(type: CanonicalType, cursor?: string, modifiedSince?: string): Promise<RecordPage> {
     const object = requireNativeObjectName('hubspot', type);
     const properties = nativeFields('hubspot', type);
+    if (modifiedSince) {
+      await this.searchLimiter.acquire();
+      const { data } = await this.http.post(`/crm/v3/objects/${object}/search`, {
+        filterGroups: [
+          {
+            filters: [
+              { propertyName: 'hs_lastmodifieddate', operator: 'GT', value: Date.parse(modifiedSince) },
+            ],
+          },
+        ],
+        sorts: [{ propertyName: 'hs_lastmodifieddate', direction: 'ASCENDING' }],
+        properties,
+        limit: 100,
+        after: cursor,
+      });
+      const records: CanonicalRecord[] = (data.results as HsObject[]).map((r) =>
+        this.canonicalize(type, r),
+      );
+      return { records, nextCursor: data.paging?.next?.after };
+    }
     const { data } = await this.http.get(`/crm/v3/objects/${object}`, {
       params: { limit: 100, after: cursor, properties: properties.join(',') },
     });
@@ -106,6 +126,34 @@ export class HubSpotConnector implements CRMConnector {
       this.canonicalize(type, r),
     );
     return { records, nextCursor: data.paging?.next?.after };
+  }
+
+  /**
+   * HubSpot has no dedicated "recently deleted" listing; archived (soft-deleted) records stay
+   * retrievable for ~90 days via the archived=true flag. There's no separate archive timestamp,
+   * so hs_lastmodifieddate (set when the record was archived) is used as the deletion time.
+   */
+  async listDeletedSince(
+    type: CanonicalType,
+    since: string,
+  ): Promise<{ sourceId: string; occurredAt: string }[]> {
+    const object = requireNativeObjectName('hubspot', type);
+    const sinceMs = Date.parse(since);
+    const out: { sourceId: string; occurredAt: string }[] = [];
+    let after: string | undefined;
+    do {
+      const { data } = await this.http.get(`/crm/v3/objects/${object}`, {
+        params: { limit: 100, after, archived: true, properties: 'hs_lastmodifieddate' },
+      });
+      for (const record of (data.results as HsObject[]) ?? []) {
+        const modifiedAt = record.properties?.hs_lastmodifieddate;
+        if (modifiedAt && Date.parse(modifiedAt) >= sinceMs) {
+          out.push({ sourceId: record.id, occurredAt: new Date(Date.parse(modifiedAt)).toISOString() });
+        }
+      }
+      after = data.paging?.next?.after;
+    } while (after);
+    return out;
   }
 
   async read(type: CanonicalType, sourceId: string): Promise<CanonicalRecord | null> {

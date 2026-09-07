@@ -19,7 +19,9 @@ export type TransformId =
   | 'number'
   | 'boolean'
   | 'yes-no'
+  | 'true-false'
   | 'iso-date'
+  | 'epoch-millis'
   | 'phone';
 
 export interface FieldRule {
@@ -127,9 +129,22 @@ export function fromCanonicalFields(
   return out;
 }
 
-/** The set of native field names to request from an API for a given type (read projection). */
+/**
+ * The set of native field names to request from an API for a given type (read projection).
+ * Deduplicated case-insensitively: two different canonical fields can legitimately map to
+ * the same native field (e.g. an alias), but a query's field-selection list can only name
+ * that native field once (Salesforce rejects "duplicate field selected" otherwise).
+ */
 export function nativeFields(system: SystemId, type: CanonicalType): string[] {
-  return (TABLES[system][type] ?? []).map((r) => r.native);
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const rule of TABLES[system][type] ?? []) {
+    const key = rule.native.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(rule.native);
+  }
+  return out;
 }
 
 export function nativeField(
@@ -195,10 +210,31 @@ function transform(id: TransformId | undefined, value: FieldValue): FieldValue {
     if (typeof value === 'string') return ['yes', 'true', '1'].includes(value.toLowerCase());
     return value;
   }
+  if (id === 'true-false') {
+    // Same shape as yes-no, for the other common enumeration encoding: a dropdown/checkbox
+    // property whose option values are the literal strings "true"/"false" rather than "yes"/"no".
+    if (typeof value === 'boolean') return value ? 'true' : 'false';
+    if (typeof value === 'string') return value.toLowerCase() === 'true';
+    return value;
+  }
   if (id === 'iso-date') {
     if (typeof value !== 'string' && typeof value !== 'number') return value;
     const parsed = new Date(value);
     return Number.isNaN(parsed.getTime()) ? value : parsed.toISOString();
+  }
+  if (id === 'epoch-millis') {
+    // Bidirectional by input type, like yes-no/true-false: a native epoch-ms number becomes
+    // a canonical ISO string, and a canonical ISO string becomes a native epoch-ms number --
+    // for the (uncommon) custom date property that stores a long instead of an ISO datetime.
+    if (typeof value === 'number') {
+      const parsed = new Date(value);
+      return Number.isNaN(parsed.getTime()) ? value : parsed.toISOString();
+    }
+    if (typeof value === 'string') {
+      const parsed = new Date(value);
+      return Number.isNaN(parsed.getTime()) ? value : parsed.getTime();
+    }
+    return value;
   }
   if (id === 'phone') {
     return typeof value === 'string' ? value.trim().replace(/[^\d+]/g, '') : value;

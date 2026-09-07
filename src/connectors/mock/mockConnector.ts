@@ -35,6 +35,7 @@ export class MockConnector implements CRMConnector {
   private store = new Map<CanonicalType, Map<string, NativeRecord>>();
   private listeners: ((e: ChangeEvent) => void)[] = [];
   private associations = new Map<string, ConnectorAssociation[]>();
+  private deletions = new Map<CanonicalType, { sourceId: string; occurredAt: string }[]>();
 
   constructor(system: SystemId) {
     this.system = system;
@@ -59,14 +60,25 @@ export class MockConnector implements CRMConnector {
     return map;
   }
 
-  async list(type: CanonicalType, cursor?: string): Promise<RecordPage> {
-    const all = [...this.bucket(type).values()];
+  async list(type: CanonicalType, cursor?: string, modifiedSince?: string): Promise<RecordPage> {
+    const sinceMs = modifiedSince ? Date.parse(modifiedSince) : undefined;
+    const all = [...this.bucket(type).values()].filter(
+      (n) => sinceMs === undefined || Date.parse(n.__modifiedAt) >= sinceMs,
+    );
     const pageSize = 100;
     const start = cursor ? Number(cursor) : 0;
     const slice = all.slice(start, start + pageSize);
     const records = slice.map((n) => this.canonicalize(type, n));
     const next = start + pageSize;
     return { records, nextCursor: next < all.length ? String(next) : undefined };
+  }
+
+  async listDeletedSince(
+    type: CanonicalType,
+    since: string,
+  ): Promise<{ sourceId: string; occurredAt: string }[]> {
+    const sinceMs = Date.parse(since);
+    return (this.deletions.get(type) ?? []).filter((d) => Date.parse(d.occurredAt) >= sinceMs);
   }
 
   async read(type: CanonicalType, sourceId: string): Promise<CanonicalRecord | null> {
@@ -185,6 +197,11 @@ export class MockConnector implements CRMConnector {
 
   async remove(type: CanonicalType, sourceId: string) {
     this.bucket(type).delete(sourceId);
+    const occurredAt = new Date().toISOString();
+    const log = this.deletions.get(type) ?? [];
+    log.push({ sourceId, occurredAt });
+    this.deletions.set(type, log);
+    this.emit({ system: this.system, type, sourceId, changeType: 'deleted', occurredAt });
     return { system: this.system, type, targetId: sourceId, operation: 'deleted' as const };
   }
 

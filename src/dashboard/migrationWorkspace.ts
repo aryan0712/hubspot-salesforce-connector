@@ -129,8 +129,10 @@ export const migrationWorkspaceCss = `
   .field-workspace-main{min-width:0}.field-current-head{display:flex;align-items:center;gap:10px;padding:12px 20px;border-bottom:1px solid var(--border)}
   .field-current-head>div{margin-right:auto}.field-current-head span,.field-current-head b{display:block}.field-current-head span{color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.06em}.field-current-head b{margin-top:2px;font-size:14px}
   #field-object{display:none}.object-position{color:var(--muted);font-size:11px;white-space:nowrap}
-  .mapping-tools{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:12px 20px;border-bottom:1px solid #eaeff4;background:#fafcfd}
-  .mapping-tools input{width:min(270px,100%)}.mapping-tools .mapping-spacer{margin-left:auto}
+  .mapping-tools{display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:12px 20px;border-bottom:1px solid #eaeff4;background:#fafcfd}
+  .mapping-tools input{width:min(270px,100%)}
+  .mapping-tools-actions{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;flex-basis:100%;flex-shrink:0}
+  .mapping-tools-actions button{padding:8px 12px;font-size:12px}
   .field-layout{min-width:0}
   .coverage-card{display:grid;grid-template-columns:minmax(180px,.45fr) minmax(0,1.55fr);gap:20px;
     align-items:center;padding:14px 20px;border-bottom:1px solid #eaeff4;background:#fafcfd}
@@ -162,7 +164,9 @@ export const migrationWorkspaceCss = `
   .transform-path-title span{color:var(--orange)}
   .transform-controls{display:grid;grid-template-columns:1fr auto 1fr;gap:8px;align-items:end}
   .transform-controls label{margin:0}.transform-controls .path-arrow{padding-bottom:12px;color:var(--muted)}
-  .transform-preview{display:grid;grid-template-columns:minmax(180px,.8fr) minmax(0,1.2fr);gap:12px;padding:0 20px 16px}
+  .transform-lab-note{margin:0 20px 14px;padding:10px 12px;border-radius:7px;background:#fff8f5;border:1px solid #f3d5cc;color:var(--text-2);font-size:11px;line-height:1.5}
+  .transform-preview{display:flex;flex-direction:column;gap:10px;padding:0 20px 16px}
+  .transform-preview-row{display:grid;grid-template-columns:minmax(180px,.8fr) minmax(0,1.2fr);gap:12px}
   .transform-preview-card{padding:13px 14px;border:1px solid #d7e4ee;border-radius:9px;background:#fff}
   .transform-preview-card span{display:block;color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.06em}
   .transform-preview-card code{display:block;margin-top:5px;color:var(--text);font-size:12px;overflow-wrap:anywhere}
@@ -239,6 +243,9 @@ export const migrationWorkspaceCss = `
   .batch-error-row:last-child{border-bottom:0}
   .batch-error-row b{display:block;font:11px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--text);font-weight:600}
   .batch-error-row span{display:block;margin-top:2px;color:var(--red);font-size:12px}
+  .fix-result{margin:0 20px 16px;padding:14px 16px;border-radius:8px;background:#eef9f7;border:1px solid #ccebe6;font-size:13px;line-height:1.6}
+  .fix-result.error{background:#fdf1ee;border-color:#f3d5cc;color:var(--red)}
+  .fix-result ul{margin:8px 0 0;padding-left:18px}.fix-result li{margin-top:2px}
   .test-record-preview{padding:18px 20px;border-bottom:1px solid #eaeff4}
   .test-record-preview[hidden],.test-record-result[hidden],.full-migration[hidden]{display:none}
   .test-record-head{display:flex;align-items:center;gap:12px;margin-bottom:14px}.test-record-head b{margin-right:auto}
@@ -266,7 +273,7 @@ export const migrationWorkspaceCss = `
   @media(max-width:760px){
     .builder-header{align-items:flex-start;flex-wrap:wrap}.builder-header-actions{width:100%}.builder-summary{margin-left:auto}
     .summary-rows{grid-template-columns:repeat(2,minmax(0,1fr))}
-    .plan-bar{grid-template-columns:1fr}.scope-options,.direction-preview,.natural-key-grid,.transform-paths,.transform-preview,.readiness-panel{grid-template-columns:1fr}
+    .plan-bar{grid-template-columns:1fr}.scope-options,.direction-preview,.natural-key-grid,.transform-paths,.transform-preview-row,.readiness-panel{grid-template-columns:1fr}
     .direction-preview{display:flex;align-items:stretch}.direction-system{flex:1}.direction-arrow{align-self:center}
     .coverage-card{grid-template-columns:1fr;gap:14px}.coverage-list{grid-template-columns:repeat(3,minmax(0,1fr));gap:10px 0}
     .coverage-list div:nth-child(3n+1){border-left:0;padding-left:0}
@@ -403,11 +410,13 @@ export function migrationWorkspaceHtml(): string {
                     <div class="mapping-tools">
                       <input id="field-search" type="search" placeholder="Search source, canonical, or target">
                       <select id="field-filter"><option value="all">All mappings</option><option value="review">Needs review</option><option value="transformed">Has transforms</option></select>
-                      <span class="mapping-spacer"></span>
-                      <button id="auto-map-all" class="secondary">Auto-map selected objects</button>
-                      <button id="auto-map" class="secondary">Auto-map this object</button>
-                      <button id="remove-all-fields" class="danger">Remove all</button>
-                      <button id="save-field-map">Save mappings</button>
+                      <div class="mapping-tools-actions">
+                        <button id="auto-map-all" class="secondary">Auto-map selected objects</button>
+                        <button id="auto-map" class="secondary">Auto-map this object</button>
+                        <button id="add-field-mapping" class="secondary">+ Add field</button>
+                        <button id="remove-all-fields" class="danger">Remove all</button>
+                        <button id="save-field-map">Save mappings</button>
+                      </div>
                     </div>
                     <div class="mapping-change-notice" id="field-map-notice" hidden><span id="field-map-notice-text"></span><button id="undo-field-removal" class="secondary">Undo last removal</button></div>
                     <aside class="coverage-card" aria-label="Mapping coverage">
@@ -417,15 +426,25 @@ export function migrationWorkspaceHtml(): string {
                     <section class="transform-lab" id="transform-lab" aria-live="polite" hidden>
                       <div class="transform-lab-head"><div><div class="step-eyebrow">Transform lab</div><h3 id="transform-field-name">Field transform</h3><p id="transform-field-path">Configure normalization for this migration.</p></div><button id="close-transform-lab" class="secondary" aria-label="Close transform lab">Close</button></div>
                       <div class="transform-paths">
-                        <div class="transform-path"><div class="transform-path-title"><span>Migration path</span> Source → Canonical → Target</div><div class="transform-controls"><label>Normalize source value<select id="transform-source-to"></select></label><span class="path-arrow">→</span><label>Format destination value<select id="transform-target-from"></select></label></div></div>
+                        <div class="transform-path"><div class="transform-path-title"><span>Forward</span> Source → Canonical → Target</div><div class="transform-controls"><label>Normalize source value<select id="transform-source-to"></select></label><span class="path-arrow">→</span><label>Format destination value<select id="transform-target-from"></select></label></div></div>
+                        <div class="transform-path"><div class="transform-path-title"><span>Reverse</span> Target → Canonical → Source</div><div class="transform-controls"><label>Normalize target value<select id="transform-target-to"></select></label><span class="path-arrow">→</span><label>Format source value<select id="transform-source-from"></select></label></div></div>
                       </div>
+                      <p class="transform-lab-note">Sync runs both ways, so both paths need to agree — e.g. a Yes/No field needs the boolean↔string transform configured on <b>both</b> the forward and reverse path, or a change made in the target CRM won't convert back correctly.</p>
                       <div class="transform-preview">
-                        <label>Test with a sample value<input id="transform-sample" placeholder="e.g. https://www.Example.com/path"></label>
-                        <div class="transform-preview-card"><span>Migration result</span><code id="transform-forward-result">Enter a sample value</code></div>
+                        <div class="transform-preview-row">
+                          <label>Test a source value (forward)<input id="transform-sample" placeholder="e.g. false"></label>
+                          <div class="transform-preview-card"><span>Written to target as</span><code id="transform-forward-result">Enter a sample value</code></div>
+                        </div>
+                        <div class="transform-preview-row">
+                          <label>Test a target value (reverse)<input id="transform-sample-reverse" placeholder="e.g. yes"></label>
+                          <div class="transform-preview-card"><span>Written to source as</span><code id="transform-reverse-result">Enter a sample value</code></div>
+                        </div>
                       </div>
                       <div class="transform-lab-actions"><span class="muted" id="transform-help">Transforms run before migration validation and value mapping.</span><button id="reset-transforms" class="secondary">Use identity</button><button id="apply-transforms">Apply transforms</button></div>
                     </section>
                     <div class="field-layout"><div class="scroll"><table class="mapping-table"><thead><tr><th class="mapping-action">Action</th><th>Source field</th><th>Canonical field</th><th>Transform</th><th>Target field</th></tr></thead><tbody id="field-map-rows"><tr><td colspan="5" class="empty">Choose an object to load its mappings.</td></tr></tbody></table></div></div>
+                    <datalist id="source-native-datalist"></datalist>
+                    <datalist id="target-native-datalist"></datalist>
                   </div>
                 </div>
                 <div class="step-footer"><span class="step-footer-note">Changes are saved when you switch objects.</span><button class="secondary" data-go-step="objects">← Objects</button><button id="save-next-field-object" class="secondary">Save & next object →</button><button class="next-step" data-go-step="values">Values & keys →</button></div>
@@ -447,8 +466,9 @@ export function migrationWorkspaceHtml(): string {
 
             <section class="workspace-panel" id="workspace-validate">
               <div class="card step-card">
-                <div class="step-intro"><div class="step-intro-row"><div><div class="step-eyebrow">Step 5 of 6</div><h2>Resolve migration blockers</h2><p>Preflight checks live CRM schemas, mapping compatibility, and values. Copilot explains results but never changes mappings automatically.</p></div><button id="ask-copilot" class="secondary" disabled>Ask Copilot</button><button id="run-preflight">Run preflight</button></div></div>
+                <div class="step-intro"><div class="step-intro-row"><div><div class="step-eyebrow">Step 5 of 6</div><h2>Resolve migration blockers</h2><p>Preflight checks live CRM schemas, mapping compatibility, and values. Copilot explains results but never changes mappings automatically.</p></div><button id="fix-boolean-fields" class="secondary" disabled>Fix boolean fields</button><button id="ask-copilot" class="secondary" disabled>Ask Copilot</button><button id="run-preflight">Run preflight</button></div></div>
                 <div class="preflight-summary" id="preflight-summary"><div class="check-stat"><b>—</b><span>Errors</span></div><div class="check-stat"><b>—</b><span>Warnings</span></div><div class="check-stat"><b>—</b><span>Fields checked</span></div></div>
+                <div class="fix-result" id="fix-result" hidden></div>
                 <section class="copilot-panel" id="copilot-panel" aria-live="polite" hidden></section>
                 <div class="issue-list" id="preflight-issues"><div class="empty">Run preflight after reviewing object and field mappings.</div></div>
                 ${footer('A passing preflight is required before testing a real record.', { step: 'values', label: 'Values' }, { step: 'preview', label: 'Test one record' })}

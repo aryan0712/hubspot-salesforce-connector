@@ -5,7 +5,7 @@ import type { ReconcilePlan } from './reconciler.js';
 import { logger } from '../logger.js';
 import type { ActivityLog } from '../observability/activity.js';
 import { InMemoryMigrationStore, type MigrationStore } from './migrationStore.js';
-import { describeError } from '../core/vendorError.js';
+import { friendlyErrorMessage } from '../core/vendorError.js';
 
 export interface MigrationOptions {
   types: CanonicalType[];
@@ -110,7 +110,8 @@ export class MigrationEngine {
             stats.reconciled += 1;
           } catch (err) {
             stats.errors += 1;
-            const message = describeError(err);
+            const targetSystem = opts.from === 'salesforce' ? 'HubSpot' : 'Salesforce';
+            const message = friendlyErrorMessage(err, targetSystem);
             logger.error({ err, type, sourceId: record.meta.sourceId, message }, 'migration record failed');
             // Record what actually happened (not the pre-write intent) so the operator can see
             // which record failed and why, not just an aggregate error count.

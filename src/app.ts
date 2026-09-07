@@ -57,6 +57,11 @@ import {
 } from './core/syncConfig.js';
 import { PostgresSyncConfigStore } from './db/postgresSyncConfigStore.js';
 import { listCanonicalObjects } from './core/objectRegistry.js';
+import { SyncPoller } from './engine/syncPoller.js';
+import { InMemoryReplayCursorStore, type ReplayCursorStore } from './connectors/salesforce/cdcWorker.js';
+import { PostgresReplayCursorStore } from './db/postgresReplayCursorStore.js';
+import { PostgresNotificationSettingsStore } from './db/postgresNotificationSettingsStore.js';
+import { SyncAlertDigester } from './engine/syncAlertDigester.js';
 
 /**
  * Composition root. Builds and wires every component. Nothing else in the codebase
@@ -85,6 +90,9 @@ export interface App {
   migrationPlans: MigrationPlanStore;
   aiSettings?: PostgresAiSettingsStore;
   syncConfig: SyncConfigStore;
+  poller: SyncPoller;
+  notificationSettings?: PostgresNotificationSettingsStore;
+  alertDigester?: SyncAlertDigester;
 }
 
 export async function createApp(
@@ -100,6 +108,7 @@ export async function createApp(
   let valueMappings: PostgresValueMappingStore | undefined;
   let objectMappings: PostgresObjectMappingStore | undefined;
   let aiSettings: PostgresAiSettingsStore | undefined;
+  let notificationSettings: PostgresNotificationSettingsStore | undefined;
   let syncConfig: SyncConfigStore | undefined;
   let idMap: IdMapStore;
   let mappingStore: MappingStore;
@@ -130,6 +139,7 @@ export async function createApp(
     operations = new PostgresOperationsRepository(db, tenantId);
     apiKeys = new PostgresApiKeyRepository(db, tenantId);
     aiSettings = new PostgresAiSettingsStore(db, cipher, tenantId);
+    notificationSettings = new PostgresNotificationSettingsStore(db, cipher, tenantId);
     activity.attachSink(operations);
   }
   await idMap.init();
@@ -215,6 +225,16 @@ export async function createApp(
   });
   await sync.init();
 
+  const cursors: ReplayCursorStore =
+    mock || !db || !tenantId
+      ? new InMemoryReplayCursorStore()
+      : new PostgresReplayCursorStore(db, tenantId);
+  const poller = new SyncPoller(connectors, syncConfigStore, cursors, sync, activity);
+
+  const alertDigester = notificationSettings
+    ? new SyncAlertDigester(sync, { get: () => notificationSettings!.get() }, activity)
+    : undefined;
+
   return {
     connectors,
     idMap,
@@ -235,5 +255,8 @@ export async function createApp(
     migrationPlans,
     aiSettings,
     syncConfig: syncConfigStore,
+    poller,
+    notificationSettings,
+    alertDigester,
   };
 }

@@ -42,18 +42,30 @@ export class PostgresSyncConfigStore implements SyncConfigStore {
   }
 }
 
+// Fallback for an object with no polling entry yet in either defaults or saved settings
+// (e.g. registered at runtime, after this store's `defaults` snapshot was built at boot).
+// Opt-in, matching defaultSyncConfig()'s own default -- not specific to any object.
+const FALLBACK_POLLING = { enabled: false, intervalMinutes: 30 };
+
 function mergeConfig(defaults: SyncConfig, saved: Partial<SyncConfig>): SyncConfig {
   const types = new Set([...Object.keys(defaults.objects), ...Object.keys(saved.objects ?? {})]);
   const objects: SyncConfig['objects'] = {};
+  const polling: SyncConfig['polling'] = {};
   for (const type of types) {
     const merged = { ...defaults.objects[type], ...saved.objects?.[type] };
     if (merged.enabled !== undefined && merged.direction !== undefined) {
       objects[type] = merged as SyncConfig['objects'][string];
     }
+    polling[type] = {
+      ...FALLBACK_POLLING,
+      ...defaults.polling?.[type],
+      ...saved.polling?.[type],
+    };
   }
   return {
     conflictStrategy: saved.conflictStrategy ?? defaults.conflictStrategy,
     sourceOfTruth: saved.sourceOfTruth ?? defaults.sourceOfTruth,
     objects,
+    polling,
   };
 }

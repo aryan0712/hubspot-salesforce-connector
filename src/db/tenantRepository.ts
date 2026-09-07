@@ -45,6 +45,18 @@ export class TenantRepository {
           ],
         );
         for (const system of ['salesforce', 'hubspot'] as const) {
+          // A field_mapping_sets row means this system/object pair has already been seeded
+          // (by an earlier boot) or configured by the tenant via Mapping Studio -- including
+          // deliberately removing one of these default fields. ON CONFLICT DO NOTHING on the
+          // field_mappings rows below only guards against re-inserting a row that still
+          // exists; it does NOT stop a *deleted* row from being silently recreated on the
+          // next boot. Skipping the whole pair once it's been seeded once is what actually
+          // makes that idempotent, and lets a user's deletion stick.
+          const alreadySeeded = await client.query(
+            `SELECT 1 FROM field_mapping_sets WHERE tenant_id = $1 AND system = $2 AND object_type = $3`,
+            [tenantId, system, object.canonicalObject],
+          );
+          if (alreadySeeded.rowCount) continue;
           await client.query(
             `INSERT INTO field_mapping_sets(tenant_id, system, object_type)
              VALUES ($1,$2,$3)

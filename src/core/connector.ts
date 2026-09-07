@@ -33,8 +33,18 @@ export interface CRMConnector {
   /** Verify credentials / refresh tokens. Throws if the connector can't be used. */
   init(): Promise<void>;
 
-  /** Stream every record of a type, page by page (for migration / initial backfill). */
-  list(type: CanonicalType, cursor?: string): Promise<RecordPage>;
+  /**
+   * Stream every record of a type, page by page (for migration / initial backfill).
+   * @param modifiedSince  when set, restricts to records changed at/after this ISO timestamp
+   *   (used for incremental polling instead of a full scan).
+   */
+  list(type: CanonicalType, cursor?: string, modifiedSince?: string): Promise<RecordPage>;
+
+  /** Native ids removed/archived at or after `since` (ISO timestamp), for deletion polling. */
+  listDeletedSince(
+    type: CanonicalType,
+    since: string,
+  ): Promise<{ sourceId: string; occurredAt: string }[]>;
 
   /** Fetch a single record by its native id, canonicalized. Null if it no longer exists. */
   read(type: CanonicalType, sourceId: string): Promise<CanonicalRecord | null>;

@@ -11,11 +11,27 @@ export interface SyncObjectConfig {
   direction: SyncDirection;
 }
 
+/**
+ * Scheduled polling sync: a complement to webhook-driven sync that periodically checks both
+ * CRMs for changes, for setups where webhooks aren't configured/reachable. Each object gets
+ * its own enabled flag and interval ("scenario") -- e.g. Contacts every 5 minutes, Deals
+ * hourly -- rather than one interval shared by every object. `objects` above still governs
+ * *direction* (which system may originate a change); this only governs the polling schedule.
+ */
+export interface PollingConfig {
+  enabled: boolean;
+  intervalMinutes: number;
+}
+
 export interface SyncConfig {
   conflictStrategy: ConflictStrategy;
   sourceOfTruth: SystemId;
   objects: Record<CanonicalType, SyncObjectConfig>;
+  polling: Record<CanonicalType, PollingConfig>;
 }
+
+export const MIN_POLLING_INTERVAL_MINUTES = 1;
+export const MAX_POLLING_INTERVAL_MINUTES = 30 * 24 * 60;
 
 export interface SyncConfigStore {
   get(): SyncConfig;
@@ -38,6 +54,11 @@ export function defaultSyncConfig(
     sourceOfTruth,
     objects: Object.fromEntries(
       objects.map((type) => [type, { enabled: true, direction: 'bidirectional' } as SyncObjectConfig]),
+    ),
+    // Opt-in per object: polling makes live, scheduled API calls against both CRMs, so it
+    // stays off until an admin explicitly turns it on for that object from the Sync tab.
+    polling: Object.fromEntries(
+      objects.map((type) => [type, { enabled: false, intervalMinutes: 30 } as PollingConfig]),
     ),
   };
 }

@@ -91,6 +91,7 @@ describe('PostgreSQL repositories', () => {
       '006_field_mapping_sets.sql',
       '007_migration_canary.sql',
       '008_open_object_model.sql',
+      '009_notification_settings.sql',
     ]);
 
     const rls = await database.pool.query<{

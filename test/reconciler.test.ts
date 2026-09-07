@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
+import { AxiosError } from 'axios';
 import type { CRMConnector } from '../src/core/connector.js';
 import type { ChangeEvent, SystemId } from '../src/core/types.js';
 import { MockConnector } from '../src/connectors/mock/mockConnector.js';
@@ -108,5 +109,74 @@ describe('real-time bidirectional sync', () => {
     await ctx.reconciler.reconcile(sfEdited!);
 
     expect(ctx.hs.peek('contact', hsId, 'firstname')).toBe('Bob');
+  });
+});
+
+describe('self-healing a stale link on a natural-key conflict', () => {
+  function fakeDuplicateValueError(nativeField: string, value: string, thisId: string, ownerId: string): AxiosError {
+    const err = new AxiosError('Request failed with status code 400');
+    err.response = {
+      status: 400,
+      statusText: 'Bad Request',
+      headers: {},
+      config: {} as never,
+      data: {
+        message: `Cannot set PropertyValueCoordinates{portalId=1, objectTypeId=ObjectTypeId{legacyObjectType=CONTACT}, propertyName=${nativeField}, value=${value}} on ${thisId}. ${ownerId} already has that value.`,
+      },
+    };
+    return err;
+  }
+
+  it('re-links to the record that already owns the natural-key value instead of failing', async () => {
+    const sfId = ctx.sf.seed('contact', ada);
+    const correctHsId = ctx.hs.seed('contact', ada);
+    const staleHsId = ctx.hs.seed('contact', { firstName: 'Placeholder', email: 'placeholder@example.com' });
+
+    // Simulate a link that's gone stale: this canonical record points at a HubSpot contact
+    // that is NOT the one that actually owns ada's email.
+    await ctx.idMap.upsertLink({
+      canonicalId: crypto.randomUUID(),
+      type: 'contact',
+      ids: { salesforce: sfId, hubspot: staleHsId },
+      hashes: {},
+      modifiedAt: {},
+      naturalKeys: [],
+      updatedAt: new Date().toISOString(),
+    });
+
+    const originalUpsert = ctx.hs.upsert.bind(ctx.hs);
+    let failOnce = true;
+    (ctx.hs as unknown as { upsert: typeof ctx.hs.upsert }).upsert = async (record, targetId) => {
+      if (failOnce && targetId === staleHsId) {
+        failOnce = false;
+        throw fakeDuplicateValueError('email', ada.email, staleHsId, correctHsId);
+      }
+      return originalUpsert(record, targetId);
+    };
+
+    const sfRecord = await ctx.sf.read('contact', sfId);
+    await ctx.reconciler.reconcile(sfRecord!);
+
+    const link = await ctx.idMap.bySource('salesforce', sfId);
+    expect(link?.ids.hubspot).toBe(correctHsId);
+    expect(ctx.hs.peek('contact', correctHsId, 'firstname')).toBe('Ada');
+    // The stale record it was previously (wrongly) pointing at is untouched.
+    expect(ctx.hs.peek('contact', staleHsId, 'firstname')).toBe('Placeholder');
+  });
+
+  it('does not self-heal a conflict on a field that is not the configured natural key', async () => {
+    const sfId = ctx.sf.seed('contact', ada);
+    const hsId = ctx.hs.seed('contact', ada);
+
+    const originalUpsert = ctx.hs.upsert.bind(ctx.hs);
+    (ctx.hs as unknown as { upsert: typeof ctx.hs.upsert }).upsert = async (record, targetId) => {
+      if (targetId === hsId) {
+        throw fakeDuplicateValueError('phone', '+1-111', hsId, 'some-other-id');
+      }
+      return originalUpsert(record, targetId);
+    };
+
+    const sfRecord = await ctx.sf.read('contact', sfId);
+    await expect(ctx.reconciler.reconcile(sfRecord!)).rejects.toThrow();
   });
 });

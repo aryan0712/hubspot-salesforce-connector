@@ -22,7 +22,8 @@ import { MigrationCopilot, validateOpenAIKey } from './ai/migrationCopilot.js';
 import { keyFingerprint } from './db/postgresAiSettingsStore.js';
 import { isAllowedNaturalKeyField } from './core/idMap.js';
 import { isRegisteredCanonicalObject, slugifyCanonicalObject } from './core/objectRegistry.js';
-import { extractVendorErrorMessage } from './core/vendorError.js';
+import { friendlyErrorMessage } from './core/vendorError.js';
+import { MAX_POLLING_INTERVAL_MINUTES, MIN_POLLING_INTERVAL_MINUTES } from './core/syncConfig.js';
 
 /**
  * HTTP surface:
@@ -53,6 +54,45 @@ async function main(): Promise<void> {
       await Promise.all(Object.values(app.connectors).map((c) => c.init()));
       liveInited = true;
     }
+  }
+
+  /**
+   * A change to how an object is mapped (field rules, natural key, value translations) can
+   * invalidate assumptions live sync is relying on. If that object is currently syncing --
+   * real-time (webhook) or scheduled polling -- pause both so nothing syncs against the
+   * edited configuration until an operator reviews it and re-enables sync from the Sync tab.
+   */
+  async function pauseSyncIfLive(
+    type: CanonicalType,
+    actorId: string | undefined,
+    reason: string,
+  ): Promise<boolean> {
+    const config = app.syncConfig.get();
+    const wasLive = config.objects[type]?.enabled || config.polling[type]?.enabled;
+    if (!wasLive) return false;
+    await app.syncConfig.update({
+      ...config,
+      objects: {
+        ...config.objects,
+        [type]: { ...(config.objects[type] ?? { direction: 'bidirectional' as const }), enabled: false },
+      },
+      polling: {
+        ...config.polling,
+        [type]: { ...(config.polling[type] ?? { intervalMinutes: 30 }), enabled: false },
+      },
+    });
+    app.activity.record({
+      kind: 'info',
+      message: `Sync paused for ${type}: ${reason} -- review and re-enable when ready`,
+    });
+    await app.operations?.recordAudit({
+      actorId,
+      action: 'sync.paused_by_mapping_change',
+      resourceType: 'sync_settings',
+      resourceId: type,
+      detail: { reason },
+    });
+    return true;
   }
 
   // The demo playground is a separate, mock-backed app, created on first use.
@@ -225,6 +265,58 @@ async function main(): Promise<void> {
       fingerprint: env.OPENAI_API_KEY ? keyFingerprint(env.OPENAI_API_KEY) : undefined,
       model: env.OPENAI_MODEL,
     });
+  });
+
+  // ---------------- Sync failure alerting ----------------
+  server.get('/api/notifications/settings', requireRole('admin'), async (_req, res) => {
+    res.json(
+      (await app.notificationSettings?.status()) ?? { enabled: false, smtpConfigured: false },
+    );
+  });
+  server.put('/api/notifications/settings', requireRole('admin'), async (req, res) => {
+    if (!app.notificationSettings) return res.status(503).json({ error: 'postgres_required' });
+    const enabled = Boolean(req.body?.enabled);
+    const alertEmail = String(req.body?.alertEmail ?? '').trim();
+    const smtpHost = String(req.body?.smtpHost ?? '').trim();
+    const smtpPort = Number(req.body?.smtpPort);
+    const smtpUser = String(req.body?.smtpUser ?? '').trim();
+    const smtpFrom = String(req.body?.smtpFrom ?? '').trim();
+    // A blank password means "keep the existing one" (mirrors the AI credential form never
+    // re-displaying a saved secret) -- only a non-empty string overwrites it.
+    const smtpPasswordInput = req.body?.smtpPassword;
+    const smtpPassword =
+      typeof smtpPasswordInput === 'string' && smtpPasswordInput.length > 0
+        ? smtpPasswordInput
+        : undefined;
+    if (enabled && (!alertEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(alertEmail))) {
+      return res.status(400).json({ error: 'invalid_alert_email' });
+    }
+    if (smtpHost && (!Number.isFinite(smtpPort) || smtpPort < 1 || smtpPort > 65535)) {
+      return res.status(400).json({ error: 'invalid_smtp_port' });
+    }
+    const status = await app.notificationSettings.set(
+      {
+        enabled,
+        alertEmail: alertEmail || undefined,
+        smtpHost: smtpHost || undefined,
+        smtpPort: smtpHost ? smtpPort : undefined,
+        smtpUser: smtpUser || undefined,
+        smtpPassword,
+        smtpFrom: smtpFrom || undefined,
+      },
+      res.locals.auth?.actorId,
+    );
+    await app.operations?.recordAudit({
+      actorId: res.locals.auth?.actorId,
+      action: 'notification_settings.updated',
+      resourceType: 'notification_settings',
+      detail: { enabled, alertEmail: Boolean(alertEmail), smtpConfigured: status.smtpConfigured },
+    });
+    res.json(status);
+  });
+  server.post('/api/notifications/check-now', requireRole('operator'), async (_req, res) => {
+    if (!app.alertDigester) return res.status(503).json({ error: 'postgres_required' });
+    res.json(await app.alertDigester.checkNow());
   });
 
   // ---------------- Migration workspace ----------------
@@ -867,7 +959,12 @@ async function main(): Promise<void> {
         resourceId: `${system}:${type}`,
         detail: { ruleCount: req.body.rules.length },
       });
-      res.json({ ok: true, rules: app.mappingStore.get(system, type) });
+      const syncPaused = await pauseSyncIfLive(
+        type,
+        res.locals.auth?.actorId,
+        `field mapping changed (${system})`,
+      );
+      res.json({ ok: true, rules: app.mappingStore.get(system, type), syncPaused });
     } catch (err) {
       res.status(400).json({ error: 'invalid_mapping', detail: String(err) });
     }
@@ -914,6 +1011,10 @@ async function main(): Promise<void> {
       await app.syncConfig.update({
         ...config,
         objects: { ...config.objects, [canonicalObject]: { enabled: true, direction: 'bidirectional' } },
+        polling: {
+          ...config.polling,
+          [canonicalObject]: config.polling[canonicalObject] ?? { enabled: false, intervalMinutes: 30 },
+        },
       });
     }
     await app.operations?.recordAudit({
@@ -961,7 +1062,8 @@ async function main(): Promise<void> {
       });
     }
     await app.objectMappings.setNaturalKeyFields(type, normalizedFields);
-    res.json({ ok: true, type, naturalKeyFields: app.objectMappings.getNaturalKeyFields(type) });
+    const syncPaused = await pauseSyncIfLive(type, res.locals.auth?.actorId, 'matching (natural key) changed');
+    res.json({ ok: true, type, naturalKeyFields: app.objectMappings.getNaturalKeyFields(type), syncPaused });
   });
   server.put('/api/value-mappings/:type/:field', requireRole('operator'), async (req, res) => {
     const type = req.params.type as CanonicalType;
@@ -970,7 +1072,12 @@ async function main(): Promise<void> {
       return res.status(400).json({ error: 'invalid_value_mapping' });
     }
     await app.valueMappings.replace(type, String(req.params.field), req.body.entries);
-    res.json({ ok: true, entries: app.valueMappings.list(type, String(req.params.field)) });
+    const syncPaused = await pauseSyncIfLive(
+      type,
+      res.locals.auth?.actorId,
+      `value mapping changed (${req.params.field})`,
+    );
+    res.json({ ok: true, entries: app.valueMappings.list(type, String(req.params.field)), syncPaused });
   });
   server.post('/api/preflight', requireRole('operator'), async (req, res) => {
     const from = req.body?.from as SystemId;
@@ -997,6 +1104,7 @@ async function main(): Promise<void> {
     const hubspotSettings = await settings.get('hubspot');
     res.json({
       ...app.syncConfig.get(),
+      pollingStatus: app.poller.lastRuns(),
       webhooks: {
         salesforce: {
           connected: Boolean(await connections.get('salesforce')),
@@ -1016,32 +1124,65 @@ async function main(): Promise<void> {
   server.patch('/api/sync/settings', requireRole('admin'), async (req, res) => {
     const conflictStrategy = String(req.body?.conflictStrategy ?? '');
     const sourceOfTruth = String(req.body?.sourceOfTruth ?? '');
-    const objects = req.body?.objects;
+    const objectsInput = req.body?.objects;
+    const pollingInput = req.body?.polling;
     const directions = [
       'bidirectional',
       'salesforce_to_hubspot',
       'hubspot_to_salesforce',
     ];
+    // Every canonical object is registered dynamically (core/objectRegistry.ts) -- there is
+    // no fixed object list to validate against, so any key here must be a currently
+    // registered type, whatever it is.
+    const objectsValid =
+      objectsInput === undefined ||
+      (typeof objectsInput === 'object' &&
+        objectsInput !== null &&
+        Object.entries(objectsInput as Record<string, unknown>).every(([type, value]) => {
+          const object = value as { enabled?: unknown; direction?: unknown } | null;
+          return (
+            isType(type) &&
+            object &&
+            typeof object.enabled === 'boolean' &&
+            directions.includes(String(object.direction))
+          );
+        }));
+    const pollingValid =
+      pollingInput === undefined ||
+      (typeof pollingInput === 'object' &&
+        pollingInput !== null &&
+        Object.entries(pollingInput as Record<string, unknown>).every(([type, value]) => {
+          const polling = value as { enabled?: unknown; intervalMinutes?: unknown } | null;
+          return (
+            isType(type) &&
+            polling &&
+            typeof polling.enabled === 'boolean' &&
+            Number.isFinite(Number(polling.intervalMinutes)) &&
+            Number(polling.intervalMinutes) >= MIN_POLLING_INTERVAL_MINUTES &&
+            Number(polling.intervalMinutes) <= MAX_POLLING_INTERVAL_MINUTES
+          );
+        }));
     if (
       !['source-of-truth', 'last-write-wins', 'field-merge'].includes(conflictStrategy) ||
       !isSystem(sourceOfTruth) ||
-      !objects ||
-      typeof objects !== 'object' ||
-      ['contact', 'company', 'deal'].some((type) => {
-        const object = objects[type];
-        return (
-          !object ||
-          typeof object.enabled !== 'boolean' ||
-          !directions.includes(String(object.direction))
-        );
-      })
+      !objectsValid ||
+      !pollingValid
     ) {
       return res.status(400).json({ error: 'invalid_sync_settings' });
+    }
+    const current = app.syncConfig.get();
+    const objects = { ...current.objects, ...(objectsInput as typeof current.objects | undefined) };
+    const polling = { ...current.polling };
+    if (pollingInput) {
+      for (const [type, value] of Object.entries(pollingInput as Record<string, { enabled: boolean; intervalMinutes: number }>)) {
+        polling[type] = { enabled: Boolean(value.enabled), intervalMinutes: Math.round(Number(value.intervalMinutes)) };
+      }
     }
     const config = await app.syncConfig.update({
       conflictStrategy: conflictStrategy as never,
       sourceOfTruth,
       objects,
+      polling,
     });
     await app.operations?.recordAudit({
       actorId: res.locals.auth?.actorId,
@@ -1056,6 +1197,28 @@ async function main(): Promise<void> {
       },
     });
     res.json(config);
+  });
+  server.post('/api/sync/poll-now', requireRole('operator'), async (req, res) => {
+    const type = req.body?.type ? String(req.body.type) : undefined;
+    if (type && !isType(type)) return res.status(400).json({ error: 'bad_object_type' });
+    await ensureLiveInit();
+    const types = type
+      ? [type]
+      : Object.entries(app.syncConfig.get().objects)
+          .filter(([, value]) => value.enabled)
+          .map(([t]) => t);
+    const summaries = await Promise.all(types.map((t) => app.poller.runOnce(t)));
+    res.json(
+      summaries.reduce(
+        (total, s) => ({
+          at: s.at,
+          changed: total.changed + s.changed,
+          deleted: total.deleted + s.deleted,
+          errors: total.errors + s.errors,
+        }),
+        { at: new Date().toISOString(), changed: 0, deleted: 0, errors: 0 },
+      ),
+    );
   });
   server.post('/api/sync/jobs/:id/replay', requireRole('operator'), async (req, res) => {
     await app.sync.replay(String(req.params.id));
@@ -1134,7 +1297,7 @@ async function main(): Promise<void> {
       return;
     }
     if (axios.isAxiosError(err)) {
-      const vendorMessage = extractVendorErrorMessage(err.response?.data) ?? err.message;
+      const vendorMessage = friendlyErrorMessage(err);
       logger.error(
         { err, requestId, vendorStatus: err.response?.status, vendorBody: err.response?.data },
         'CRM API request failed',
@@ -1149,6 +1312,16 @@ async function main(): Promise<void> {
       res.status(500).json({ error: 'internal_error', requestId });
     }
   });
+
+  app.poller.start(ensureLiveInit);
+  app.alertDigester?.start();
+  for (const signal of ['SIGTERM', 'SIGINT'] as const) {
+    process.on(signal, () => {
+      app.poller.stop();
+      app.alertDigester?.stop();
+      process.exit(0);
+    });
+  }
 
   server.listen(env.PORT, () => {
     logger.info(`crm-sync listening on http://localhost:${env.PORT}/`);
