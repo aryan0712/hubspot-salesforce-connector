@@ -1092,7 +1092,7 @@ async function main(): Promise<void> {
   server.get('/api/sync/jobs', async (req, res) => {
     const limit = Math.min(Number(req.query.limit) || 100, 500);
     const rawStatus = typeof req.query.status === 'string' ? req.query.status : undefined;
-    const statuses = ['queued', 'processing', 'retry', 'completed', 'dead_letter', 'manual_review'];
+    const statuses = ['queued', 'processing', 'retry', 'completed', 'dead_letter', 'manual_review', 'dismissed'];
     if (rawStatus && !statuses.includes(rawStatus)) {
       return res.status(400).json({ error: 'bad_job_status' });
     }
@@ -1226,6 +1226,18 @@ async function main(): Promise<void> {
   });
   server.post('/api/sync/jobs/:id/approve-delete', requireRole('admin'), async (req, res) => {
     await app.sync.approveDelete(String(req.params.id), res.locals.auth?.actorId);
+    res.json({ ok: true });
+  });
+  server.post('/api/sync/jobs/:id/dismiss', requireRole('operator'), async (req, res) => {
+    const id = String(req.params.id);
+    await app.sync.dismiss(id);
+    await app.operations?.recordAudit({
+      actorId: res.locals.auth?.actorId,
+      action: 'sync.job.dismissed',
+      resourceType: 'sync_event',
+      resourceId: id,
+      detail: {},
+    });
     res.json({ ok: true });
   });
   server.get('/api/migrations', async (req, res) => {

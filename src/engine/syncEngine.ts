@@ -64,6 +64,20 @@ export class SyncEngine {
     await this.opts.governance?.completeDeletion(id, actorId);
   }
 
+  /** Gives up on a job permanently (e.g. a genuinely invalid record) -- replaying it would
+   *  never succeed, so it's removed from the "needs attention" queue without retrying. */
+  async dismiss(id: string): Promise<void> {
+    const job = await this.store.get(id);
+    if (!job || !['dead_letter', 'manual_review', 'retry'].includes(job.status)) {
+      throw new Error('job is not in a dismissable state');
+    }
+    await this.store.dismiss(id);
+    this.opts.activity?.record({
+      kind: 'info',
+      message: `${job.event.system} ${job.event.type} sync dismissed: ${job.lastError ?? 'no error detail'}`,
+    });
+  }
+
   async list(limit?: number, status?: SyncJobStatus): Promise<SyncJob[]> {
     return this.store.list(limit, status);
   }

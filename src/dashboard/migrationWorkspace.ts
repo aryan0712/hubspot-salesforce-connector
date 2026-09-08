@@ -332,13 +332,14 @@ export function migrationWorkspaceHtml(): string {
         <div class="migrate-section active" id="migrate-builder">
         <header class="card builder-header">
           <div class="builder-heading">
-            <div class="builder-kicker">Guided migration</div>
-            <h2>Salesforce ⇄ HubSpot migration builder</h2>
+            <div class="builder-kicker" id="builder-kicker">Guided migration</div>
+            <h2 id="builder-title">Salesforce ⇄ HubSpot migration builder</h2>
             <div class="draft-state" id="draft-state"><span id="autosave-status">New draft · changes save automatically</span></div>
           </div>
-          <div class="builder-header-actions">
+          <div class="builder-header-actions" id="builder-header-actions">
             <button class="secondary" data-migrate-open="plans">Open plans</button>
             <button class="secondary" id="latest-run-shortcut" data-migrate-open="runs">View run history</button>
+            <button class="secondary" id="back-to-sync" hidden>← Back to Sync</button>
           </div>
           <details class="builder-summary">
             <summary>Plan summary</summary>
@@ -386,7 +387,7 @@ export function migrationWorkspaceHtml(): string {
 
             <section class="workspace-panel" id="workspace-objects">
               <div class="card step-card">
-                <div class="step-intro"><div class="step-intro-row"><div><div class="step-eyebrow">Step 2 of 6</div><h2>Choose the objects to migrate</h2><p>Select supported source objects, then inspect their fields before continuing.</p></div><span class="pill" id="object-selection-count">3 selected</span></div></div>
+                <div class="step-intro"><div class="step-intro-row"><div><div class="step-eyebrow" id="objects-step-eyebrow">Step 2 of 6</div><h2 id="objects-step-title">Choose the objects to migrate</h2><p>Select supported source objects, then inspect their fields before continuing.</p></div><span class="pill" id="object-selection-count">3 selected</span></div></div>
                 <div class="panel-toolbar">
                   <input id="catalog-search" type="search" placeholder="Search objects or API names">
                   <select id="catalog-filter"><option value="supported" selected>Supported</option><option value="selected">Selected</option><option value="all">All objects</option><option value="unsupported">Not supported yet</option></select>
@@ -399,7 +400,7 @@ export function migrationWorkspaceHtml(): string {
 
             <section class="workspace-panel" id="workspace-fields">
               <div class="card step-card">
-                <div class="step-intro"><div class="step-intro-row"><div><div class="step-eyebrow">Step 3 of 6</div><h2>Map and transform fields</h2><p>Work through every selected object. Your object queue shows what is complete, what needs review, and what has not been started.</p></div><div class="field-progress"><b id="field-progress-count">0 of 0 objects complete</b><span id="field-progress-detail">Choose an object to begin.</span></div></div></div>
+                <div class="step-intro"><div class="step-intro-row"><div><div class="step-eyebrow" id="fields-step-eyebrow">Step 3 of 6</div><h2 id="fields-step-title">Map and transform fields</h2><p>Work through every selected object. Your object queue shows what is complete, what needs review, and what has not been started.</p></div><div class="field-progress"><b id="field-progress-count">0 of 0 objects complete</b><span id="field-progress-detail">Choose an object to begin.</span></div></div></div>
                 <div class="field-workspace-shell">
                   <aside class="mapping-object-sidebar" aria-label="Selected objects">
                     <div class="mapping-queue-tools"><input id="field-object-search" type="search" placeholder="Find an object"><select id="field-object-filter"><option value="all">All selected</option><option value="review">Needs mapping</option><option value="complete">Complete</option></select></div>

@@ -54,6 +54,10 @@ export function operationsHtml(): string {
     .object-poll-row select{width:auto}
     .object-poll-row .muted{color:var(--muted)}
     .object-poll-row .muted.error{color:var(--red)}
+    .row-actions{display:flex;gap:6px;flex-wrap:nowrap;justify-content:flex-end}
+    .row-actions button{padding:7px 11px;font-size:12px;white-space:nowrap}
+    td:has(.row-select),th:has(#conflicts-select-all),th:has(#jobs-select-all){text-align:center}
+    .row-select,#conflicts-select-all,#jobs-select-all{width:15px;height:15px;min-height:auto;margin:0}
     .webhook-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
     .webhook-card{padding:16px;border:1px solid var(--border);border-radius:9px;background:#fafcfd}
     .webhook-card-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px}
@@ -118,8 +122,10 @@ export function operationsHtml(): string {
         </div></div>
       </div>
       <div class="card" style="margin-top:16px"><div class="toolbar jobs-head"><h2 style="margin:0 auto 0 0">Conflicts &amp; manual review</h2>
+        <button class="secondary" id="conflicts-replay-selected" type="button" hidden>Replay selected</button>
+        <button class="danger" id="conflicts-delete-selected" type="button" hidden>Delete selected</button>
         <button class="secondary" id="refresh-conflicts">Refresh queue</button></div>
-        <div class="scroll"><table><thead><tr><th>Status</th><th>Event</th><th>Attempts</th><th>Reason</th><th></th></tr></thead><tbody id="conflicts"></tbody></table></div>
+        <div class="scroll"><table><thead><tr><th style="width:36px"><input type="checkbox" id="conflicts-select-all"></th><th>Status</th><th>Event</th><th>Attempts</th><th>Reason</th><th></th></tr></thead><tbody id="conflicts"></tbody></table></div>
       </div>
     </section>
 
@@ -128,8 +134,10 @@ export function operationsHtml(): string {
         <div class="subtabs"><button class="active" data-activity-tab="jobs">Sync jobs</button><button data-activity-tab="audit">Audit log</button></div>
         <div class="activity-panel active" id="activity-jobs">
           <div class="toolbar jobs-head"><h2 style="margin:0 auto 0 0">Durable sync journal</h2>
-            <select id="job-filter"><option value="">All statuses</option><option>queued</option><option>retry</option><option>dead_letter</option><option>manual_review</option><option>completed</option></select></div>
-          <div class="scroll"><table><thead><tr><th>Status</th><th>Event</th><th>Attempts</th><th>Error</th><th></th></tr></thead><tbody id="jobs"></tbody></table></div>
+            <button class="secondary" id="jobs-replay-selected" type="button" hidden>Replay selected</button>
+            <button class="danger" id="jobs-delete-selected" type="button" hidden>Delete selected</button>
+            <select id="job-filter"><option value="">All statuses</option><option>queued</option><option>retry</option><option>dead_letter</option><option>manual_review</option><option>completed</option><option>dismissed</option></select></div>
+          <div class="scroll"><table><thead><tr><th style="width:36px"><input type="checkbox" id="jobs-select-all"></th><th>Status</th><th>Event</th><th>Attempts</th><th>Error</th><th></th></tr></thead><tbody id="jobs"></tbody></table></div>
         </div>
         <div class="activity-panel" id="activity-audit"><div id="audit" class="scroll card-body"></div></div>
       </div>
@@ -163,21 +171,46 @@ export function operationsHtml(): string {
       activity:['Activity','Review sync jobs and the operator audit trail in one timeline.'],
       settings:['Settings','Manage Copilot, workspace access, usage, and plan details.']
     };
+    // The Objects/Fields steps of the migration builder are shared configuration -- the same
+    // object registry and field-mapping tables Sync reads from -- so "Map fields"/"Add object
+    // to sync" reuse this screen rather than duplicating it. But landing on a page branded
+    // "Migrate" after clicking something in Sync is exactly the confusion this fixes: swap the
+    // framing to a neutral "sync setup" mode instead of pretending nothing changed.
+    let workspaceMode='migration';
+    function applyWorkspaceMode(){
+      const sync=workspaceMode==='sync';
+      if(sync){$('page-title').textContent='Sync object setup';$('page-subtitle').textContent='Register or map fields for an object used by Sync.'}
+      $('builder-kicker').textContent=sync?'Sync setup':'Guided migration';
+      $('builder-title').textContent=sync?'Configure an object for Sync':'Salesforce ⇄ HubSpot migration builder';
+      document.querySelector('.migrate-tabs').hidden=sync;
+      document.querySelector('.builder-summary').hidden=sync;
+      $('back-to-sync').hidden=!sync;
+      document.querySelectorAll('[data-migrate-open]').forEach(btn=>btn.hidden=sync);
+      document.querySelectorAll('.workspace-step').forEach(btn=>{btn.hidden=sync&&!['objects','fields'].includes(btn.dataset.step)});
+      const stepNumbers={objects:sync?1:2,fields:sync?2:3};
+      Object.entries(stepNumbers).forEach(([step,n])=>{const el=document.querySelector('.workspace-step[data-step="'+step+'"] .step-number');if(el)el.textContent=n});
+      document.querySelectorAll('[data-go-step="scope"],[data-go-step="values"],[data-go-step="validate"],[data-go-step="preview"]').forEach(btn=>btn.hidden=sync);
+      $('objects-step-eyebrow').hidden=sync;$('objects-step-title').textContent=sync?'Choose or register the object':'Choose the objects to migrate';
+      $('fields-step-eyebrow').hidden=sync;$('fields-step-title').textContent=sync?'Map fields for this object':'Map and transform fields';
+    }
+    $('back-to-sync').onclick=()=>{history.replaceState(null,'','#sync');selectView('sync')};
     function selectView(view){
       if(!viewMeta[view])view='migration';
       document.querySelectorAll('.view').forEach(x=>x.classList.toggle('active',x.id==='view-'+view));
       document.querySelectorAll('.app-nav a').forEach(x=>x.classList.toggle('active',x.getAttribute('href')==='/ops#'+view));
+      if(view!=='migration')workspaceMode='migration';
       $('page-title').textContent=viewMeta[view][0];$('page-subtitle').textContent=viewMeta[view][1];
+      if(view==='migration')applyWorkspaceMode();
       if(view==='sync')loadSyncWorkspace();if(view==='activity'){loadJobs();loadAudit()}if(view==='settings')loadSettingsWorkspace();
     }
-    document.querySelectorAll('.app-nav a[href^="/ops#"]').forEach(a=>a.onclick=e=>{e.preventDefault();const view=a.getAttribute('href').split('#')[1];history.replaceState(null,'','#'+view);selectView(view)});
+    document.querySelectorAll('.app-nav a[href^="/ops#"]').forEach(a=>a.onclick=e=>{e.preventDefault();workspaceMode='migration';const view=a.getAttribute('href').split('#')[1];history.replaceState(null,'','#'+view);selectView(view)});
     window.addEventListener('hashchange',()=>selectView(location.hash.slice(1)));
     selectView(location.hash.slice(1));
     function metric(label,value,cls=''){return '<div class="metric"><span>'+esc(label)+'</span><b class="'+cls+'">'+esc(value)+'</b></div>'}
     async function loadMetrics(){const [s,q]=await Promise.all([api('/api/status'),api('/api/sync/stats')]);$('metrics').innerHTML=
       metric('Ready',s.ready?'Yes':'No',s.ready?'create':'error')+metric('Queued',q.queued)+metric('Retrying',q.retry,'retry')+
       metric('Manual review',q.manualReview,'ambiguous')+metric('Dead letter',q.deadLetter,'dead_letter')+metric('Synced',s.stats.synced)}
-    const migrationState={plan:null,dirty:true,catalog:[],targets:[],selected:new Set(),selectionInitialized:false,selectedRow:null,metadata:new Map(),mapping:null,fieldLoadToken:0,valueLoadToken:0,preflight:null,copilot:null,preview:null,canaryPreview:null,canaryVerified:false,currentStep:'scope',visited:new Set(['scope']),transformRow:null,savedPlans:[],runs:[]};
+    const migrationState={plan:null,dirty:true,catalog:[],catalogError:null,targets:[],selected:new Set(),selectionInitialized:false,selectedRow:null,metadata:new Map(),mapping:null,fieldLoadToken:0,valueLoadToken:0,preflight:null,copilot:null,preview:null,canaryPreview:null,canaryVerified:false,currentStep:'scope',visited:new Set(['scope']),transformRow:null,savedPlans:[],runs:[]};
     const migrationSteps=['scope','objects','fields','values','validate','preview'];
     const transformIds=['identity','domain','lowercase','trim','number','boolean','yes-no','true-false','iso-date','epoch-millis','phone'];
     const transformMeta={
@@ -221,10 +254,14 @@ export function operationsHtml(): string {
     document.querySelectorAll('[data-migrate-open]').forEach(button=>button.onclick=()=>selectMigrateTab(button.dataset.migrateOpen));
 
     async function loadCatalog(){const source=$('mig-from').value;$('object-rows').innerHTML='<tr><td colspan="6" class="empty">Discovering CRM objects…</td></tr>';
-      try{const result=await api('/api/object-catalog?from='+encodeURIComponent(source));migrationState.catalog=result.rows;migrationState.targets=result.targets||[];
+      try{const result=await api('/api/object-catalog?from='+encodeURIComponent(source));migrationState.catalog=result.rows;migrationState.catalogError=null;migrationState.targets=result.targets||[];
         if(!migrationState.selectionInitialized){migrationState.selected=new Set(result.rows.filter(row=>row.registered).map(row=>row.canonicalType));migrationState.selectionInitialized=true}
         renderCatalog();refreshObjectSelectors();updateMigrationSummary()}
-      catch(e){$('object-rows').innerHTML='<tr><td colspan="6" class="empty">'+esc(e.message)+'</td></tr>'}}
+      // Kept separate from "filter matched nothing" (renderCatalog's own empty state) so a
+      // real fetch failure -- most commonly an expired CRM connection -- stays visible and
+      // actionable instead of silently turning into a misleading "no objects match this view"
+      // the next time renderCatalog() runs (e.g. when the filter dropdown changes).
+      catch(e){migrationState.catalog=[];migrationState.catalogError={message:e.message,actionUrl:e.actionUrl};renderCatalog()}}
     // Shared by the catalog checkbox and the manual target picker: registers row.source paired
     // with whatever row.target currently is (auto-matched or manually chosen) as a canonical object.
     async function registerCatalogMapping(row){const from=$('mig-from').value,to=from==='salesforce'?'hubspot':'salesforce',body={label:row.source.label};body[from+'Object']=row.source.id;if(row.target)body[to+'Object']=row.target.id;
@@ -234,7 +271,9 @@ export function operationsHtml(): string {
       try{row.target=target;row.supported=true;await registerCatalogMapping(row);migrationState.selected.add(row.canonicalType);markPlanDirty();renderCatalog();refreshObjectSelectors();queuePlanAutosave();await selectCatalogRow(row)}
       catch(err){setDraftStatus(err.message,'error')}
       finally{const btn=$('manual-target-confirm');if(btn){btn.disabled=false;btn.textContent='Map to this object'}}}
-    function renderCatalog(){const query=$('catalog-search').value.trim().toLowerCase(),filter=$('catalog-filter').value;
+    function renderCatalog(){if(migrationState.catalogError){const err=migrationState.catalogError;
+        $('object-rows').innerHTML='<tr><td colspan="6" class="empty">'+esc(err.message)+(err.actionUrl?' &middot; <a href="'+esc(err.actionUrl)+'">Reconnect</a>':'')+'</td></tr>';return}
+      const query=$('catalog-search').value.trim().toLowerCase(),filter=$('catalog-filter').value;
       const visible=migrationState.catalog.filter(row=>{const selected=row.canonicalType&&migrationState.selected.has(row.canonicalType);const text=(row.source.label+' '+row.source.id+' '+(row.target?.label||'')).toLowerCase();
         return (!query||text.includes(query))&&(filter==='all'||filter==='supported'&&row.supported||filter==='unsupported'&&!row.supported||filter==='selected'&&selected)});
       const shown=visible.slice(0,200);$('object-rows').innerHTML=shown.length?shown.map(row=>{const selected=row.canonicalType&&migrationState.selected.has(row.canonicalType);const type=row.source.custom?'Custom':'Standard';
@@ -541,13 +580,41 @@ export function operationsHtml(): string {
         await Promise.all([loadMetrics(),loadSyncSettings()]);
       }catch(e){statusEl.className='muted error';statusEl.textContent=e.message}finally{btn.disabled=false}
     }
-    function goMapFields(type){history.replaceState(null,'','#migration');selectView('migration');selectMigrationStep('fields');openFieldObject(type)}
-    $('add-sync-object').onclick=()=>{history.replaceState(null,'','#migration');selectView('migration');selectMigrationStep('objects')};
-    async function loadConflicts(){const r=await api('/api/sync/jobs?limit=200');const entries=r.entries.filter(job=>job.status==='manual_review'||job.status==='dead_letter');$('conflicts').innerHTML=entries.length?entries.map(j=>'<tr><td><span class="pill '+j.status+'">'+esc(j.status)+'</span></td><td>'+esc(j.event.system+' '+j.event.type+' '+j.event.changeType)+'</td><td>'+j.attempts+'</td><td>'+esc(j.lastError||'Operator review required')+'</td><td>'+(j.status==='manual_review'&&j.event.changeType==='deleted'?'<button class="danger" onclick="approveDelete(\\''+j.id+'\\')">Approve delete</button>':'<button onclick="replay(\\''+j.id+'\\')">Replay</button>')+'</td></tr>').join(''):'<tr><td colspan="5" class="empty">No conflicts or manual reviews waiting.</td></tr>'}
+    function goMapFields(type){workspaceMode='sync';history.replaceState(null,'','#migration');selectView('migration');selectMigrationStep('fields');openFieldObject(type)}
+    $('add-sync-object').onclick=()=>{workspaceMode='sync';history.replaceState(null,'','#migration');selectView('migration');selectMigrationStep('objects')};
+    function jobRowCells(j,selectable){const needsAttention=j.status==='dead_letter'||j.status==='manual_review'||j.status==='retry';
+      const select='<td>'+(selectable&&needsAttention?'<input type="checkbox" class="row-select" value="'+j.id+'">':'')+'</td>';
+      const primary=j.status==='manual_review'&&j.event.changeType==='deleted'?'<button class="danger" onclick="approveDelete(\\''+j.id+'\\')">Approve delete</button>':needsAttention?'<button onclick="replay(\\''+j.id+'\\')">Replay</button>':'';
+      const dismiss=needsAttention?'<button class="danger" onclick="dismissJob(\\''+j.id+'\\')" title="Give up on this permanently -- it will not be retried">Delete</button>':'';
+      const actions=(primary||dismiss)?'<div class="row-actions">'+primary+dismiss+'</div>':'';
+      return {select,actions}}
+    async function loadConflicts(){const r=await api('/api/sync/jobs?limit=200');const entries=r.entries.filter(job=>job.status==='manual_review'||job.status==='dead_letter');
+      $('conflicts').innerHTML=entries.length?entries.map(j=>{const c=jobRowCells(j,true);return '<tr>'+c.select+'<td><span class="pill '+j.status+'">'+esc(j.status)+'</span></td><td>'+esc(j.event.system+' '+j.event.type+' '+j.event.changeType)+'</td><td>'+j.attempts+'</td><td>'+esc(j.lastError||'Operator review required')+'</td><td>'+c.actions+'</td></tr>'}).join(''):'<tr><td colspan="6" class="empty">No conflicts or manual reviews waiting.</td></tr>';
+      resetBulkBar('conflicts')}
     $('refresh-conflicts').onclick=loadConflicts;
 
-    async function loadJobs(){const f=$('job-filter').value;const r=await api('/api/sync/jobs?limit=200'+(f?'&status='+encodeURIComponent(f):''));$('jobs').innerHTML=r.entries.length?r.entries.map(j=>'<tr><td><span class="pill '+j.status+'">'+esc(j.status)+'</span></td><td>'+esc(j.event.system+' '+j.event.type+' '+j.event.changeType)+'<br><span class="muted">'+esc(j.event.sourceId)+'</span></td><td>'+j.attempts+'</td><td>'+esc(j.lastError||'—')+'</td><td>'+(j.status==='manual_review'&&j.event.changeType==='deleted'?'<button class="danger" onclick="approveDelete(\\''+j.id+'\\')">Approve delete</button>':j.status==='dead_letter'||j.status==='manual_review'?'<button onclick="replay(\\''+j.id+'\\')">Replay</button>':'')+'</td></tr>').join(''):'<tr><td colspan="5" class="empty">No jobs</td></tr>'}
-    async function replay(id){await api('/api/sync/jobs/'+id+'/replay',{method:'POST'});await Promise.all([loadJobs(),loadMetrics(),loadConflicts()])}async function approveDelete(id){if(!confirm('Delete/archive the linked record in the other CRM?'))return;await api('/api/sync/jobs/'+id+'/approve-delete',{method:'POST'});await Promise.all([loadJobs(),loadMetrics(),loadConflicts()])}window.replay=replay;window.approveDelete=approveDelete;$('job-filter').onchange=loadJobs;
+    async function loadJobs(){const f=$('job-filter').value;const r=await api('/api/sync/jobs?limit=200'+(f?'&status='+encodeURIComponent(f):''));
+      $('jobs').innerHTML=r.entries.length?r.entries.map(j=>{const c=jobRowCells(j,true);return '<tr>'+c.select+'<td><span class="pill '+j.status+'">'+esc(j.status)+'</span></td><td>'+esc(j.event.system+' '+j.event.type+' '+j.event.changeType)+'<br><span class="muted">'+esc(j.event.sourceId)+'</span></td><td>'+j.attempts+'</td><td>'+esc(j.lastError||'—')+'</td><td>'+c.actions+'</td></tr>'}).join(''):'<tr><td colspan="6" class="empty">No jobs</td></tr>';
+      resetBulkBar('jobs')}
+    async function replay(id){await api('/api/sync/jobs/'+id+'/replay',{method:'POST'});await Promise.all([loadJobs(),loadMetrics(),loadConflicts()])}
+    async function approveDelete(id){if(!confirm('Delete/archive the linked record in the other CRM?'))return;await api('/api/sync/jobs/'+id+'/approve-delete',{method:'POST'});await Promise.all([loadJobs(),loadMetrics(),loadConflicts()])}
+    async function dismissJob(id){if(!confirm('Give up on this permanently? It will not be retried, and stays visible in Activity for the record.'))return;await api('/api/sync/jobs/'+id+'/dismiss',{method:'POST'});await Promise.all([loadJobs(),loadMetrics(),loadConflicts()])}
+    window.replay=replay;window.approveDelete=approveDelete;window.dismissJob=dismissJob;$('job-filter').onchange=loadJobs;
+
+    // Bulk selection for both the Conflicts card and the Activity tab's Sync jobs table --
+    // one row checkbox per selectable row, a header "select all", and Replay/Delete selected
+    // buttons that only appear once something is checked.
+    const bulkTables={conflicts:{selectAll:'conflicts-select-all',replayBtn:'conflicts-replay-selected',deleteBtn:'conflicts-delete-selected'},jobs:{selectAll:'jobs-select-all',replayBtn:'jobs-replay-selected',deleteBtn:'jobs-delete-selected'}};
+    function selectedJobIds(tbodyId){return [...document.querySelectorAll('#'+tbodyId+' .row-select:checked')].map(el=>el.value)}
+    function resetBulkBar(tbodyId){$(bulkTables[tbodyId].selectAll).checked=false;updateBulkBar(tbodyId)}
+    function updateBulkBar(tbodyId){const cfg=bulkTables[tbodyId],n=selectedJobIds(tbodyId).length,total=document.querySelectorAll('#'+tbodyId+' .row-select').length;$(cfg.replayBtn).hidden=n===0;$(cfg.deleteBtn).hidden=n===0;$(cfg.replayBtn).textContent='Replay selected ('+n+')';$(cfg.deleteBtn).textContent='Delete selected ('+n+')';$(cfg.selectAll).checked=total>0&&n===total;$(cfg.selectAll).indeterminate=n>0&&n<total}
+    async function bulkRefresh(){await Promise.all([loadJobs(),loadMetrics(),loadConflicts()])}
+    Object.entries(bulkTables).forEach(([tbodyId,cfg])=>{
+      document.getElementById(tbodyId).addEventListener('change',e=>{if(e.target.classList.contains('row-select'))updateBulkBar(tbodyId)});
+      $(cfg.selectAll).onchange=()=>{document.querySelectorAll('#'+tbodyId+' .row-select').forEach(el=>el.checked=$(cfg.selectAll).checked);updateBulkBar(tbodyId)};
+      $(cfg.replayBtn).onclick=async()=>{const ids=selectedJobIds(tbodyId);if(!ids.length)return;await Promise.allSettled(ids.map(id=>api('/api/sync/jobs/'+id+'/replay',{method:'POST'})));await bulkRefresh()};
+      $(cfg.deleteBtn).onclick=async()=>{const ids=selectedJobIds(tbodyId);if(!ids.length)return;if(!confirm('Give up on '+ids.length+' job'+(ids.length===1?'':'s')+' permanently? '+(ids.length===1?'It':'They')+' will not be retried.'))return;await Promise.allSettled(ids.map(id=>api('/api/sync/jobs/'+id+'/dismiss',{method:'POST'})));await bulkRefresh()};
+    });
     document.querySelectorAll('[data-activity-tab]').forEach(button=>button.onclick=()=>{document.querySelectorAll('[data-activity-tab]').forEach(item=>item.classList.toggle('active',item===button));document.querySelectorAll('.activity-panel').forEach(panel=>panel.classList.toggle('active',panel.id==='activity-'+button.dataset.activityTab))});
     async function loadAudit(){const a=await api('/api/audit?limit=100');$('audit').innerHTML=a.entries.length?a.entries.map(x=>'<div class="audit-entry"><b>'+esc(x.action)+'</b><br><span class="muted">'+esc(x.detail.message||x.resourceType)+' · '+esc(new Date(x.createdAt).toLocaleString())+'</span></div>').join(''):'<div class="empty">No audit entries</div>'}
 
