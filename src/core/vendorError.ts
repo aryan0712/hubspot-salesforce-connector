@@ -52,6 +52,19 @@ export function extractDuplicateValueConflict(err: unknown): DuplicateValueConfl
 }
 
 /**
+ * Thrown by Reconciler BEFORE it ever calls a connector's upsert(), when the record about to
+ * be written is missing a value for one of the target's required (and writable) fields. Vendor
+ * APIs reject this too, but as a generic 400 indistinguishable from any other validation
+ * failure -- catching it here first makes it unmistakable and skips the wasted network call.
+ */
+export class MissingRequiredFieldError extends Error {
+  constructor(readonly fieldLabels: string[]) {
+    super(`missing required value for: ${fieldLabels.join(', ')}`);
+    this.name = 'MissingRequiredFieldError';
+  }
+}
+
+/**
  * Turns a raw CRM error into plain English an operator (not a developer) can act on without
  * digging further. Two things the CRMs' own error bodies are bad at on their own:
  *  - HubSpot's multi-field validation response puts a JSON-dump of every issue in `message`
@@ -63,6 +76,9 @@ export function extractDuplicateValueConflict(err: unknown): DuplicateValueConfl
  *    own wording, then to a plain explanation of the HTTP status, when nothing matches.
  */
 export function friendlyErrorMessage(err: unknown, targetSystemLabel = 'the target system'): string {
+  if (err instanceof MissingRequiredFieldError) {
+    return `Skipped: missing required value for ${err.fieldLabels.join(', ')} in ${targetSystemLabel}. Fill in ${err.fieldLabels.length > 1 ? 'these fields' : 'this field'} at the source and replay, or exclude the field from this object's mapping.`;
+  }
   if (!axios.isAxiosError(err)) {
     return err instanceof Error ? err.message : String(err);
   }

@@ -1,6 +1,7 @@
 import axios, { type AxiosInstance } from 'axios';
 import crypto from 'node:crypto';
-import type { CRMConnector, ConnectorAssociation } from '../../core/connector.js';
+import type { CRMConnector, ConnectorAssociation, QueryCondition } from '../../core/connector.js';
+import type { SyncCondition } from '../../core/syncConfig.js';
 import type {
   CanonicalRecord,
   CanonicalType,
@@ -20,6 +21,7 @@ import {
 } from '../../core/mapping.js';
 import {
   canonicalObjectFor,
+  canonicalObjectsFor,
   listCanonicalObjects,
   nativeObjectName,
   requireNativeObjectName,
@@ -96,19 +98,25 @@ export class HubSpotConnector implements CRMConnector {
     logger.info('HubSpot connector ready');
   }
 
-  async list(type: CanonicalType, cursor?: string, modifiedSince?: string): Promise<RecordPage> {
+  async list(
+    type: CanonicalType,
+    cursor?: string,
+    modifiedSince?: string,
+    condition?: QueryCondition,
+  ): Promise<RecordPage> {
     const object = requireNativeObjectName('hubspot', type);
     const properties = nativeFields('hubspot', type);
-    if (modifiedSince) {
+    const conditionFilters = (condition?.conditions ?? []).map(compileConditionFilter);
+    if (modifiedSince || conditionFilters.length) {
       await this.searchLimiter.acquire();
+      const filters = [
+        ...(modifiedSince
+          ? [{ propertyName: 'hs_lastmodifieddate', operator: 'GT', value: Date.parse(modifiedSince) }]
+          : []),
+        ...conditionFilters,
+      ];
       const { data } = await this.http.post(`/crm/v3/objects/${object}/search`, {
-        filterGroups: [
-          {
-            filters: [
-              { propertyName: 'hs_lastmodifieddate', operator: 'GT', value: Date.parse(modifiedSince) },
-            ],
-          },
-        ],
+        filterGroups: [{ filters }],
         sorts: [{ propertyName: 'hs_lastmodifieddate', direction: 'ASCENDING' }],
         properties,
         limit: 100,
@@ -164,6 +172,23 @@ export class HubSpotConnector implements CRMConnector {
         params: { properties: properties.join(',') },
       });
       return this.canonicalize(type, data as HsObject);
+    } catch (err: unknown) {
+      if (axios.isAxiosError(err) && err.response?.status === 404) return null;
+      throw err;
+    }
+  }
+
+  /** Raw native properties by native object name, bypassing canonical mapping -- see CRMConnector. */
+  async readNativeFields(
+    nativeObjectName: string,
+    sourceId: string,
+    fields: string[],
+  ): Promise<Record<string, unknown> | null> {
+    try {
+      const { data } = await this.http.get(`/crm/v3/objects/${nativeObjectName}/${sourceId}`, {
+        params: { properties: fields.join(',') },
+      });
+      return (data as HsObject).properties ?? {};
     } catch (err: unknown) {
       if (axios.isAxiosError(err) && err.response?.status === 404) return null;
       throw err;
@@ -341,7 +366,11 @@ export class HubSpotConnector implements CRMConnector {
    * HubSpot webhooks POST an array of events and sign with X-HubSpot-Signature-v3
    * (HMAC-SHA256 over method + uri + body + timestamp, base64). We validate before trusting.
    */
-  parseWebhook(headers: Record<string, string | string[] | undefined>, rawBody: Buffer): ChangeEvent[] {
+  async parseWebhook(
+    headers: Record<string, string | string[] | undefined>,
+    rawBody: Buffer,
+    resolveType?: (nativeObjectId: string, sourceId: string) => Promise<CanonicalType | undefined>,
+  ): Promise<ChangeEvent[]> {
     const secret = this.appSecret || env.HUBSPOT_APP_SECRET;
     if (!secret && !env.ALLOW_UNSIGNED_WEBHOOKS) {
       throw new Error('HubSpot webhook secret unavailable');
@@ -354,20 +383,31 @@ export class HubSpotConnector implements CRMConnector {
       const expected = crypto.createHmac('sha256', secret).update(base).digest('base64');
       if (!safeEqual(signature, expected)) throw new Error('HubSpot webhook signature mismatch');
     }
-    const events = JSON.parse(rawBody.toString('utf8')) as HsWebhookEvent[];
-    return events
-      .map((e) => this.mapEvent(e))
-      .filter((e): e is ChangeEvent => e !== null);
+    const rawEvents = JSON.parse(rawBody.toString('utf8')) as HsWebhookEvent[];
+    const events: ChangeEvent[] = [];
+    for (const e of rawEvents) {
+      const mapped = await this.mapEvent(e, resolveType);
+      if (mapped) events.push(mapped);
+    }
+    return events;
   }
 
   // ----------------- internals -----------------
 
-  private mapEvent(e: HsWebhookEvent): ChangeEvent | null {
+  private async mapEvent(
+    e: HsWebhookEvent,
+    resolveType?: (nativeObjectId: string, sourceId: string) => Promise<CanonicalType | undefined>,
+  ): Promise<ChangeEvent | null> {
     // Resolve the native object name from the numeric objectTypeId (portal-specific for custom
     // objects, constant for standard ones) via the cache warmed in init()/listObjects(), then
     // map that to a canonical object through the registry — no hardcoded object list here.
     const objectName = this.objectTypeIds.get(e.objectTypeId ?? '');
-    const type = objectName ? canonicalObjectFor('hubspot', objectName) : undefined;
+    if (!objectName) return null;
+    const candidates = canonicalObjectsFor('hubspot', objectName);
+    const type =
+      candidates.length <= 1
+        ? candidates[0]?.canonicalObject
+        : await resolveType?.(objectName, String(e.objectId));
     if (!type) return null;
     const changeType = e.subscriptionType?.endsWith('creation')
       ? 'created'
@@ -440,6 +480,30 @@ interface HsSchema {
   objectTypeId?: string;
   fullyQualifiedName?: string;
   labels?: { singular?: string; plural?: string };
+}
+
+/** One structured condition row -> a single HubSpot Search API filter. */
+function compileConditionFilter(
+  condition: SyncCondition,
+): { propertyName: string; operator: string; value?: unknown } {
+  switch (condition.operator) {
+    case 'is_null':
+      return { propertyName: condition.field, operator: 'NOT_HAS_PROPERTY' };
+    case 'is_not_null':
+      return { propertyName: condition.field, operator: 'HAS_PROPERTY' };
+    case 'eq':
+      return { propertyName: condition.field, operator: 'EQ', value: condition.value };
+    case 'ne':
+      return { propertyName: condition.field, operator: 'NEQ', value: condition.value };
+    case 'gt':
+      return { propertyName: condition.field, operator: 'GT', value: condition.value };
+    case 'lt':
+      return { propertyName: condition.field, operator: 'LT', value: condition.value };
+    case 'contains':
+      return { propertyName: condition.field, operator: 'CONTAINS_TOKEN', value: condition.value };
+    default:
+      return { propertyName: condition.field, operator: 'HAS_PROPERTY' };
+  }
 }
 
 function safeEqual(a: string, b: string): boolean {

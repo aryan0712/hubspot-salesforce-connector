@@ -10,12 +10,20 @@ import type {
   SystemId,
   UpsertResult,
 } from './types.js';
+import type { SyncCondition } from './syncConfig.js';
 
 export interface ConnectorAssociation {
   toType: CanonicalType;
   toId: string;
   kind: string;
   label?: string;
+}
+
+/** Which native records are eligible for sync, scoped to one system's native schema. */
+export interface QueryCondition {
+  conditions?: SyncCondition[];
+  /** Salesforce-only advanced raw SOQL WHERE fragment; ignored by connectors without one. */
+  rawCondition?: string;
 }
 
 /**
@@ -37,10 +45,21 @@ export interface CRMConnector {
    * Stream every record of a type, page by page (for migration / initial backfill).
    * @param modifiedSince  when set, restricts to records changed at/after this ISO timestamp
    *   (used for incremental polling instead of a full scan).
+   * @param condition  optional sync-condition filter, applied at the query itself.
    */
-  list(type: CanonicalType, cursor?: string, modifiedSince?: string): Promise<RecordPage>;
+  list(
+    type: CanonicalType,
+    cursor?: string,
+    modifiedSince?: string,
+    condition?: QueryCondition,
+  ): Promise<RecordPage>;
 
-  /** Native ids removed/archived at or after `since` (ISO timestamp), for deletion polling. */
+  /**
+   * Native ids removed/archived at or after `since` (ISO timestamp), for deletion polling.
+   * A deleted record's field values are gone, so this can't be condition-filtered at the
+   * source; when a native object backs more than one canonical object, the caller
+   * disambiguates a deleted id via the id map instead (see engine/syncPoller.ts).
+   */
   listDeletedSince(
     type: CanonicalType,
     since: string,
@@ -57,6 +76,18 @@ export interface CRMConnector {
 
   /** Discover native fields for Mapping Studio and preflight validation. */
   describe(type: CanonicalType): Promise<SchemaField[]>;
+
+  /**
+   * Read a handful of raw native field values by native object name + id, bypassing canonical
+   * mapping entirely. Used only to disambiguate which of several canonical objects a native
+   * object backs (see engine/typeResolver.ts) -- at that point the canonical `type` isn't known
+   * yet, so `read()` (which requires it) can't be used. Null if the record no longer exists.
+   */
+  readNativeFields(
+    nativeObjectName: string,
+    sourceId: string,
+    fields: string[],
+  ): Promise<Record<string, unknown> | null>;
 
   /** Discover the broader native object catalog for migration planning. */
   listObjects(): Promise<CRMObjectDescriptor[]>;
@@ -86,6 +117,17 @@ export interface CRMConnector {
   /**
    * Parse & verify a raw inbound webhook request into normalized ChangeEvents.
    * Returns [] if the payload is valid but irrelevant; throws on signature failure.
+   *
+   * `resolveType` is consulted only when a native object is ambiguous (registered against
+   * more than one canonical object) -- the connector itself only knows the single-match case.
+   * The caller (server.ts) supplies it bound to a live syncConfig + connector, keeping
+   * connectors themselves free of a SyncConfig dependency. Omitted in tests that don't
+   * exercise the shared-native-object case; ambiguous events are then dropped with a warning
+   * rather than guessed at.
    */
-  parseWebhook(headers: Record<string, string | string[] | undefined>, rawBody: Buffer): ChangeEvent[];
+  parseWebhook(
+    headers: Record<string, string | string[] | undefined>,
+    rawBody: Buffer,
+    resolveType?: (nativeObjectId: string, sourceId: string) => Promise<CanonicalType | undefined>,
+  ): Promise<ChangeEvent[]>;
 }

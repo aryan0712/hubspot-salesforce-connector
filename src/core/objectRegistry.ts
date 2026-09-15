@@ -41,12 +41,25 @@ export function requireNativeObjectName(system: SystemId, type: CanonicalType): 
 }
 
 export function canonicalObjectFor(system: SystemId, nativeObjectId: string): CanonicalType | undefined {
+  return canonicalObjectsFor(system, nativeObjectId)[0]?.canonicalObject;
+}
+
+/**
+ * All canonical objects registered against one native object in a system. Usually a single
+ * entry, but a native object can legitimately back more than one canonical object at once
+ * (e.g. Salesforce Account -> both "company" and a separately-registered "person_account"
+ * routed to HubSpot contacts) -- each disambiguated at sync time by its own condition. Callers
+ * that need a single answer for an ambiguous native object should resolve it against a real
+ * record's fields (see engine/typeResolver.ts) rather than guessing from this list's order.
+ */
+export function canonicalObjectsFor(system: SystemId, nativeObjectId: string): ObjectRegistration[] {
+  const matches: ObjectRegistration[] = [];
   for (const entry of REGISTRY.values()) {
     if ((system === 'salesforce' ? entry.salesforceObject : entry.hubspotObject) === nativeObjectId) {
-      return entry.canonicalObject;
+      matches.push({ ...entry });
     }
   }
-  return undefined;
+  return matches;
 }
 
 export function listCanonicalObjects(): ObjectRegistration[] {

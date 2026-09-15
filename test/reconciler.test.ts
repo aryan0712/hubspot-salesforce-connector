@@ -180,3 +180,43 @@ describe('self-healing a stale link on a natural-key conflict', () => {
     await expect(ctx.reconciler.reconcile(sfRecord!)).rejects.toThrow();
   });
 });
+
+describe('required-field validation before writing', () => {
+  it('rejects with a clear MissingRequiredFieldError instead of calling upsert', async () => {
+    const sfId = ctx.sf.seed('contact', {
+      firstName: 'Ada',
+      lastName: 'Lovelace',
+      email: 'ada@analytical.co',
+      // phone deliberately omitted -- the field HubSpot will report as required.
+    });
+    const originalDescribe = ctx.hs.describe.bind(ctx.hs);
+    ctx.hs.describe = async (type) => {
+      const fields = await originalDescribe(type);
+      return fields.map((field) => (field.name === 'phone' ? { ...field, required: true } : field));
+    };
+    let upsertCalled = false;
+    const originalUpsert = ctx.hs.upsert.bind(ctx.hs);
+    ctx.hs.upsert = (record, targetId) => {
+      upsertCalled = true;
+      return originalUpsert(record, targetId);
+    };
+
+    const sfRecord = await ctx.sf.read('contact', sfId);
+    await expect(ctx.reconciler.reconcile(sfRecord!)).rejects.toThrow(/missing required value/i);
+    expect(upsertCalled).toBe(false);
+  });
+
+  it('does not flag a required field that has no mapping at all (a config issue, not a per-record one)', async () => {
+    const sfId = ctx.sf.seed('contact', { firstName: 'Ada', lastName: 'Lovelace', email: 'ada@analytical.co' });
+    const originalDescribe = ctx.hs.describe.bind(ctx.hs);
+    ctx.hs.describe = async (type) => {
+      const fields = await originalDescribe(type);
+      // "unmapped_required_field" has no FieldRule at all -- must not block the sync.
+      return [...fields, { name: 'unmapped_required_field', label: 'Unmapped', type: 'string', required: true }];
+    };
+
+    const sfRecord = await ctx.sf.read('contact', sfId);
+    await expect(ctx.reconciler.reconcile(sfRecord!)).resolves.toBeUndefined();
+    expect((await ctx.hs.list('contact')).records).toHaveLength(1);
+  });
+});

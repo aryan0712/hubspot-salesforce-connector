@@ -24,6 +24,7 @@ import { isAllowedNaturalKeyField } from './core/idMap.js';
 import { isRegisteredCanonicalObject, slugifyCanonicalObject } from './core/objectRegistry.js';
 import { friendlyErrorMessage } from './core/vendorError.js';
 import { MAX_POLLING_INTERVAL_MINUTES, MIN_POLLING_INTERVAL_MINUTES } from './core/syncConfig.js';
+import { resolveCanonicalType } from './engine/typeResolver.js';
 
 /**
  * HTTP surface:
@@ -74,7 +75,10 @@ async function main(): Promise<void> {
       ...config,
       objects: {
         ...config.objects,
-        [type]: { ...(config.objects[type] ?? { direction: 'bidirectional' as const }), enabled: false },
+        [type]: {
+          ...(config.objects[type] ?? { direction: 'bidirectional' as const, enrolledForSync: true }),
+          enabled: false,
+        },
       },
       polling: {
         ...config.polling,
@@ -1008,9 +1012,15 @@ async function main(): Promise<void> {
     });
     const config = app.syncConfig.get();
     if (!config.objects[canonicalObject]) {
+      // Registering an object (used by Migration too) no longer implies Sync enrollment --
+      // enrolledForSync only becomes true once the dedicated Sync setup wizard finishes for
+      // this object (PATCH /api/sync/settings), which is also what sets direction/enabled.
       await app.syncConfig.update({
         ...config,
-        objects: { ...config.objects, [canonicalObject]: { enabled: true, direction: 'bidirectional' } },
+        objects: {
+          ...config.objects,
+          [canonicalObject]: { enabled: false, direction: 'bidirectional', enrolledForSync: false },
+        },
         polling: {
           ...config.polling,
           [canonicalObject]: config.polling[canonicalObject] ?? { enabled: false, intervalMinutes: 30 },
@@ -1139,12 +1149,21 @@ async function main(): Promise<void> {
       (typeof objectsInput === 'object' &&
         objectsInput !== null &&
         Object.entries(objectsInput as Record<string, unknown>).every(([type, value]) => {
-          const object = value as { enabled?: unknown; direction?: unknown } | null;
+          const object = value as {
+            enabled?: unknown;
+            direction?: unknown;
+            enrolledForSync?: unknown;
+            conditions?: unknown;
+            rawCondition?: unknown;
+          } | null;
           return (
             isType(type) &&
             object &&
             typeof object.enabled === 'boolean' &&
-            directions.includes(String(object.direction))
+            directions.includes(String(object.direction)) &&
+            (object.enrolledForSync === undefined || typeof object.enrolledForSync === 'boolean') &&
+            isValidConditionsBySystem(object.conditions) &&
+            isValidRawConditionBySystem(object.rawCondition)
           );
         }));
     const pollingValid =
@@ -1152,14 +1171,18 @@ async function main(): Promise<void> {
       (typeof pollingInput === 'object' &&
         pollingInput !== null &&
         Object.entries(pollingInput as Record<string, unknown>).every(([type, value]) => {
-          const polling = value as { enabled?: unknown; intervalMinutes?: unknown } | null;
+          const polling = value as { enabled?: unknown; intervalMinutes?: unknown; lookbackDays?: unknown } | null;
           return (
             isType(type) &&
             polling &&
             typeof polling.enabled === 'boolean' &&
             Number.isFinite(Number(polling.intervalMinutes)) &&
             Number(polling.intervalMinutes) >= MIN_POLLING_INTERVAL_MINUTES &&
-            Number(polling.intervalMinutes) <= MAX_POLLING_INTERVAL_MINUTES
+            Number(polling.intervalMinutes) <= MAX_POLLING_INTERVAL_MINUTES &&
+            (polling.lookbackDays === undefined ||
+              (Number.isFinite(Number(polling.lookbackDays)) &&
+                Number(polling.lookbackDays) >= 1 &&
+                Number(polling.lookbackDays) <= 365))
           );
         }));
     if (
@@ -1171,11 +1194,23 @@ async function main(): Promise<void> {
       return res.status(400).json({ error: 'invalid_sync_settings' });
     }
     const current = app.syncConfig.get();
-    const objects = { ...current.objects, ...(objectsInput as typeof current.objects | undefined) };
+    const objects = { ...current.objects };
+    if (objectsInput) {
+      for (const [type, value] of Object.entries(objectsInput as Record<string, typeof current.objects[string]>)) {
+        objects[type] = { ...current.objects[type], ...value };
+      }
+    }
     const polling = { ...current.polling };
     if (pollingInput) {
-      for (const [type, value] of Object.entries(pollingInput as Record<string, { enabled: boolean; intervalMinutes: number }>)) {
-        polling[type] = { enabled: Boolean(value.enabled), intervalMinutes: Math.round(Number(value.intervalMinutes)) };
+      for (const [type, value] of Object.entries(
+        pollingInput as Record<string, { enabled: boolean; intervalMinutes: number; lookbackDays?: number }>,
+      )) {
+        polling[type] = {
+          ...current.polling[type],
+          enabled: Boolean(value.enabled),
+          intervalMinutes: Math.round(Number(value.intervalMinutes)),
+          ...(value.lookbackDays !== undefined ? { lookbackDays: Math.round(Number(value.lookbackDays)) } : {}),
+        };
       }
     }
     const config = await app.syncConfig.update({
@@ -1363,6 +1398,46 @@ function isType(value: string): boolean {
   return isRegisteredCanonicalObject(value);
 }
 
+const SYNC_CONDITION_OPERATORS = ['eq', 'ne', 'gt', 'lt', 'contains', 'is_null', 'is_not_null'];
+// Advanced/raw SOQL condition can't be parameterized through this REST-style query builder,
+// so it's hardened with an allow-list instead: no statement separators, no comment syntax
+// (either could smuggle a second statement past the WHERE fragment it's appended into), no
+// DML/set-operator keywords (this fragment is only ever appended to a SELECT's WHERE clause).
+const UNSAFE_RAW_CONDITION = /;|--|\/\*|\b(insert|update|delete|upsert|union|merge)\b/i;
+
+function isValidConditionsBySystem(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (typeof value !== 'object' || value === null) return false;
+  return Object.entries(value as Record<string, unknown>).every(([system, rows]) => {
+    if (!isSystem(system)) return false;
+    if (!Array.isArray(rows)) return false;
+    return rows.every((row) => {
+      const condition = row as { field?: unknown; operator?: unknown; value?: unknown } | null;
+      return (
+        condition &&
+        typeof condition.field === 'string' &&
+        condition.field.trim().length > 0 &&
+        condition.field.length <= 200 &&
+        SYNC_CONDITION_OPERATORS.includes(String(condition.operator)) &&
+        (condition.value === undefined ||
+          ['string', 'number', 'boolean'].includes(typeof condition.value) ||
+          condition.value === null)
+      );
+    });
+  });
+}
+
+function isValidRawConditionBySystem(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (typeof value !== 'object' || value === null) return false;
+  return Object.entries(value as Record<string, unknown>).every(([system, raw]) => {
+    // Only Salesforce's SOQL builder accepts a raw fragment -- HubSpot's Search API has no
+    // free-text filter language to append one into.
+    if (system !== 'salesforce') return false;
+    return typeof raw === 'string' && raw.length <= 500 && !UNSAFE_RAW_CONDITION.test(raw);
+  });
+}
+
 function migrationPlanInput(
   body: unknown,
   createdBy?: string,
@@ -1442,7 +1517,10 @@ async function handleWebhook(
   ensureLiveInit: () => Promise<void>,
 ): Promise<void> {
   try {
-    const events = app.connectors[system].parseWebhook(req.headers, req.body as Buffer);
+    const connector = app.connectors[system];
+    const events = await connector.parseWebhook(req.headers, req.body as Buffer, (nativeObjectId, sourceId) =>
+      resolveCanonicalType(system, nativeObjectId, sourceId, connector, app.syncConfig.get()),
+    );
     const ids = await app.sync.enqueue(events);
     res.status(200).json({ received: events.length, accepted: ids.length });
     void ensureLiveInit().catch((err) => {

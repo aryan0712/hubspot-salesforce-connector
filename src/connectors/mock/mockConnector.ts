@@ -18,6 +18,7 @@ import {
   toCanonicalFields,
 } from '../../core/mapping.js';
 import { naturalKey } from '../../core/idMap.js';
+import { canonicalObjectsFor } from '../../core/objectRegistry.js';
 
 /**
  * An in-memory CRM that behaves like a real connector but needs no credentials. It stores
@@ -205,8 +206,23 @@ export class MockConnector implements CRMConnector {
     return { system: this.system, type, targetId: sourceId, operation: 'deleted' as const };
   }
 
-  parseWebhook(): ChangeEvent[] {
+  async parseWebhook(): Promise<ChangeEvent[]> {
     return []; // the mock injects events via onChange instead of HTTP
+  }
+
+  /** Mirrors readNativeFields for canonical types sharing one native object -- see CRMConnector. */
+  async readNativeFields(
+    nativeObject: string,
+    sourceId: string,
+    fields: string[],
+  ): Promise<Record<string, unknown> | null> {
+    for (const candidate of canonicalObjectsFor(this.system, nativeObject)) {
+      const record = this.bucket(candidate.canonicalObject).get(sourceId);
+      if (record) {
+        return Object.fromEntries(fields.map((f) => [f, record[f] ?? null]));
+      }
+    }
+    return null;
   }
 
   /** Test helper: seed a native record directly (simulating data already in the CRM). */

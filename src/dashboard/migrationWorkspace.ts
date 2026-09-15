@@ -420,6 +420,17 @@ export function migrationWorkspaceHtml(): string {
                       </div>
                     </div>
                     <div class="mapping-change-notice" id="field-map-notice" hidden><span id="field-map-notice-text"></span><button id="undo-field-removal" class="secondary">Undo last removal</button></div>
+                    <div class="card identity-card" id="sync-wizard-natural-key" hidden style="margin-top:14px"><div class="card-body">
+                      <div class="step-eyebrow">Sync setup · last step</div><h3 style="margin:4px 0 10px">How should matching records be recognized?</h3>
+                      <p class="subcopy" style="margin:0 0 12px">Choose a stable field both sides share, so a record already in both systems gets linked instead of duplicated.</p>
+                      <div class="identity-options" id="sync-wizard-key-options"></div>
+                      <div class="advanced-key-fields" id="sync-wizard-key-fields"></div>
+                      <div class="identity-warning" id="sync-wizard-key-warning"></div>
+                      <div class="identity-actions"><span id="sync-wizard-key-summary"></span>
+                        <button class="secondary" id="sync-wizard-key-skip" type="button">Skip for now</button>
+                        <button id="sync-wizard-key-save" type="button">Save matching rule &amp; finish</button>
+                      </div>
+                    </div></div>
                     <aside class="coverage-card" aria-label="Mapping coverage">
                       <div class="coverage-overview"><div class="summary-title">Core mapping coverage</div><div class="coverage-number" id="coverage-number">—</div></div>
                       <div class="coverage-list" id="coverage-list"></div>

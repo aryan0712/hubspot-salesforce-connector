@@ -229,7 +229,7 @@ export async function createApp(
     mock || !db || !tenantId
       ? new InMemoryReplayCursorStore()
       : new PostgresReplayCursorStore(db, tenantId);
-  const poller = new SyncPoller(connectors, syncConfigStore, cursors, sync, activity);
+  const poller = new SyncPoller(connectors, syncConfigStore, cursors, sync, activity, idMap);
 
   const alertDigester = notificationSettings
     ? new SyncAlertDigester(sync, { get: () => notificationSettings!.get() }, activity)

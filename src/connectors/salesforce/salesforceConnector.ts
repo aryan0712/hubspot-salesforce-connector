@@ -1,6 +1,6 @@
 import axios, { type AxiosInstance } from 'axios';
 import crypto from 'node:crypto';
-import type { CRMConnector, ConnectorAssociation } from '../../core/connector.js';
+import type { CRMConnector, ConnectorAssociation, QueryCondition } from '../../core/connector.js';
 import type {
   CanonicalRecord,
   CanonicalType,
@@ -18,11 +18,12 @@ import {
   nativeFields,
   toCanonicalFields,
 } from '../../core/mapping.js';
-import { canonicalObjectFor, requireNativeObjectName } from '../../core/objectRegistry.js';
+import { canonicalObjectFor, canonicalObjectsFor, requireNativeObjectName } from '../../core/objectRegistry.js';
 import { getAccessToken } from './auth.js';
 import { env } from '../../config/env.js';
 import { logger } from '../../logger.js';
 import { installHttpPolicy } from '../../core/httpPolicy.js';
+import type { SyncCondition } from '../../core/syncConfig.js';
  
 const API_VERSION = 'v61.0';
 
@@ -62,12 +63,17 @@ export class SalesforceConnector implements CRMConnector {
     logger.info('Salesforce connector ready');
   }
 
-  async list(type: CanonicalType, cursor?: string, modifiedSince?: string): Promise<RecordPage> {
+  async list(
+    type: CanonicalType,
+    cursor?: string,
+    modifiedSince?: string,
+    condition?: QueryCondition,
+  ): Promise<RecordPage> {
     // cursor, when present, is a nextRecordsUrl path returned by a prior query (it already
     // encodes any WHERE clause from the query that started the page sequence).
     const url = cursor
       ? cursor
-      : `/query?q=${encodeURIComponent(this.soql(type, modifiedSince))}`;
+      : `/query?q=${encodeURIComponent(this.soql(type, modifiedSince, condition))}`;
     const { data } = await this.http.get(cursor ? cursor.replace(`/services/data/${API_VERSION}`, '') : url);
     const records: CanonicalRecord[] = (data.records as Record<string, unknown>[]).map((r) =>
       this.canonicalize(type, r),
@@ -75,7 +81,14 @@ export class SalesforceConnector implements CRMConnector {
     return { records, nextCursor: data.done ? undefined : data.nextRecordsUrl };
   }
 
-  /** Uses Salesforce's recycle-bin listing (retained ~15 days), scoped to this object type. */
+  /**
+   * Uses Salesforce's recycle-bin listing (retained ~15 days), scoped to this object type.
+   * The recycle bin only returns id + deletion timestamp, never field values, so a sync
+   * condition can't be re-checked here -- when a native object backs more than one canonical
+   * object, the caller (syncPoller) disambiguates a deleted id via the id map instead (only
+   * one of the sibling canonical objects could ever have linked it, since each one's own
+   * create/update poll is already condition-scoped at the query).
+   */
   async listDeletedSince(
     type: CanonicalType,
     since: string,
@@ -86,6 +99,24 @@ export class SalesforceConnector implements CRMConnector {
     });
     const records = (data.deletedRecords as { id: string; deletedDate: string }[] | undefined) ?? [];
     return records.map((r) => ({ sourceId: r.id, occurredAt: r.deletedDate }));
+  }
+
+  /** Raw native fields by native object name, bypassing canonical mapping -- see CRMConnector. */
+  async readNativeFields(
+    nativeObjectName: string,
+    sourceId: string,
+    fields: string[],
+  ): Promise<Record<string, unknown> | null> {
+    try {
+      const selected = [...new Set(['Id', ...fields])];
+      const { data } = await this.http.get(
+        `/sobjects/${nativeObjectName}/${sourceId}?fields=${selected.join(',')}`,
+      );
+      return data as Record<string, unknown>;
+    } catch (err: unknown) {
+      if (axios.isAxiosError(err) && err.response?.status === 404) return null;
+      throw err;
+    }
   }
 
   async read(type: CanonicalType, sourceId: string): Promise<CanonicalRecord | null> {
@@ -273,7 +304,11 @@ export class SalesforceConnector implements CRMConnector {
    * with an HMAC signature over the raw body using a shared secret (SF_WEBHOOK_SECRET).
    * Expected JSON: { events: [{ sobject, recordId, changeType, occurredAt }] }
    */
-  parseWebhook(headers: Record<string, string | string[] | undefined>, rawBody: Buffer): ChangeEvent[] {
+  async parseWebhook(
+    headers: Record<string, string | string[] | undefined>,
+    rawBody: Buffer,
+    resolveType?: (nativeObjectId: string, sourceId: string) => Promise<CanonicalType | undefined>,
+  ): Promise<ChangeEvent[]> {
     const secret = env.SF_WEBHOOK_SECRET;
     if (!secret && !env.ALLOW_UNSIGNED_WEBHOOKS) {
       throw new Error('Salesforce webhook secret unavailable');
@@ -286,30 +321,44 @@ export class SalesforceConnector implements CRMConnector {
     const payload = JSON.parse(rawBody.toString('utf8')) as {
       events?: { sobject: string; recordId: string; changeType: string; occurredAt?: string }[];
     };
-    return (payload.events ?? [])
-      .flatMap((e) => {
-        const type = canonicalObjectFor('salesforce', e.sobject);
-        if (!type) return [];
-        return [{
-          eventId: crypto
-            .createHash('sha256')
-            .update(`${e.sobject}:${e.recordId}:${e.changeType}:${e.occurredAt ?? ''}`)
-            .digest('hex'),
-          system: this.system,
-          type,
-          sourceId: e.recordId,
-          changeType: (e.changeType as ChangeEvent['changeType']) ?? 'updated',
-          occurredAt: e.occurredAt ?? new Date().toISOString(),
-        }];
+    const events: ChangeEvent[] = [];
+    for (const e of payload.events ?? []) {
+      const candidates = canonicalObjectsFor('salesforce', e.sobject);
+      const type =
+        candidates.length <= 1
+          ? candidates[0]?.canonicalObject
+          : await resolveType?.(e.sobject, e.recordId);
+      if (!type) continue;
+      events.push({
+        eventId: crypto
+          .createHash('sha256')
+          .update(`${e.sobject}:${e.recordId}:${e.changeType}:${e.occurredAt ?? ''}`)
+          .digest('hex'),
+        system: this.system,
+        type,
+        sourceId: e.recordId,
+        changeType: (e.changeType as ChangeEvent['changeType']) ?? 'updated',
+        occurredAt: e.occurredAt ?? new Date().toISOString(),
       });
+    }
+    return events;
   }
 
   // ----------------- internals -----------------
 
-  private soql(type: CanonicalType, modifiedSince?: string): string {
+  private soql(
+    type: CanonicalType,
+    modifiedSince?: string,
+    condition?: QueryCondition,
+  ): string {
     const fields = excludeAlwaysQueriedFields(nativeFields('salesforce', type));
     const sobject = requireNativeObjectName('salesforce', type);
-    const where = modifiedSince ? ` WHERE LastModifiedDate > ${modifiedSince}` : '';
+    const clauses = [
+      modifiedSince ? `LastModifiedDate > ${modifiedSince}` : undefined,
+      ...(condition?.conditions ?? []).map(compileConditionSoql),
+      condition?.rawCondition ? `(${condition.rawCondition})` : undefined,
+    ].filter((clause): clause is string => Boolean(clause));
+    const where = clauses.length ? ` WHERE ${clauses.join(' AND ')}` : '';
     return `SELECT Id, LastModifiedDate, ${fields.join(', ')} FROM ${sobject}${where}`;
   }
 
@@ -358,6 +407,32 @@ interface SfObject {
 interface SfRelationship {
   relationshipName?: string | null;
   childSObject: string;
+}
+
+/** One structured condition row -> a single SOQL comparison, values escaped per SOQL literal rules. */
+function compileConditionSoql(condition: SyncCondition): string {
+  const literal = (value: unknown): string => {
+    if (typeof value === 'boolean' || typeof value === 'number') return String(value);
+    return `'${escapeSoql(String(value ?? ''))}'`;
+  };
+  switch (condition.operator) {
+    case 'is_null':
+      return `${condition.field} = null`;
+    case 'is_not_null':
+      return `${condition.field} != null`;
+    case 'eq':
+      return `${condition.field} = ${literal(condition.value)}`;
+    case 'ne':
+      return `${condition.field} != ${literal(condition.value)}`;
+    case 'gt':
+      return `${condition.field} > ${literal(condition.value)}`;
+    case 'lt':
+      return `${condition.field} < ${literal(condition.value)}`;
+    case 'contains':
+      return `${condition.field} LIKE '%${escapeSoql(String(condition.value ?? ''))}%'`;
+    default:
+      return '';
+  }
 }
 
 function escapeSoql(value: string): string {

@@ -194,7 +194,10 @@ function transform(id: TransformId | undefined, value: FieldValue): FieldValue {
   if (id === 'number') {
     if (value === null || value === '') return null;
     const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : value;
+    // A value that doesn't parse as a plain number (e.g. a duration string like "0:0")
+    // can't be sent to a numeric field either way -- drop it rather than forwarding
+    // something the target system will reject.
+    return Number.isFinite(parsed) ? parsed : null;
   }
   if (id === 'boolean') {
     if (typeof value === 'boolean' || value === null) return value;

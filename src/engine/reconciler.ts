@@ -13,9 +13,10 @@ import type { ResolveOptions } from '../core/conflict.js';
 import { logger } from '../logger.js';
 import type { ActivityLog } from '../observability/activity.js';
 import type { CanonicalType, FieldValue } from '../core/types.js';
-import { fieldRules } from '../core/mapping.js';
-import { extractDuplicateValueConflict } from '../core/vendorError.js';
+import { fieldRules, fromCanonicalFields } from '../core/mapping.js';
+import { extractDuplicateValueConflict, MissingRequiredFieldError } from '../core/vendorError.js';
 import type { GovernanceStore } from './governanceStore.js';
+import type { SchemaField } from '../core/types.js';
 
 export type PlannedAction =
   | 'create'
@@ -67,7 +68,11 @@ export class AmbiguousNaturalKeyError extends Error {
  *   4. writes the winner to the counterpart system,
  *   5. records new hashes so the resulting webhook is recognized as an echo.
  */
+const SCHEMA_CACHE_TTL_MS = 5 * 60_000;
+
 export class Reconciler {
+  private readonly schemaCache = new Map<string, { fields: SchemaField[]; fetchedAt: number }>();
+
   constructor(
     private readonly connectors: Record<SystemId, CRMConnector>,
     private readonly idMap: IdMapStore,
@@ -141,7 +146,12 @@ export class Reconciler {
       }
     }
 
-    // (4) Write the winner to the counterpart system. If the write fails because another
+    // (4) Before writing, check the payload against the target's own required fields. A
+    // vendor rejects this too, but only as a generic 400 -- catching it here first produces
+    // an unmistakable error and skips a network call that was always going to fail.
+    await this.checkRequiredFields(to, winner);
+
+    // (5) Write the winner to the counterpart system. If the write fails because another
     // record over there already owns the natural-key value we're setting (a stale link, or
     // a duplicate findByNaturalKey missed on first sync), self-heal: re-point to the record
     // the target system itself just confirmed owns that value and retry against it, instead
@@ -332,6 +342,38 @@ export class Reconciler {
     }
     return link;
   }
+
+  private async describeCached(system: SystemId, type: CanonicalType): Promise<SchemaField[]> {
+    const key = `${system}:${type}`;
+    const cached = this.schemaCache.get(key);
+    if (cached && Date.now() - cached.fetchedAt < SCHEMA_CACHE_TTL_MS) return cached.fields;
+    const fields = await this.connectors[system].describe(type);
+    this.schemaCache.set(key, { fields, fetchedAt: Date.now() });
+    return fields;
+  }
+
+  /**
+   * Throws MissingRequiredFieldError if the payload about to be written is blank for a
+   * required target field -- but only a field this object actually maps for writing. An
+   * unmapped required field is a configuration problem (already caught by preflight's
+   * REQUIRED_TARGET_UNMAPPED, a one-time schema check), not a per-record data problem; it
+   * would otherwise be relying on the target's own default, which isn't this check's business.
+   */
+  private async checkRequiredFields(to: SystemId, record: CanonicalRecord): Promise<void> {
+    const rules = fieldRules(to, record.type).filter((rule) => !rule.readOnly && !rule.native.includes('.'));
+    if (!rules.length) return;
+    const payload = fromCanonicalFields(to, record.type, record.fields);
+    const schema = await this.describeCached(to, record.type);
+    const schemaByName = new Map(schema.map((field) => [field.name.toLowerCase(), field]));
+    const missing = rules
+      .filter((rule) => schemaByName.get(rule.native.toLowerCase())?.required && isBlank(payload[rule.native]))
+      .map((rule) => schemaByName.get(rule.native.toLowerCase())!.label || rule.native);
+    if (missing.length) throw new MissingRequiredFieldError(missing);
+  }
+}
+
+function isBlank(value: FieldValue | undefined): boolean {
+  return value === undefined || value === null || value === '';
 }
 
 /**

@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   defaultSyncConfig,
+  evaluateConditions,
   InMemorySyncConfigStore,
   syncAllows,
+  type SyncCondition,
 } from '../src/core/syncConfig.js';
 
 describe('sync configuration', () => {
@@ -41,5 +43,28 @@ describe('sync configuration', () => {
 
     await store.update(snapshot);
     expect(store.get().objects.contact.enabled).toBe(false);
+  });
+});
+
+describe('sync conditions', () => {
+  it('matches when every AND-combined condition holds', () => {
+    const conditions: SyncCondition[] = [
+      { field: 'IsPersonAccount', operator: 'eq', value: false },
+      { field: 'AnnualRevenue', operator: 'gt', value: 1000 },
+    ];
+    expect(evaluateConditions(conditions, { IsPersonAccount: false, AnnualRevenue: 5000 })).toBe(true);
+    expect(evaluateConditions(conditions, { IsPersonAccount: true, AnnualRevenue: 5000 })).toBe(false);
+    expect(evaluateConditions(conditions, { IsPersonAccount: false, AnnualRevenue: 100 })).toBe(false);
+  });
+
+  it('treats no conditions as an unconditional match', () => {
+    expect(evaluateConditions(undefined, {})).toBe(true);
+    expect(evaluateConditions([], { anything: 'value' })).toBe(true);
+  });
+
+  it('supports is_null / is_not_null against a missing or present field', () => {
+    expect(evaluateConditions([{ field: 'Email', operator: 'is_null' }], {})).toBe(true);
+    expect(evaluateConditions([{ field: 'Email', operator: 'is_null' }], { Email: 'a@b.com' })).toBe(false);
+    expect(evaluateConditions([{ field: 'Email', operator: 'is_not_null' }], { Email: 'a@b.com' })).toBe(true);
   });
 });

@@ -54,7 +54,11 @@ function mergeConfig(defaults: SyncConfig, saved: Partial<SyncConfig>): SyncConf
   for (const type of types) {
     const merged = { ...defaults.objects[type], ...saved.objects?.[type] };
     if (merged.enabled !== undefined && merged.direction !== undefined) {
-      objects[type] = merged as SyncConfig['objects'][string];
+      // Settings saved before enrolledForSync existed have enabled/direction but no such key.
+      // Treat that as "already enrolled" so previously-configured objects don't silently drop
+      // out of the Sync tab on upgrade -- only genuinely new registrations (which always set
+      // this explicitly, see POST /api/object-mappings) default to unenrolled.
+      objects[type] = { enrolledForSync: true, ...merged } as SyncConfig['objects'][string];
     }
     polling[type] = {
       ...FALLBACK_POLLING,
