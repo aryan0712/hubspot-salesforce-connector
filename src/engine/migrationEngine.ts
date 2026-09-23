@@ -5,6 +5,7 @@ import type { ReconcilePlan } from './reconciler.js';
 import { logger } from '../logger.js';
 import type { ActivityLog } from '../observability/activity.js';
 import { InMemoryMigrationStore, type MigrationStore } from './migrationStore.js';
+import { friendlyErrorMessage } from '../core/vendorError.js';
 
 export interface MigrationOptions {
   types: CanonicalType[];
@@ -92,21 +93,41 @@ export class MigrationEngine {
             break;
           }
           stats.read += 1;
+          let plan: ReconcilePlan | undefined;
           try {
-            const plan = await this.reconciler.preview(record);
-            await this.store.recordPlan(runId, plan);
+            plan = await this.reconciler.preview(record);
             if (opts.dryRun) {
+              await this.store.recordPlan(runId, plan);
               report.plans.push(plan);
               stats.actions[plan.action] = (stats.actions[plan.action] ?? 0) + 1;
             } else {
               if (plan.action === 'ambiguous') throw new Error(plan.warnings.join('; '));
               await this.reconciler.reconcile(record);
+              await this.store.recordPlan(runId, plan);
+              report.plans.push(plan);
               stats.actions[plan.action] = (stats.actions[plan.action] ?? 0) + 1;
             }
             stats.reconciled += 1;
           } catch (err) {
             stats.errors += 1;
-            logger.error({ err, type, sourceId: record.meta.sourceId }, 'migration record failed');
+            const targetSystem = opts.from === 'salesforce' ? 'HubSpot' : 'Salesforce';
+            const message = friendlyErrorMessage(err, targetSystem);
+            logger.error({ err, type, sourceId: record.meta.sourceId, message }, 'migration record failed');
+            // Record what actually happened (not the pre-write intent) so the operator can see
+            // which record failed and why, not just an aggregate error count.
+            const failedPlan: ReconcilePlan = plan
+              ? { ...plan, action: 'error', warnings: [...plan.warnings, message] }
+              : {
+                  type,
+                  from: opts.from,
+                  to: opts.from === 'salesforce' ? 'hubspot' : 'salesforce',
+                  sourceId: record.meta.sourceId,
+                  action: 'error',
+                  fieldDiff: [],
+                  warnings: [message],
+                };
+            await this.store.recordPlan(runId, failedPlan);
+            report.plans.push(failedPlan);
           }
         }
         cursor = opts.limitPerType && stats.read >= opts.limitPerType ? undefined : page.nextCursor;

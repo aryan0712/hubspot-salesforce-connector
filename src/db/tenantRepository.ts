@@ -1,3 +1,4 @@
+import { DEFAULT_OBJECTS } from '../core/defaultObjects.js';
 import type { PostgresDatabase } from './postgres.js';
 
 export interface Tenant {
@@ -19,7 +20,71 @@ export class TenantRepository {
        RETURNING id, slug, name, status, plan`,
       [slug, name],
     );
-    return result.rows[0]!;
+    const tenant = result.rows[0]!;
+    // Idempotent: a migration backfills existing tenants, this covers every tenant created
+    // after that migration ran (ON CONFLICT DO NOTHING makes repeat calls on boot a no-op).
+    await this.seedDefaultObjects(tenant.id);
+    return tenant;
+  }
+
+  private async seedDefaultObjects(tenantId: string): Promise<void> {
+    await this.db.tenant(tenantId, async (client) => {
+      for (const object of DEFAULT_OBJECTS) {
+        await client.query(
+          `INSERT INTO object_mappings(
+             tenant_id, canonical_object, label, salesforce_object, hubspot_object, natural_key_fields
+           ) VALUES ($1,$2,$3,$4,$5,$6)
+           ON CONFLICT (tenant_id, canonical_object) DO NOTHING`,
+          [
+            tenantId,
+            object.canonicalObject,
+            object.label,
+            object.salesforceObject,
+            object.hubspotObject,
+            object.naturalKeyFields,
+          ],
+        );
+        for (const system of ['salesforce', 'hubspot'] as const) {
+          // A field_mapping_sets row means this system/object pair has already been seeded
+          // (by an earlier boot) or configured by the tenant via Mapping Studio -- including
+          // deliberately removing one of these default fields. ON CONFLICT DO NOTHING on the
+          // field_mappings rows below only guards against re-inserting a row that still
+          // exists; it does NOT stop a *deleted* row from being silently recreated on the
+          // next boot. Skipping the whole pair once it's been seeded once is what actually
+          // makes that idempotent, and lets a user's deletion stick.
+          const alreadySeeded = await client.query(
+            `SELECT 1 FROM field_mapping_sets WHERE tenant_id = $1 AND system = $2 AND object_type = $3`,
+            [tenantId, system, object.canonicalObject],
+          );
+          if (alreadySeeded.rowCount) continue;
+          await client.query(
+            `INSERT INTO field_mapping_sets(tenant_id, system, object_type)
+             VALUES ($1,$2,$3)
+             ON CONFLICT (tenant_id, system, object_type) DO NOTHING`,
+            [tenantId, system, object.canonicalObject],
+          );
+          for (const [index, rule] of object.fieldRules[system].entries()) {
+            await client.query(
+              `INSERT INTO field_mappings(
+                 tenant_id, system, object_type, canonical_field, native_field,
+                 to_canonical_transform, read_only, sort_order
+               ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+               ON CONFLICT (tenant_id, system, object_type, canonical_field) DO NOTHING`,
+              [
+                tenantId,
+                system,
+                object.canonicalObject,
+                rule.canonical,
+                rule.native,
+                rule.toCanonical ?? null,
+                rule.readOnly ?? false,
+                index,
+              ],
+            );
+          }
+        }
+      }
+    });
   }
 
   async bySlug(slug: string): Promise<Tenant | undefined> {

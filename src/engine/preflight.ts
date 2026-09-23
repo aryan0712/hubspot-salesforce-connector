@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import type { CRMConnector } from '../core/connector.js';
 import { naturalKeyFields, naturalKeyQuery } from '../core/idMap.js';
-import { fieldRules } from '../core/mapping.js';
+import { fieldRules, type FieldRule } from '../core/mapping.js';
 import type { CanonicalRecord, CanonicalType, SchemaField, SystemId } from '../core/types.js';
 
 export type PreflightSeverity = 'error' | 'warning' | 'info';
@@ -86,12 +86,22 @@ export class PreflightService {
       const source = sourceRule
         ? sourceByName.get(sourceRule.native) ?? sourceByName.get(sourceRule.native.split('.')[0]!)
         : undefined;
-      if (source && target && !compatible(source.type, target.type)) {
+      // A transform configured on only one side (or one direction) still gets flagged, just
+      // downgraded to a warning -- only a genuinely bidirectional transform (both toCanonical
+      // and fromCanonical set) clears the issue entirely, since sync flows both ways and a
+      // one-way fix still breaks a change coming back from the other system. The fix normally
+      // lives on whichever system's native type is the awkward one (e.g. HubSpot's yes/no
+      // enumeration), which can be EITHER "source" or "target" depending on which direction
+      // this particular plan runs -- so both rules need checking, not just the current target's.
+      const isBidirectional = (r?: FieldRule): boolean =>
+        Boolean(r?.toCanonical && r.toCanonical !== 'identity' && r?.fromCanonical && r.fromCanonical !== 'identity');
+      const bidirectionalTransform = isBidirectional(rule) || isBidirectional(sourceRule);
+      if (source && target && !compatible(source.type, target.type) && !bidirectionalTransform) {
         issues.push({
           severity: rule.toCanonical || rule.fromCanonical ? 'warning' : 'error',
           code: 'FIELD_TYPE_MISMATCH',
           field: rule.canonical,
-          message: `${source.type} → ${target.type} requires a transform`,
+          message: `${rule.canonical}: ${source.type} → ${target.type} requires a transform`,
         });
       }
       if (source?.options?.length && target?.options?.length) {

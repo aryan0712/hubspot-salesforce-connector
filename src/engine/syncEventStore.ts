@@ -7,7 +7,11 @@ export type SyncJobStatus =
   | 'retry'
   | 'completed'
   | 'dead_letter'
-  | 'manual_review';
+  | 'manual_review'
+  /** Operator gave up on this one -- a permanent error (e.g. invalid data) that replaying
+   *  will never fix. Terminal, like 'completed', but tracked separately so it's clear this
+   *  was a deliberate "not worth retrying" call rather than a success. */
+  | 'dismissed';
 
 export interface SyncJob {
   id: string;
@@ -26,6 +30,7 @@ export interface SyncJobStats {
   completed: number;
   deadLetter: number;
   manualReview: number;
+  dismissed: number;
 }
 
 export interface SyncEventStore {
@@ -36,6 +41,7 @@ export interface SyncEventStore {
   deadLetter(id: string, error: string): Promise<void>;
   manualReview(id: string, error: string): Promise<void>;
   replay(id: string): Promise<void>;
+  dismiss(id: string): Promise<void>;
   get(id: string): Promise<SyncJob | undefined>;
   list(limit?: number, status?: SyncJobStatus): Promise<SyncJob[]>;
   stats(): Promise<SyncJobStats>;
@@ -118,6 +124,11 @@ export class InMemorySyncEventStore implements SyncEventStore {
     }
   }
 
+  async dismiss(id: string): Promise<void> {
+    const job = this.jobs.get(id);
+    if (job) job.status = 'dismissed';
+  }
+
   async get(id: string): Promise<SyncJob | undefined> {
     const job = this.jobs.get(id);
     return job ? cloneJob(job) : undefined;
@@ -160,6 +171,7 @@ export function emptyStats(): SyncJobStats {
     completed: 0,
     deadLetter: 0,
     manualReview: 0,
+    dismissed: 0,
   };
 }
 

@@ -1,4 +1,5 @@
 import express, { type Request, type Response } from 'express';
+import axios from 'axios';
 import crypto from 'node:crypto';
 import { createPkce } from './core/pkce.js';
 import { env } from './config/env.js';
@@ -10,7 +11,7 @@ import { dashboardHtml } from './dashboard/html.js';
 import { operationsHtml } from './dashboard/operations.js';
 import { connections, type Environment } from './core/connectionStore.js';
 import { settings } from './core/settingsStore.js';
-import type { CanonicalRecord, CanonicalType, SystemId } from './core/types.js';
+import type { CanonicalRecord, CanonicalType, CRMObjectDescriptor, SystemId } from './core/types.js';
 import * as sfAuth from './connectors/salesforce/auth.js';
 import * as hsAuth from './connectors/hubspot/auth.js';
 import { authenticate, requireRole } from './security/access.js';
@@ -20,6 +21,16 @@ import { PublicError } from './core/publicError.js';
 import { MigrationCopilot, validateOpenAIKey } from './ai/migrationCopilot.js';
 import { keyFingerprint } from './db/postgresAiSettingsStore.js';
 import { isAllowedNaturalKeyField } from './core/idMap.js';
+import { canonicalObjectsFor, isRegisteredCanonicalObject, slugifyCanonicalObject } from './core/objectRegistry.js';
+import { friendlyErrorMessage } from './core/vendorError.js';
+import {
+  isValidCronExpression,
+  MAX_POLLING_INTERVAL_MINUTES,
+  MIN_POLLING_INTERVAL_MINUTES,
+  nextCronOccurrences,
+} from './core/syncConfig.js';
+import { resolveCanonicalType } from './engine/typeResolver.js';
+import type { QueryCondition } from './core/connector.js';
 
 /**
  * HTTP surface:
@@ -50,6 +61,48 @@ async function main(): Promise<void> {
       await Promise.all(Object.values(app.connectors).map((c) => c.init()));
       liveInited = true;
     }
+  }
+
+  /**
+   * A change to how an object is mapped (field rules, natural key, value translations) can
+   * invalidate assumptions live sync is relying on. If that object is currently syncing --
+   * real-time (webhook) or scheduled polling -- pause both so nothing syncs against the
+   * edited configuration until an operator reviews it and re-enables sync from the Sync tab.
+   */
+  async function pauseSyncIfLive(
+    type: CanonicalType,
+    actorId: string | undefined,
+    reason: string,
+  ): Promise<boolean> {
+    const config = app.syncConfig.get();
+    const wasLive = config.objects[type]?.enabled || config.polling[type]?.enabled;
+    if (!wasLive) return false;
+    await app.syncConfig.update({
+      ...config,
+      objects: {
+        ...config.objects,
+        [type]: {
+          ...(config.objects[type] ?? { direction: 'bidirectional' as const, enrolledForSync: true }),
+          enabled: false,
+        },
+      },
+      polling: {
+        ...config.polling,
+        [type]: { ...(config.polling[type] ?? { intervalMinutes: 30 }), enabled: false },
+      },
+    });
+    app.activity.record({
+      kind: 'info',
+      message: `Sync paused for ${type}: ${reason} -- review and re-enable when ready`,
+    });
+    await app.operations?.recordAudit({
+      actorId,
+      action: 'sync.paused_by_mapping_change',
+      resourceType: 'sync_settings',
+      resourceId: type,
+      detail: { reason },
+    });
+    return true;
   }
 
   // The demo playground is a separate, mock-backed app, created on first use.
@@ -224,6 +277,58 @@ async function main(): Promise<void> {
     });
   });
 
+  // ---------------- Sync failure alerting ----------------
+  server.get('/api/notifications/settings', requireRole('admin'), async (_req, res) => {
+    res.json(
+      (await app.notificationSettings?.status()) ?? { enabled: false, smtpConfigured: false },
+    );
+  });
+  server.put('/api/notifications/settings', requireRole('admin'), async (req, res) => {
+    if (!app.notificationSettings) return res.status(503).json({ error: 'postgres_required' });
+    const enabled = Boolean(req.body?.enabled);
+    const alertEmail = String(req.body?.alertEmail ?? '').trim();
+    const smtpHost = String(req.body?.smtpHost ?? '').trim();
+    const smtpPort = Number(req.body?.smtpPort);
+    const smtpUser = String(req.body?.smtpUser ?? '').trim();
+    const smtpFrom = String(req.body?.smtpFrom ?? '').trim();
+    // A blank password means "keep the existing one" (mirrors the AI credential form never
+    // re-displaying a saved secret) -- only a non-empty string overwrites it.
+    const smtpPasswordInput = req.body?.smtpPassword;
+    const smtpPassword =
+      typeof smtpPasswordInput === 'string' && smtpPasswordInput.length > 0
+        ? smtpPasswordInput
+        : undefined;
+    if (enabled && (!alertEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(alertEmail))) {
+      return res.status(400).json({ error: 'invalid_alert_email' });
+    }
+    if (smtpHost && (!Number.isFinite(smtpPort) || smtpPort < 1 || smtpPort > 65535)) {
+      return res.status(400).json({ error: 'invalid_smtp_port' });
+    }
+    const status = await app.notificationSettings.set(
+      {
+        enabled,
+        alertEmail: alertEmail || undefined,
+        smtpHost: smtpHost || undefined,
+        smtpPort: smtpHost ? smtpPort : undefined,
+        smtpUser: smtpUser || undefined,
+        smtpPassword,
+        smtpFrom: smtpFrom || undefined,
+      },
+      res.locals.auth?.actorId,
+    );
+    await app.operations?.recordAudit({
+      actorId: res.locals.auth?.actorId,
+      action: 'notification_settings.updated',
+      resourceType: 'notification_settings',
+      detail: { enabled, alertEmail: Boolean(alertEmail), smtpConfigured: status.smtpConfigured },
+    });
+    res.json(status);
+  });
+  server.post('/api/notifications/check-now', requireRole('operator'), async (_req, res) => {
+    if (!app.alertDigester) return res.status(503).json({ error: 'postgres_required' });
+    res.json(await app.alertDigester.checkNow());
+  });
+
   // ---------------- Migration workspace ----------------
   server.get('/api/object-catalog', async (req, res) => {
     const from = String(req.query.from ?? 'salesforce');
@@ -236,35 +341,50 @@ async function main(): Promise<void> {
     ]);
     const normalized = (value: string): string =>
       value.toLowerCase().replace(/[^a-z0-9]/g, '').replace(/s$/, '');
-    const rows = await Promise.all(sources.map(async (source) => {
-      const target = source.canonicalType
-        ? targets.find((candidate) => candidate.canonicalType === source.canonicalType)
-        : targets.find((candidate) =>
-            normalized(candidate.id) === normalized(source.id) ||
-            normalized(candidate.label) === normalized(source.label));
-      const sourceRules = source.canonicalType
-        ? await app.mappingStore.get(from, source.canonicalType)
-        : [];
-      const targetRules = source.canonicalType
-        ? await app.mappingStore.get(to, source.canonicalType)
-        : [];
+    const buildRow = async (
+      source: CRMObjectDescriptor,
+      target: CRMObjectDescriptor | undefined,
+      canonicalType: CanonicalType | undefined,
+    ) => {
+      const registered = Boolean(canonicalType);
+      const sourceRules = registered ? await app.mappingStore.get(from, canonicalType!) : [];
+      const targetRules = registered ? await app.mappingStore.get(to, canonicalType!) : [];
       const mapped = new Set(sourceRules.map((rule) => rule.canonical));
       const mappedFields = targetRules.filter((rule) => mapped.has(rule.canonical)).length;
       return {
         source,
         target,
-        supported: Boolean(source.canonicalType && target?.canonicalType === source.canonicalType),
-        canonicalType: source.canonicalType,
+        supported: Boolean(target),
+        registered,
+        canonicalType,
         mappedFields,
         totalMappedFields: Math.max(sourceRules.length, targetRules.length),
-        reason: source.canonicalType
-          ? target
-            ? undefined
-            : 'No supported target binding'
-          : 'Generic object execution is not enabled yet',
+        reason: target ? undefined : 'No matching object found in the other CRM',
       };
+    };
+    // A native object can legitimately back more than one canonical object at once (e.g.
+    // Salesforce Account -> both "company" and a separately-registered "person_account"
+    // routed to HubSpot contacts, see core/objectRegistry.ts). source.canonicalType (from
+    // listObjects()) only ever names ONE of those -- picking whichever registration happens
+    // to be first, arbitrarily -- so it's never used here; canonicalObjectsFor() returns every
+    // registration for this native object, and each one becomes its own row, paired with its
+    // OWN registered target (looked up by native id, not by the same ambiguous canonicalType
+    // matching) so an operator can see and edit either pairing independently.
+    const rows = await Promise.all(sources.flatMap((source) => {
+      const registrations = canonicalObjectsFor(from, source.id);
+      if (!registrations.length) {
+        const target = targets.find((candidate) =>
+          normalized(candidate.id) === normalized(source.id) ||
+          normalized(candidate.label) === normalized(source.label));
+        return [buildRow(source, target, undefined)];
+      }
+      return registrations.map((registration) => {
+        const targetNativeId = to === 'salesforce' ? registration.salesforceObject : registration.hubspotObject;
+        const target = targets.find((candidate) => candidate.id === targetNativeId);
+        return buildRow(source, target, registration.canonicalObject);
+      });
     }));
-    res.json({ from, to, rows, sourceCount: sources.length, targetCount: targets.length });
+    res.json({ from, to, rows, targets, sourceCount: sources.length, targetCount: targets.length });
   });
 
   server.get('/api/object-catalog/:system/:objectId', async (req, res) => {
@@ -553,6 +673,54 @@ async function main(): Promise<void> {
     },
   );
 
+  /**
+   * Runs a real (non-preview) migration for a small, operator-chosen number of records —
+   * an alternative to the exactly-one-record canary above. Reuses MigrationEngine.run(), the
+   * same execution path the full migration uses, just scoped down. A successful batch marks
+   * the plan's canary verified (same field the single-record test sets), which is what
+   * unlocks "Run full migration" below — either path satisfies that gate.
+   */
+  server.post('/api/migration-plans/:id/test-batch/execute', requireRole('operator'), async (req, res) => {
+    if (req.body?.confirm !== true) {
+      return res.status(400).json({ error: 'explicit_confirmation_required' });
+    }
+    const plan = await app.migrationPlans.get(String(req.params.id));
+    if (!plan) return res.status(404).json({ error: 'migration_plan_not_found' });
+    const type = String(req.body?.type ?? '');
+    const count = Number(req.body?.count);
+    if (!isType(type) || !plan.types.includes(type)) {
+      return res.status(400).json({ error: 'invalid_test_record_type' });
+    }
+    if (!Number.isInteger(count) || count < 1 || count > 500) {
+      return res.status(400).json({ error: 'invalid_batch_count' });
+    }
+    await ensureLiveInit();
+    const check = await app.preflight.run(plan.source, type);
+    if (!check.ok) {
+      return res.status(409).json({ error: 'preflight_failed', checks: [check] });
+    }
+    const quota = await app.operations?.quota('records_migrated', count);
+    if (quota && !quota.allowed) {
+      return res.status(429).json({ error: 'plan_limit_exceeded', quota });
+    }
+    const report = await app.migration.run({
+      from: plan.source,
+      types: [type],
+      limitPerType: count,
+      dryRun: false,
+    });
+    await app.migrationPlans.saveCanaryPreview(plan.id, plan.revision, type, `batch:${report.runId}`, report.runId);
+    await app.migrationPlans.finishCanary(plan.id, plan.revision, report.runId);
+    await app.operations?.recordAudit({
+      actorId: res.locals.auth?.actorId,
+      action: 'migration_plan.batch_executed',
+      resourceType: 'migration_plan',
+      resourceId: plan.id,
+      detail: { revision: plan.revision, runId: report.runId, type, count },
+    });
+    res.json(report);
+  });
+
   server.post('/api/migration-plans/:id/preview', requireRole('operator'), async (req, res) => {
     const plan = await app.migrationPlans.get(String(req.params.id));
     if (!plan) return res.status(404).json({ error: 'migration_plan_not_found' });
@@ -626,7 +794,7 @@ async function main(): Promise<void> {
     try {
       await ensureLiveInit();
       const from = (req.body?.from as SystemId) ?? 'salesforce';
-      const types = (req.body?.types as ('contact' | 'company' | 'deal')[]) ?? ['contact'];
+      const types = (req.body?.types as CanonicalType[]) ?? ['contact'];
       if (!isSystem(from) || !types.every(isType)) {
         return res.status(400).json({ error: 'invalid_migration_scope' });
       }
@@ -795,7 +963,7 @@ async function main(): Promise<void> {
   // ---------------- Mapping Studio + sync operations ----------------
   server.get('/api/mappings/:system/:type', (req, res) => {
     const system = req.params.system as SystemId;
-    const type = req.params.type as 'contact' | 'company' | 'deal';
+    const type = req.params.type as CanonicalType;
     if (!isSystem(system) || !isType(type)) {
       return res.status(400).json({ error: 'bad_mapping_target' });
     }
@@ -803,7 +971,7 @@ async function main(): Promise<void> {
   });
   server.put('/api/mappings/:system/:type', requireRole('operator'), async (req, res) => {
     const system = req.params.system as SystemId;
-    const type = req.params.type as 'contact' | 'company' | 'deal';
+    const type = req.params.type as CanonicalType;
     if (!isSystem(system) || !isType(type) || !Array.isArray(req.body?.rules)) {
       return res.status(400).json({ error: 'invalid_mapping' });
     }
@@ -816,14 +984,19 @@ async function main(): Promise<void> {
         resourceId: `${system}:${type}`,
         detail: { ruleCount: req.body.rules.length },
       });
-      res.json({ ok: true, rules: app.mappingStore.get(system, type) });
+      const syncPaused = await pauseSyncIfLive(
+        type,
+        res.locals.auth?.actorId,
+        `field mapping changed (${system})`,
+      );
+      res.json({ ok: true, rules: app.mappingStore.get(system, type), syncPaused });
     } catch (err) {
       res.status(400).json({ error: 'invalid_mapping', detail: String(err) });
     }
   });
   server.get('/api/schema/:system/:type', async (req, res) => {
     const system = req.params.system as SystemId;
-    const type = req.params.type as 'contact' | 'company' | 'deal';
+    const type = req.params.type as CanonicalType;
     if (!isSystem(system) || !isType(type)) {
       return res.status(400).json({ error: 'bad_schema_target' });
     }
@@ -831,19 +1004,66 @@ async function main(): Promise<void> {
     res.json({ system, type, fields: await app.connectors[system].describe(type) });
   });
   server.get('/api/value-mappings/:type/:field', (req, res) => {
-    const type = req.params.type as 'contact' | 'company' | 'deal';
+    const type = req.params.type as CanonicalType;
     if (!isType(type)) return res.status(400).json({ error: 'bad_object_type' });
     res.json({
       entries: app.valueMappings?.list(type, String(req.params.field)) ?? [],
     });
   });
+
+  // The object registry: which canonical objects exist and their native name per CRM.
+  // Selecting a not-yet-registered row in the Step 2 catalog calls POST here first.
+  server.get('/api/object-mappings', (_req, res) => {
+    res.json({ entries: app.objectMappings?.list() ?? [] });
+  });
+  server.post('/api/object-mappings', requireRole('operator'), async (req, res) => {
+    if (!app.objectMappings) return res.status(503).json({ error: 'postgres_required' });
+    const label = String(req.body?.label ?? '').trim();
+    const salesforceObject = String(req.body?.salesforceObject ?? '').trim();
+    const hubspotObject = String(req.body?.hubspotObject ?? '').trim();
+    if (!label || label.length > 120 || (!salesforceObject && !hubspotObject)) {
+      return res.status(400).json({ error: 'invalid_object_mapping' });
+    }
+    const canonicalObject = slugifyCanonicalObject(label);
+    const registration = await app.objectMappings.create({
+      canonicalObject,
+      label,
+      salesforceObject: salesforceObject || undefined,
+      hubspotObject: hubspotObject || undefined,
+    });
+    const config = app.syncConfig.get();
+    if (!config.objects[canonicalObject]) {
+      // Registering an object (used by Migration too) no longer implies Sync enrollment --
+      // enrolledForSync only becomes true once the dedicated Sync setup wizard finishes for
+      // this object (PATCH /api/sync/settings), which is also what sets direction/enabled.
+      await app.syncConfig.update({
+        ...config,
+        objects: {
+          ...config.objects,
+          [canonicalObject]: { enabled: false, direction: 'bidirectional', enrolledForSync: false },
+        },
+        polling: {
+          ...config.polling,
+          [canonicalObject]: config.polling[canonicalObject] ?? { enabled: false, intervalMinutes: 30 },
+        },
+      });
+    }
+    await app.operations?.recordAudit({
+      actorId: res.locals.auth?.actorId,
+      action: 'object_mapping.created',
+      resourceType: 'object_mapping',
+      resourceId: canonicalObject,
+      detail: { label, salesforceObject, hubspotObject },
+    });
+    res.status(201).json(registration);
+  });
   server.get('/api/object-mappings/:type', (req, res) => {
-    const type = req.params.type as 'contact' | 'company' | 'deal';
+    const type = req.params.type as CanonicalType;
     if (!isType(type)) return res.status(400).json({ error: 'bad_object_type' });
-    res.json({ type, naturalKeyFields: app.objectMappings?.get(type) ?? [] });
+    res.json({ type, naturalKeyFields: app.objectMappings?.getNaturalKeyFields(type) ?? [] });
   });
   server.put('/api/object-mappings/:type', requireRole('operator'), async (req, res) => {
-    const type = req.params.type as 'contact' | 'company' | 'deal';
+    const type = req.params.type as CanonicalType;
     const fields = req.body?.naturalKeyFields as string[];
     if (!app.objectMappings) return res.status(503).json({ error: 'postgres_required' });
     if (
@@ -872,21 +1092,59 @@ async function main(): Promise<void> {
         message: `${invalid} is not a stable field mapped in both CRMs`,
       });
     }
-    await app.objectMappings.set(type, normalizedFields);
-    res.json({ ok: true, type, naturalKeyFields: app.objectMappings.get(type) });
+    await app.objectMappings.setNaturalKeyFields(type, normalizedFields);
+    const syncPaused = await pauseSyncIfLive(type, res.locals.auth?.actorId, 'matching (natural key) changed');
+    res.json({ ok: true, type, naturalKeyFields: app.objectMappings.getNaturalKeyFields(type), syncPaused });
+  });
+  // Re-points an already-enrolled sync object at a different native object on either side --
+  // e.g. fixing "Account -> Contact" to "Account -> Company" -- without forcing the operator
+  // to delete and recreate the whole registration (which would also throw away polling config
+  // and run history). Field mappings and the natural key describe the OLD native object's
+  // fields, so they're cleared rather than carried forward stale; the operator re-maps fields
+  // right after via the normal Map Fields step.
+  server.put('/api/object-mappings/:type/native-objects', requireRole('operator'), async (req, res) => {
+    const type = req.params.type as CanonicalType;
+    if (!app.objectMappings) return res.status(503).json({ error: 'postgres_required' });
+    if (!isType(type) || !isRegisteredCanonicalObject(type)) {
+      return res.status(400).json({ error: 'bad_object_type' });
+    }
+    const salesforceObject = String(req.body?.salesforceObject ?? '').trim();
+    const hubspotObject = String(req.body?.hubspotObject ?? '').trim();
+    if (!salesforceObject || !hubspotObject) {
+      return res.status(400).json({ error: 'invalid_native_objects' });
+    }
+    const registration = await app.objectMappings.setNativeObjects(type, { salesforceObject, hubspotObject });
+    await Promise.all([
+      app.mappingStore.set('salesforce', type, []),
+      app.mappingStore.set('hubspot', type, []),
+    ]);
+    const syncPaused = await pauseSyncIfLive(type, res.locals.auth?.actorId, 'object pairing changed');
+    await app.operations?.recordAudit({
+      actorId: res.locals.auth?.actorId,
+      action: 'object_mapping.native_objects_changed',
+      resourceType: 'object_mapping',
+      resourceId: type,
+      detail: { salesforceObject, hubspotObject },
+    });
+    res.json({ ok: true, registration, syncPaused });
   });
   server.put('/api/value-mappings/:type/:field', requireRole('operator'), async (req, res) => {
-    const type = req.params.type as 'contact' | 'company' | 'deal';
+    const type = req.params.type as CanonicalType;
     if (!app.valueMappings) return res.status(503).json({ error: 'postgres_required' });
     if (!isType(type) || !Array.isArray(req.body?.entries)) {
       return res.status(400).json({ error: 'invalid_value_mapping' });
     }
     await app.valueMappings.replace(type, String(req.params.field), req.body.entries);
-    res.json({ ok: true, entries: app.valueMappings.list(type, String(req.params.field)) });
+    const syncPaused = await pauseSyncIfLive(
+      type,
+      res.locals.auth?.actorId,
+      `value mapping changed (${req.params.field})`,
+    );
+    res.json({ ok: true, entries: app.valueMappings.list(type, String(req.params.field)), syncPaused });
   });
   server.post('/api/preflight', requireRole('operator'), async (req, res) => {
     const from = req.body?.from as SystemId;
-    const types = req.body?.types as ('contact' | 'company' | 'deal')[];
+    const types = req.body?.types as CanonicalType[];
     if (!isSystem(from) || !Array.isArray(types) || !types.every(isType)) {
       return res.status(400).json({ error: 'invalid_preflight_scope' });
     }
@@ -897,7 +1155,7 @@ async function main(): Promise<void> {
   server.get('/api/sync/jobs', async (req, res) => {
     const limit = Math.min(Number(req.query.limit) || 100, 500);
     const rawStatus = typeof req.query.status === 'string' ? req.query.status : undefined;
-    const statuses = ['queued', 'processing', 'retry', 'completed', 'dead_letter', 'manual_review'];
+    const statuses = ['queued', 'processing', 'retry', 'completed', 'dead_letter', 'manual_review', 'dismissed'];
     if (rawStatus && !statuses.includes(rawStatus)) {
       return res.status(400).json({ error: 'bad_job_status' });
     }
@@ -909,6 +1167,8 @@ async function main(): Promise<void> {
     const hubspotSettings = await settings.get('hubspot');
     res.json({
       ...app.syncConfig.get(),
+      pollingStatus: app.poller.lastRuns(),
+      pollHistory: app.poller.histories(),
       webhooks: {
         salesforce: {
           connected: Boolean(await connections.get('salesforce')),
@@ -928,32 +1188,107 @@ async function main(): Promise<void> {
   server.patch('/api/sync/settings', requireRole('admin'), async (req, res) => {
     const conflictStrategy = String(req.body?.conflictStrategy ?? '');
     const sourceOfTruth = String(req.body?.sourceOfTruth ?? '');
-    const objects = req.body?.objects;
+    const objectsInput = req.body?.objects;
+    const pollingInput = req.body?.polling;
     const directions = [
       'bidirectional',
       'salesforce_to_hubspot',
       'hubspot_to_salesforce',
     ];
+    // Every canonical object is registered dynamically (core/objectRegistry.ts) -- there is
+    // no fixed object list to validate against, so any key here must be a currently
+    // registered type, whatever it is.
+    const objectsValid =
+      objectsInput === undefined ||
+      (typeof objectsInput === 'object' &&
+        objectsInput !== null &&
+        Object.entries(objectsInput as Record<string, unknown>).every(([type, value]) => {
+          const object = value as {
+            enabled?: unknown;
+            direction?: unknown;
+            enrolledForSync?: unknown;
+            conditions?: unknown;
+            rawCondition?: unknown;
+          } | null;
+          return (
+            isType(type) &&
+            object &&
+            typeof object.enabled === 'boolean' &&
+            directions.includes(String(object.direction)) &&
+            (object.enrolledForSync === undefined || typeof object.enrolledForSync === 'boolean') &&
+            isValidConditionsBySystem(object.conditions) &&
+            isValidRawConditionBySystem(object.rawCondition)
+          );
+        }));
+    const pollingValid =
+      pollingInput === undefined ||
+      (typeof pollingInput === 'object' &&
+        pollingInput !== null &&
+        Object.entries(pollingInput as Record<string, unknown>).every(([type, value]) => {
+          const polling = value as {
+            enabled?: unknown;
+            intervalMinutes?: unknown;
+            lookbackDays?: unknown;
+            cron?: unknown;
+          } | null;
+          return (
+            isType(type) &&
+            polling &&
+            typeof polling.enabled === 'boolean' &&
+            Number.isFinite(Number(polling.intervalMinutes)) &&
+            Number(polling.intervalMinutes) >= MIN_POLLING_INTERVAL_MINUTES &&
+            Number(polling.intervalMinutes) <= MAX_POLLING_INTERVAL_MINUTES &&
+            (polling.lookbackDays === undefined ||
+              (Number.isFinite(Number(polling.lookbackDays)) &&
+                Number(polling.lookbackDays) >= 1 &&
+                Number(polling.lookbackDays) <= 365)) &&
+            // Empty string / null clears cron (switches the object back to simple-interval
+            // mode) -- only a non-empty value has to actually parse as a cron expression.
+            (polling.cron === undefined ||
+              polling.cron === null ||
+              polling.cron === '' ||
+              (typeof polling.cron === 'string' && isValidCronExpression(polling.cron)))
+          );
+        }));
     if (
       !['source-of-truth', 'last-write-wins', 'field-merge'].includes(conflictStrategy) ||
       !isSystem(sourceOfTruth) ||
-      !objects ||
-      typeof objects !== 'object' ||
-      ['contact', 'company', 'deal'].some((type) => {
-        const object = objects[type];
-        return (
-          !object ||
-          typeof object.enabled !== 'boolean' ||
-          !directions.includes(String(object.direction))
-        );
-      })
+      !objectsValid ||
+      !pollingValid
     ) {
       return res.status(400).json({ error: 'invalid_sync_settings' });
+    }
+    const current = app.syncConfig.get();
+    const objects = { ...current.objects };
+    if (objectsInput) {
+      for (const [type, value] of Object.entries(objectsInput as Record<string, typeof current.objects[string]>)) {
+        objects[type] = { ...current.objects[type], ...value };
+      }
+    }
+    const polling = { ...current.polling };
+    if (pollingInput) {
+      for (const [type, value] of Object.entries(
+        pollingInput as Record<
+          string,
+          { enabled: boolean; intervalMinutes: number; lookbackDays?: number; cron?: string | null }
+        >,
+      )) {
+        const merged: typeof polling[string] = {
+          ...current.polling[type],
+          enabled: Boolean(value.enabled),
+          intervalMinutes: Math.round(Number(value.intervalMinutes)),
+          ...(value.lookbackDays !== undefined ? { lookbackDays: Math.round(Number(value.lookbackDays)) } : {}),
+        };
+        if (value.cron) merged.cron = value.cron;
+        else if (value.cron === '' || value.cron === null) delete merged.cron;
+        polling[type] = merged;
+      }
     }
     const config = await app.syncConfig.update({
       conflictStrategy: conflictStrategy as never,
       sourceOfTruth,
       objects,
+      polling,
     });
     await app.operations?.recordAudit({
       actorId: res.locals.auth?.actorId,
@@ -969,12 +1304,90 @@ async function main(): Promise<void> {
     });
     res.json(config);
   });
+  server.post('/api/sync/poll-now', requireRole('operator'), async (req, res) => {
+    const type = req.body?.type ? String(req.body.type) : undefined;
+    if (type && !isType(type)) return res.status(400).json({ error: 'bad_object_type' });
+    await ensureLiveInit();
+    const types = type
+      ? [type]
+      : Object.entries(app.syncConfig.get().objects)
+          .filter(([, value]) => value.enabled)
+          .map(([t]) => t);
+    const summaries = await Promise.all(types.map((t) => app.poller.runOnce(t)));
+    res.json(
+      summaries.reduce(
+        (total, s) => ({
+          at: s.at,
+          changed: total.changed + s.changed,
+          deleted: total.deleted + s.deleted,
+          errors: total.errors + s.errors,
+        }),
+        { at: new Date().toISOString(), changed: 0, deleted: 0, errors: 0 },
+      ),
+    );
+  });
+  /**
+   * Runs a sync object's condition against the live CRM right now, without waiting for a
+   * scheduled poll -- exactly the check that would have caught last session's broken raw-SOQL
+   * condition immediately instead of it failing silently on every scheduled run. Used two ways
+   * from the wizard: "Check syntax" (only reads ok/message/matched, works before any field is
+   * mapped) and "Test this setup" (also reads `plan` once fields exist, for a full dry-run
+   * preview -- no write ever happens either way, this only reuses Reconciler.preview()).
+   */
+  server.post('/api/sync/test', requireRole('operator'), async (req, res) => {
+    const system = String(req.body?.system ?? '');
+    const type = String(req.body?.type ?? '');
+    if (!isSystem(system) || !isType(type)) {
+      return res.status(400).json({ error: 'bad_test_target' });
+    }
+    if (!isValidConditionsBySystem(req.body?.conditions) || !isValidRawConditionBySystem(req.body?.rawCondition)) {
+      return res.status(400).json({ error: 'invalid_condition' });
+    }
+    await ensureLiveInit();
+    const condition: QueryCondition = {
+      conditions: req.body?.conditions?.[system],
+      rawCondition: req.body?.rawCondition?.[system],
+    };
+    try {
+      const page = await app.connectors[system].list(type, undefined, undefined, condition);
+      if (!page.records.length) {
+        return res.json({ ok: true, matched: 0 });
+      }
+      const plan = await app.reconciler.preview(page.records[0]!);
+      res.json({ ok: true, matched: page.records.length, plan });
+    } catch (err) {
+      const label = system === 'salesforce' ? 'Salesforce' : 'HubSpot';
+      res.json({ ok: false, message: friendlyErrorMessage(err, label) });
+    }
+  });
+  /** Live feedback for the cron-schedule field: validates the expression and shows what it
+   * actually means before saving, using the exact same calculation SyncPoller uses to decide
+   * when an object is next due -- so the preview can never disagree with the real schedule. */
+  server.get('/api/sync/cron-preview', (req, res) => {
+    const expr = String(req.query.expr ?? '');
+    if (!expr || !isValidCronExpression(expr)) {
+      return res.status(400).json({ error: 'invalid_cron_expression' });
+    }
+    res.json({ occurrences: nextCronOccurrences(expr, new Date(), 3).map((d) => d.toISOString()) });
+  });
   server.post('/api/sync/jobs/:id/replay', requireRole('operator'), async (req, res) => {
     await app.sync.replay(String(req.params.id));
     res.json({ ok: true });
   });
   server.post('/api/sync/jobs/:id/approve-delete', requireRole('admin'), async (req, res) => {
     await app.sync.approveDelete(String(req.params.id), res.locals.auth?.actorId);
+    res.json({ ok: true });
+  });
+  server.post('/api/sync/jobs/:id/dismiss', requireRole('operator'), async (req, res) => {
+    const id = String(req.params.id);
+    await app.sync.dismiss(id);
+    await app.operations?.recordAudit({
+      actorId: res.locals.auth?.actorId,
+      action: 'sync.job.dismissed',
+      resourceType: 'sync_event',
+      resourceId: id,
+      detail: {},
+    });
     res.json({ ok: true });
   });
   server.get('/api/migrations', async (req, res) => {
@@ -1045,11 +1458,32 @@ async function main(): Promise<void> {
       }
       return;
     }
+    if (axios.isAxiosError(err)) {
+      const vendorMessage = friendlyErrorMessage(err);
+      logger.error(
+        { err, requestId, vendorStatus: err.response?.status, vendorBody: err.response?.data },
+        'CRM API request failed',
+      );
+      if (!res.headersSent) {
+        res.status(502).json({ error: 'crm_api_error', detail: vendorMessage, requestId });
+      }
+      return;
+    }
     logger.error({ err, requestId }, 'request failed');
     if (!res.headersSent) {
       res.status(500).json({ error: 'internal_error', requestId });
     }
   });
+
+  app.poller.start(ensureLiveInit);
+  app.alertDigester?.start();
+  for (const signal of ['SIGTERM', 'SIGINT'] as const) {
+    process.on(signal, () => {
+      app.poller.stop();
+      app.alertDigester?.stop();
+      process.exit(0);
+    });
+  }
 
   server.listen(env.PORT, () => {
     logger.info(`crm-sync listening on http://localhost:${env.PORT}/`);
@@ -1066,12 +1500,57 @@ function connInfo(c: Awaited<ReturnType<typeof connections.get>>): {
   return { environment: c.environment, accountLabel: c.accountLabel, connectedAt: c.connectedAt };
 }
 
+/**
+ * Salesforce error responses are `[{ message, errorCode }, ...]`; HubSpot's are
+ * `{ message, category }`. Pull the human-readable message out of either shape so a live
+ * CRM API failure surfaces its actual cause instead of a generic internal_error.
+ */
 function isSystem(value: string): value is SystemId {
   return value === 'salesforce' || value === 'hubspot';
 }
 
-function isType(value: string): value is 'contact' | 'company' | 'deal' {
-  return value === 'contact' || value === 'company' || value === 'deal';
+function isType(value: string): boolean {
+  return isRegisteredCanonicalObject(value);
+}
+
+const SYNC_CONDITION_OPERATORS = ['eq', 'ne', 'gt', 'lt', 'contains', 'is_null', 'is_not_null'];
+// Advanced/raw SOQL condition can't be parameterized through this REST-style query builder,
+// so it's hardened with an allow-list instead: no statement separators, no comment syntax
+// (either could smuggle a second statement past the WHERE fragment it's appended into), no
+// DML/set-operator keywords (this fragment is only ever appended to a SELECT's WHERE clause).
+const UNSAFE_RAW_CONDITION = /;|--|\/\*|\b(insert|update|delete|upsert|union|merge)\b/i;
+
+function isValidConditionsBySystem(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (typeof value !== 'object' || value === null) return false;
+  return Object.entries(value as Record<string, unknown>).every(([system, rows]) => {
+    if (!isSystem(system)) return false;
+    if (!Array.isArray(rows)) return false;
+    return rows.every((row) => {
+      const condition = row as { field?: unknown; operator?: unknown; value?: unknown } | null;
+      return (
+        condition &&
+        typeof condition.field === 'string' &&
+        condition.field.trim().length > 0 &&
+        condition.field.length <= 200 &&
+        SYNC_CONDITION_OPERATORS.includes(String(condition.operator)) &&
+        (condition.value === undefined ||
+          ['string', 'number', 'boolean'].includes(typeof condition.value) ||
+          condition.value === null)
+      );
+    });
+  });
+}
+
+function isValidRawConditionBySystem(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (typeof value !== 'object' || value === null) return false;
+  return Object.entries(value as Record<string, unknown>).every(([system, raw]) => {
+    // Only Salesforce's SOQL builder accepts a raw fragment -- HubSpot's Search API has no
+    // free-text filter language to append one into.
+    if (system !== 'salesforce') return false;
+    return typeof raw === 'string' && raw.length <= 500 && !UNSAFE_RAW_CONDITION.test(raw);
+  });
 }
 
 function migrationPlanInput(
@@ -1153,7 +1632,10 @@ async function handleWebhook(
   ensureLiveInit: () => Promise<void>,
 ): Promise<void> {
   try {
-    const events = app.connectors[system].parseWebhook(req.headers, req.body as Buffer);
+    const connector = app.connectors[system];
+    const events = await connector.parseWebhook(req.headers, req.body as Buffer, (nativeObjectId, sourceId) =>
+      resolveCanonicalType(system, nativeObjectId, sourceId, connector, app.syncConfig.get()),
+    );
     const ids = await app.sync.enqueue(events);
     res.status(200).json({ received: events.length, accepted: ids.length });
     void ensureLiveInit().catch((err) => {

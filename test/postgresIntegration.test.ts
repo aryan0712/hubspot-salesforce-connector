@@ -16,7 +16,7 @@ import { PostgresMigrationPlanStore } from '../src/db/postgresMigrationPlanStore
 import { PostgresMigrationStore } from '../src/db/postgresMigrationStore.js';
 import { PostgresAiSettingsStore } from '../src/db/postgresAiSettingsStore.js';
 import { PostgresMappingStore } from '../src/db/postgresMappingStore.js';
-import { resetFieldRules } from '../src/core/mapping.js';
+import { configureFieldRules, resetFieldRules } from '../src/core/mapping.js';
 
 describe('PostgreSQL repositories', () => {
   let cluster: EmbeddedPostgres;
@@ -90,6 +90,9 @@ describe('PostgreSQL repositories', () => {
       '005_ai_provider_credentials.sql',
       '006_field_mapping_sets.sql',
       '007_migration_canary.sql',
+      '008_open_object_model.sql',
+      '009_notification_settings.sql',
+      '010_dismissed_sync_status.sql',
     ]);
 
     const rls = await database.pool.query<{
@@ -273,6 +276,9 @@ describe('PostgreSQL repositories', () => {
     try {
       await mappings.set('salesforce', 'contact', []);
       resetFieldRules();
+      // No hardcoded defaults exist anymore to distinguish "reset" from "loaded empty from DB";
+      // seed a placeholder so the pre-init/post-init states are still distinguishable.
+      configureFieldRules('salesforce', 'contact', [{ canonical: 'placeholder', native: 'Placeholder' }]);
       expect(mappings.get('salesforce', 'contact')).not.toEqual([]);
 
       await mappings.init();

@@ -56,6 +56,12 @@ import {
   type SyncConfigStore,
 } from './core/syncConfig.js';
 import { PostgresSyncConfigStore } from './db/postgresSyncConfigStore.js';
+import { listCanonicalObjects } from './core/objectRegistry.js';
+import { SyncPoller } from './engine/syncPoller.js';
+import { InMemoryReplayCursorStore, type ReplayCursorStore } from './connectors/salesforce/cdcWorker.js';
+import { PostgresReplayCursorStore } from './db/postgresReplayCursorStore.js';
+import { PostgresNotificationSettingsStore } from './db/postgresNotificationSettingsStore.js';
+import { SyncAlertDigester } from './engine/syncAlertDigester.js';
 
 /**
  * Composition root. Builds and wires every component. Nothing else in the codebase
@@ -84,6 +90,9 @@ export interface App {
   migrationPlans: MigrationPlanStore;
   aiSettings?: PostgresAiSettingsStore;
   syncConfig: SyncConfigStore;
+  poller: SyncPoller;
+  notificationSettings?: PostgresNotificationSettingsStore;
+  alertDigester?: SyncAlertDigester;
 }
 
 export async function createApp(
@@ -99,9 +108,8 @@ export async function createApp(
   let valueMappings: PostgresValueMappingStore | undefined;
   let objectMappings: PostgresObjectMappingStore | undefined;
   let aiSettings: PostgresAiSettingsStore | undefined;
-  let syncConfig: SyncConfigStore = new InMemorySyncConfigStore(
-    defaultSyncConfig(env.CONFLICT_STRATEGY, env.SOURCE_OF_TRUTH),
-  );
+  let notificationSettings: PostgresNotificationSettingsStore | undefined;
+  let syncConfig: SyncConfigStore | undefined;
   let idMap: IdMapStore;
   let mappingStore: MappingStore;
   if (mock) {
@@ -131,17 +139,26 @@ export async function createApp(
     operations = new PostgresOperationsRepository(db, tenantId);
     apiKeys = new PostgresApiKeyRepository(db, tenantId);
     aiSettings = new PostgresAiSettingsStore(db, cipher, tenantId);
-    const postgresSyncConfig = new PostgresSyncConfigStore(
-      db,
-      tenantId,
-      defaultSyncConfig(env.CONFLICT_STRATEGY, env.SOURCE_OF_TRUTH),
-    );
-    await postgresSyncConfig.init();
-    syncConfig = postgresSyncConfig;
+    notificationSettings = new PostgresNotificationSettingsStore(db, cipher, tenantId);
     activity.attachSink(operations);
   }
   await idMap.init();
   await mappingStore.init();
+
+  // The object registry (and therefore the set of canonical objects available to default
+  // sync settings onto) is only guaranteed populated after mappingStore.init() above —
+  // objectMappings.init() ran before it in the Postgres branch, and FileMappingStore's
+  // init() calls applyDefaultObjects() itself in the mock branch.
+  const registeredTypes = listCanonicalObjects().map((object) => object.canonicalObject);
+  const syncDefaults = defaultSyncConfig(env.CONFLICT_STRATEGY, env.SOURCE_OF_TRUTH, registeredTypes);
+  if (mock || !db || !tenantId) {
+    syncConfig = new InMemorySyncConfigStore(syncDefaults);
+  } else {
+    const postgresSyncConfig = new PostgresSyncConfigStore(db, tenantId, syncDefaults);
+    await postgresSyncConfig.init();
+    syncConfig = postgresSyncConfig;
+  }
+  const syncConfigStore: SyncConfigStore = syncConfig;
 
   const hubspotAppSecret = mock ? '' : (await settings.get('hubspot'))?.clientSecret ?? '';
   const connectors: Record<SystemId, CRMConnector> = mock
@@ -163,7 +180,7 @@ export async function createApp(
     activity,
     governance,
     conflictOptions: () => {
-      const config = syncConfig.get();
+      const config = syncConfigStore.get();
       return {
         strategy: config.conflictStrategy,
         sourceOfTruth: config.sourceOfTruth,
@@ -204,9 +221,19 @@ export async function createApp(
     activity,
     associations,
     governance,
-    shouldProcess: (event) => syncAllows(syncConfig.get(), event.type, event.system),
+    shouldProcess: (event) => syncAllows(syncConfigStore.get(), event.type, event.system),
   });
   await sync.init();
+
+  const cursors: ReplayCursorStore =
+    mock || !db || !tenantId
+      ? new InMemoryReplayCursorStore()
+      : new PostgresReplayCursorStore(db, tenantId);
+  const poller = new SyncPoller(connectors, syncConfigStore, cursors, sync, activity, idMap);
+
+  const alertDigester = notificationSettings
+    ? new SyncAlertDigester(sync, { get: () => notificationSettings!.get() }, activity)
+    : undefined;
 
   return {
     connectors,
@@ -227,6 +254,9 @@ export async function createApp(
     objectMappings,
     migrationPlans,
     aiSettings,
-    syncConfig,
+    syncConfig: syncConfigStore,
+    poller,
+    notificationSettings,
+    alertDigester,
   };
 }

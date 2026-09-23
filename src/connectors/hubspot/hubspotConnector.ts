@@ -1,6 +1,7 @@
 import axios, { type AxiosInstance } from 'axios';
 import crypto from 'node:crypto';
-import type { CRMConnector, ConnectorAssociation } from '../../core/connector.js';
+import type { CRMConnector, ConnectorAssociation, QueryCondition } from '../../core/connector.js';
+import type { SyncCondition } from '../../core/syncConfig.js';
 import type {
   CanonicalRecord,
   CanonicalType,
@@ -18,22 +19,23 @@ import {
   nativeFields,
   toCanonicalFields,
 } from '../../core/mapping.js';
+import {
+  canonicalObjectFor,
+  canonicalObjectsFor,
+  listCanonicalObjects,
+  nativeObjectName,
+  requireNativeObjectName,
+} from '../../core/objectRegistry.js';
 import { getAccessToken, getAppSecret } from './auth.js';
 import { env } from '../../config/env.js';
 import { logger } from '../../logger.js';
 import { RateLimiter } from '../../core/rateLimiter.js';
 import { installHttpPolicy } from '../../core/httpPolicy.js';
 
-/** canonical type -> HubSpot CRM object path */
-const OBJECT: Record<CanonicalType, string> = {
-  contact: 'contacts',
-  company: 'companies',
-  deal: 'deals',
-};
 const HUBSPOT_STANDARD_OBJECTS: CRMObjectDescriptor[] = [
-  ['contacts', 'Contacts', 'Contact', 'contact'],
-  ['companies', 'Companies', 'Company', 'company'],
-  ['deals', 'Deals', 'Deal', 'deal'],
+  ['contacts', 'Contacts', 'Contact'],
+  ['companies', 'Companies', 'Company'],
+  ['deals', 'Deals', 'Deal'],
   ['tickets', 'Tickets', 'Ticket'],
   ['products', 'Products', 'Product'],
   ['line_items', 'Line items', 'Line item'],
@@ -43,7 +45,7 @@ const HUBSPOT_STANDARD_OBJECTS: CRMObjectDescriptor[] = [
   ['meetings', 'Meetings', 'Meeting'],
   ['notes', 'Notes', 'Note'],
   ['tasks', 'Tasks', 'Task'],
-].map(([id, pluralLabel, label, canonicalType]) => ({
+].map(([id, pluralLabel, label]) => ({
   id: id!,
   label: label!,
   pluralLabel: pluralLabel!,
@@ -52,7 +54,6 @@ const HUBSPOT_STANDARD_OBJECTS: CRMObjectDescriptor[] = [
   createable: true,
   updateable: true,
   deletable: true,
-  canonicalType: canonicalType as CanonicalType | undefined,
 }));
 
 export class HubSpotConnector implements CRMConnector {
@@ -60,6 +61,14 @@ export class HubSpotConnector implements CRMConnector {
   private http!: AxiosInstance;
   private appSecret: string;
   private readonly searchLimiter = new RateLimiter(5);
+  // Resolves a webhook's numeric objectTypeId back to HubSpot's object type name. Seeded with
+  // the standard-object ids (constant across every portal) and extended from /crm/v3/schemas
+  // whenever listObjects() runs, so custom objects resolve too once discovered at least once.
+  private readonly objectTypeIds = new Map<string, string>([
+    ['0-1', 'contacts'],
+    ['0-2', 'companies'],
+    ['0-3', 'deals'],
+  ]);
 
   constructor(appSecret = '') {
     this.appSecret = appSecret;
@@ -84,12 +93,41 @@ export class HubSpotConnector implements CRMConnector {
       }
       throw error;
     });
+    // Warms the objectTypeId cache so custom-object webhooks resolve from the first event.
+    await this.listObjects();
     logger.info('HubSpot connector ready');
   }
 
-  async list(type: CanonicalType, cursor?: string): Promise<RecordPage> {
+  async list(
+    type: CanonicalType,
+    cursor?: string,
+    modifiedSince?: string,
+    condition?: QueryCondition,
+  ): Promise<RecordPage> {
+    const object = requireNativeObjectName('hubspot', type);
     const properties = nativeFields('hubspot', type);
-    const { data } = await this.http.get(`/crm/v3/objects/${OBJECT[type]}`, {
+    const conditionFilters = (condition?.conditions ?? []).map(compileConditionFilter);
+    if (modifiedSince || conditionFilters.length) {
+      await this.searchLimiter.acquire();
+      const filters = [
+        ...(modifiedSince
+          ? [{ propertyName: 'hs_lastmodifieddate', operator: 'GT', value: Date.parse(modifiedSince) }]
+          : []),
+        ...conditionFilters,
+      ];
+      const { data } = await this.http.post(`/crm/v3/objects/${object}/search`, {
+        filterGroups: [{ filters }],
+        sorts: [{ propertyName: 'hs_lastmodifieddate', direction: 'ASCENDING' }],
+        properties,
+        limit: 100,
+        after: cursor,
+      });
+      const records: CanonicalRecord[] = (data.results as HsObject[]).map((r) =>
+        this.canonicalize(type, r),
+      );
+      return { records, nextCursor: data.paging?.next?.after };
+    }
+    const { data } = await this.http.get(`/crm/v3/objects/${object}`, {
       params: { limit: 100, after: cursor, properties: properties.join(',') },
     });
     const records: CanonicalRecord[] = (data.results as HsObject[]).map((r) =>
@@ -98,13 +136,59 @@ export class HubSpotConnector implements CRMConnector {
     return { records, nextCursor: data.paging?.next?.after };
   }
 
+  /**
+   * HubSpot has no dedicated "recently deleted" listing; archived (soft-deleted) records stay
+   * retrievable for ~90 days via the archived=true flag. There's no separate archive timestamp,
+   * so hs_lastmodifieddate (set when the record was archived) is used as the deletion time.
+   */
+  async listDeletedSince(
+    type: CanonicalType,
+    since: string,
+  ): Promise<{ sourceId: string; occurredAt: string }[]> {
+    const object = requireNativeObjectName('hubspot', type);
+    const sinceMs = Date.parse(since);
+    const out: { sourceId: string; occurredAt: string }[] = [];
+    let after: string | undefined;
+    do {
+      const { data } = await this.http.get(`/crm/v3/objects/${object}`, {
+        params: { limit: 100, after, archived: true, properties: 'hs_lastmodifieddate' },
+      });
+      for (const record of (data.results as HsObject[]) ?? []) {
+        const modifiedAt = record.properties?.hs_lastmodifieddate;
+        if (modifiedAt && Date.parse(modifiedAt) >= sinceMs) {
+          out.push({ sourceId: record.id, occurredAt: new Date(Date.parse(modifiedAt)).toISOString() });
+        }
+      }
+      after = data.paging?.next?.after;
+    } while (after);
+    return out;
+  }
+
   async read(type: CanonicalType, sourceId: string): Promise<CanonicalRecord | null> {
     try {
+      const object = requireNativeObjectName('hubspot', type);
       const properties = nativeFields('hubspot', type);
-      const { data } = await this.http.get(`/crm/v3/objects/${OBJECT[type]}/${sourceId}`, {
+      const { data } = await this.http.get(`/crm/v3/objects/${object}/${sourceId}`, {
         params: { properties: properties.join(',') },
       });
       return this.canonicalize(type, data as HsObject);
+    } catch (err: unknown) {
+      if (axios.isAxiosError(err) && err.response?.status === 404) return null;
+      throw err;
+    }
+  }
+
+  /** Raw native properties by native object name, bypassing canonical mapping -- see CRMConnector. */
+  async readNativeFields(
+    nativeObjectName: string,
+    sourceId: string,
+    fields: string[],
+  ): Promise<Record<string, unknown> | null> {
+    try {
+      const { data } = await this.http.get(`/crm/v3/objects/${nativeObjectName}/${sourceId}`, {
+        params: { properties: fields.join(',') },
+      });
+      return (data as HsObject).properties ?? {};
     } catch (err: unknown) {
       if (axios.isAxiosError(err) && err.response?.status === 404) return null;
       throw err;
@@ -124,8 +208,9 @@ export class HubSpotConnector implements CRMConnector {
       return [];
     }
     await this.searchLimiter.acquire();
+    const object = requireNativeObjectName('hubspot', type);
     const properties = nativeFields('hubspot', type);
-    const { data } = await this.http.post(`/crm/v3/objects/${OBJECT[type]}/search`, {
+    const { data } = await this.http.post(`/crm/v3/objects/${object}/search`, {
       filterGroups: [
         {
           filters,
@@ -138,15 +223,20 @@ export class HubSpotConnector implements CRMConnector {
   }
 
   async describe(type: CanonicalType): Promise<SchemaField[]> {
-    return (await this.describeObject(OBJECT[type])).fields;
+    return (await this.describeObject(requireNativeObjectName('hubspot', type))).fields;
   }
 
   async listObjects(): Promise<CRMObjectDescriptor[]> {
     let custom: CRMObjectDescriptor[] = [];
     try {
       const { data } = await this.http.get('/crm/v3/schemas');
-      custom = (data.results as HsSchema[] | undefined ?? []).map((schema) => ({
-        id: schema.objectTypeId ?? schema.fullyQualifiedName ?? schema.name,
+      const schemas = data.results as HsSchema[] | undefined ?? [];
+      for (const schema of schemas) {
+        const id = schema.fullyQualifiedName ?? schema.name;
+        if (schema.objectTypeId) this.objectTypeIds.set(schema.objectTypeId, id);
+      }
+      custom = schemas.map((schema) => ({
+        id: schema.fullyQualifiedName ?? schema.name,
         label: schema.labels?.singular ?? schema.name,
         pluralLabel: schema.labels?.plural ?? schema.name,
         custom: true,
@@ -157,8 +247,17 @@ export class HubSpotConnector implements CRMConnector {
       }));
     } catch (err: unknown) {
       if (!axios.isAxiosError(err) || ![401, 403, 404].includes(err.response?.status ?? 0)) throw err;
+      // Missing the crm.schemas.custom.read scope (or no custom objects defined yet) both land
+      // here as a 403/404 -- silently returning zero custom objects either way used to look
+      // identical to "this portal genuinely has none," which is exactly the kind of silent
+      // failure this app is supposed to avoid. Surfacing which one it actually is.
+      logger.warn(
+        { status: err.response?.status, data: err.response?.data },
+        'could not list HubSpot custom object schemas -- likely a missing scope on the connected app/token',
+      );
     }
     return [...HUBSPOT_STANDARD_OBJECTS, ...custom]
+      .map((object) => ({ ...object, canonicalType: canonicalObjectFor('hubspot', object.id) }))
       .sort((a, b) => Number(Boolean(b.canonicalType)) - Number(Boolean(a.canonicalType)) ||
         a.label.localeCompare(b.label));
   }
@@ -200,29 +299,42 @@ export class HubSpotConnector implements CRMConnector {
     };
   }
 
+  /**
+   * HubSpot's v4 associations API is generic for any object pair already — no hardcoded
+   * pair graph needed. We just try every other registered canonical object as a candidate
+   * target (a missing association type 404s harmlessly and is skipped).
+   */
   async listAssociations(
     type: CanonicalType,
     sourceId: string,
   ): Promise<ConnectorAssociation[]> {
-    const targets: CanonicalType[] =
-      type === 'contact' ? ['company'] : type === 'deal' ? ['company', 'contact'] : [];
+    const object = requireNativeObjectName('hubspot', type);
+    const targets = listCanonicalObjects()
+      .map((entry) => entry.canonicalObject)
+      .filter((candidate) => candidate !== type);
     const output: ConnectorAssociation[] = [];
     for (const toType of targets) {
-      const { data } = await this.http.get(
-        `/crm/v4/objects/${OBJECT[type]}/${sourceId}/associations/${OBJECT[toType]}`,
-        { params: { limit: 500 } },
-      );
-      for (const item of data.results ?? []) {
-        const types = item.associationTypes as
-          | { label?: string | null; category?: string }[]
-          | undefined;
-        const custom = types?.find((candidate) => candidate.label);
-        output.push({
-          toType,
-          toId: String(item.toObjectId),
-          kind: toType,
-          label: custom?.label ?? undefined,
-        });
+      const toObject = nativeObjectName('hubspot', toType);
+      if (!toObject) continue;
+      try {
+        const { data } = await this.http.get(
+          `/crm/v4/objects/${object}/${sourceId}/associations/${toObject}`,
+          { params: { limit: 500 } },
+        );
+        for (const item of data.results ?? []) {
+          const types = item.associationTypes as
+            | { label?: string | null; category?: string }[]
+            | undefined;
+          const custom = types?.find((candidate) => candidate.label);
+          output.push({
+            toType,
+            toId: String(item.toObjectId),
+            kind: toType,
+            label: custom?.label ?? undefined,
+          });
+        }
+      } catch (err: unknown) {
+        if (!axios.isAxiosError(err) || err.response?.status !== 404) throw err;
       }
     }
     return output;
@@ -233,24 +345,28 @@ export class HubSpotConnector implements CRMConnector {
     fromId: string,
     association: ConnectorAssociation,
   ): Promise<void> {
+    const fromObject = requireNativeObjectName('hubspot', fromType);
+    const toObject = requireNativeObjectName('hubspot', association.toType);
     await this.http.put(
-      `/crm/v4/objects/${OBJECT[fromType]}/${fromId}/associations/default/${OBJECT[association.toType]}/${association.toId}`,
+      `/crm/v4/objects/${fromObject}/${fromId}/associations/default/${toObject}/${association.toId}`,
     );
   }
 
   async upsert(record: CanonicalRecord, targetId?: string): Promise<UpsertResult> {
+    const object = requireNativeObjectName('hubspot', record.type);
     const properties = fromCanonicalFields('hubspot', record.type, record.fields);
     if (targetId) {
-      await this.http.patch(`/crm/v3/objects/${OBJECT[record.type]}/${targetId}`, { properties });
+      await this.http.patch(`/crm/v3/objects/${object}/${targetId}`, { properties });
       return { system: this.system, type: record.type, targetId, operation: 'updated' };
     }
-    const { data } = await this.http.post(`/crm/v3/objects/${OBJECT[record.type]}`, { properties });
+    const { data } = await this.http.post(`/crm/v3/objects/${object}`, { properties });
     return { system: this.system, type: record.type, targetId: data.id, operation: 'created' };
   }
 
   async remove(type: CanonicalType, sourceId: string): Promise<UpsertResult> {
     // HubSpot DELETE archives the record.
-    await this.http.delete(`/crm/v3/objects/${OBJECT[type]}/${sourceId}`);
+    const object = requireNativeObjectName('hubspot', type);
+    await this.http.delete(`/crm/v3/objects/${object}/${sourceId}`);
     return { system: this.system, type, targetId: sourceId, operation: 'deleted' };
   }
 
@@ -258,7 +374,11 @@ export class HubSpotConnector implements CRMConnector {
    * HubSpot webhooks POST an array of events and sign with X-HubSpot-Signature-v3
    * (HMAC-SHA256 over method + uri + body + timestamp, base64). We validate before trusting.
    */
-  parseWebhook(headers: Record<string, string | string[] | undefined>, rawBody: Buffer): ChangeEvent[] {
+  async parseWebhook(
+    headers: Record<string, string | string[] | undefined>,
+    rawBody: Buffer,
+    resolveType?: (nativeObjectId: string, sourceId: string) => Promise<CanonicalType | undefined>,
+  ): Promise<ChangeEvent[]> {
     const secret = this.appSecret || env.HUBSPOT_APP_SECRET;
     if (!secret && !env.ALLOW_UNSIGNED_WEBHOOKS) {
       throw new Error('HubSpot webhook secret unavailable');
@@ -271,31 +391,31 @@ export class HubSpotConnector implements CRMConnector {
       const expected = crypto.createHmac('sha256', secret).update(base).digest('base64');
       if (!safeEqual(signature, expected)) throw new Error('HubSpot webhook signature mismatch');
     }
-    const events = JSON.parse(rawBody.toString('utf8')) as HsWebhookEvent[];
-    return events
-      .map((e) => this.mapEvent(e))
-      .filter((e): e is ChangeEvent => e !== null);
+    const rawEvents = JSON.parse(rawBody.toString('utf8')) as HsWebhookEvent[];
+    const events: ChangeEvent[] = [];
+    for (const e of rawEvents) {
+      const mapped = await this.mapEvent(e, resolveType);
+      if (mapped) events.push(mapped);
+    }
+    return events;
   }
 
   // ----------------- internals -----------------
 
-  private mapEvent(e: HsWebhookEvent): ChangeEvent | null {
-    // HubSpot subscriptionType looks like "contact.propertyChange" / "deal.creation".
-    const typeMap: Record<string, CanonicalType> = {
-      contact: 'contact',
-      company: 'company',
-      deal: 'deal',
-    };
-    const prefix = e.subscriptionType?.split('.')[0] ?? '';
-    const objectTypeMap: Record<string, CanonicalType> = {
-      '0-1': 'contact',
-      '0-2': 'company',
-      '0-3': 'deal',
-      contact: 'contact',
-      company: 'company',
-      deal: 'deal',
-    };
-    const type = typeMap[prefix] ?? objectTypeMap[e.objectTypeId ?? ''];
+  private async mapEvent(
+    e: HsWebhookEvent,
+    resolveType?: (nativeObjectId: string, sourceId: string) => Promise<CanonicalType | undefined>,
+  ): Promise<ChangeEvent | null> {
+    // Resolve the native object name from the numeric objectTypeId (portal-specific for custom
+    // objects, constant for standard ones) via the cache warmed in init()/listObjects(), then
+    // map that to a canonical object through the registry — no hardcoded object list here.
+    const objectName = this.objectTypeIds.get(e.objectTypeId ?? '');
+    if (!objectName) return null;
+    const candidates = canonicalObjectsFor('hubspot', objectName);
+    const type =
+      candidates.length <= 1
+        ? candidates[0]?.canonicalObject
+        : await resolveType?.(objectName, String(e.objectId));
     if (!type) return null;
     const changeType = e.subscriptionType?.endsWith('creation')
       ? 'created'
@@ -368,6 +488,30 @@ interface HsSchema {
   objectTypeId?: string;
   fullyQualifiedName?: string;
   labels?: { singular?: string; plural?: string };
+}
+
+/** One structured condition row -> a single HubSpot Search API filter. */
+function compileConditionFilter(
+  condition: SyncCondition,
+): { propertyName: string; operator: string; value?: unknown } {
+  switch (condition.operator) {
+    case 'is_null':
+      return { propertyName: condition.field, operator: 'NOT_HAS_PROPERTY' };
+    case 'is_not_null':
+      return { propertyName: condition.field, operator: 'HAS_PROPERTY' };
+    case 'eq':
+      return { propertyName: condition.field, operator: 'EQ', value: condition.value };
+    case 'ne':
+      return { propertyName: condition.field, operator: 'NEQ', value: condition.value };
+    case 'gt':
+      return { propertyName: condition.field, operator: 'GT', value: condition.value };
+    case 'lt':
+      return { propertyName: condition.field, operator: 'LT', value: condition.value };
+    case 'contains':
+      return { propertyName: condition.field, operator: 'CONTAINS_TOKEN', value: condition.value };
+    default:
+      return { propertyName: condition.field, operator: 'HAS_PROPERTY' };
+  }
 }
 
 function safeEqual(a: string, b: string): boolean {

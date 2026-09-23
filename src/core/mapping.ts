@@ -18,7 +18,10 @@ export type TransformId =
   | 'trim'
   | 'number'
   | 'boolean'
+  | 'yes-no'
+  | 'true-false'
   | 'iso-date'
+  | 'epoch-millis'
   | 'phone';
 
 export interface FieldRule {
@@ -49,71 +52,12 @@ export interface ValueMapping {
 const identity = (v: FieldValue): FieldValue => v;
 
 /**
- * Salesforce object mapping.
- *  contact -> Contact, company -> Account, deal -> Opportunity
+ * Field mapping tables hold NO built-in object data — every canonical object (including the
+ * built-in contact/company/deal) is configured at runtime via configureFieldRules(), seeded
+ * from core/defaultObjects.ts into Postgres per tenant. This keeps the mapping engine itself
+ * generic: it only knows how to store and translate whatever rules it's given.
  */
-const salesforce: SystemMappings = {
-  contact: [
-    { canonical: 'firstName', native: 'FirstName' },
-    { canonical: 'lastName', native: 'LastName' },
-    { canonical: 'email', native: 'Email' },
-    { canonical: 'phone', native: 'Phone' },
-    { canonical: 'title', native: 'Title' },
-    { canonical: 'ownerId', native: 'OwnerId' },
-    { canonical: 'companyName', native: 'Account.Name', readOnly: true },
-  ],
-  company: [
-    { canonical: 'name', native: 'Name' },
-    { canonical: 'domain', native: 'Website', toCanonical: 'domain' },
-    { canonical: 'phone', native: 'Phone' },
-    { canonical: 'industry', native: 'Industry' },
-    { canonical: 'employeeCount', native: 'NumberOfEmployees' },
-    { canonical: 'ownerId', native: 'OwnerId' },
-  ],
-  deal: [
-    { canonical: 'name', native: 'Name' },
-    { canonical: 'amount', native: 'Amount' },
-    { canonical: 'stage', native: 'StageName', toCanonical: 'lowercase' },
-    { canonical: 'closeDate', native: 'CloseDate' },
-    { canonical: 'pipeline', native: 'RecordTypeId', readOnly: true },
-    { canonical: 'ownerId', native: 'OwnerId' },
-  ],
-};
-
-/**
- * HubSpot object mapping (property internal names).
- *  contact -> contacts, company -> companies, deal -> deals
- */
-const hubspot: SystemMappings = {
-  contact: [
-    { canonical: 'firstName', native: 'firstname' },
-    { canonical: 'lastName', native: 'lastname' },
-    { canonical: 'email', native: 'email' },
-    { canonical: 'phone', native: 'phone' },
-    { canonical: 'title', native: 'jobtitle' },
-    { canonical: 'companyName', native: 'company' },
-    { canonical: 'ownerId', native: 'hubspot_owner_id' },
-  ],
-  company: [
-    { canonical: 'name', native: 'name' },
-    { canonical: 'domain', native: 'domain', toCanonical: 'domain' },
-    { canonical: 'phone', native: 'phone' },
-    { canonical: 'industry', native: 'industry' },
-    { canonical: 'employeeCount', native: 'numberofemployees' },
-    { canonical: 'ownerId', native: 'hubspot_owner_id' },
-  ],
-  deal: [
-    { canonical: 'name', native: 'dealname' },
-    { canonical: 'amount', native: 'amount' },
-    { canonical: 'stage', native: 'dealstage', toCanonical: 'lowercase' },
-    { canonical: 'closeDate', native: 'closedate' },
-    { canonical: 'pipeline', native: 'pipeline' },
-    { canonical: 'ownerId', native: 'hubspot_owner_id' },
-  ],
-};
-
-export const DEFAULT_FIELD_RULES: Record<SystemId, SystemMappings> = { salesforce, hubspot };
-const TABLES: Record<SystemId, SystemMappings> = structuredClone(DEFAULT_FIELD_RULES);
+const TABLES: Record<SystemId, SystemMappings> = { salesforce: {}, hubspot: {} };
 let VALUE_MAPPINGS: ValueMapping[] = [];
 
 export function configureValueMappings(mappings: ValueMapping[]): void {
@@ -121,7 +65,7 @@ export function configureValueMappings(mappings: ValueMapping[]): void {
 }
 
 export function fieldRules(system: SystemId, type: CanonicalType): FieldRule[] {
-  return TABLES[system][type].map((rule) => ({ ...rule }));
+  return (TABLES[system][type] ?? []).map((rule) => ({ ...rule }));
 }
 
 export function configureFieldRules(
@@ -141,11 +85,8 @@ export function configureFieldRules(
 }
 
 export function resetFieldRules(): void {
-  for (const system of ['salesforce', 'hubspot'] as const) {
-    for (const type of ['contact', 'company', 'deal'] as const) {
-      TABLES[system][type] = structuredClone(DEFAULT_FIELD_RULES[system][type]);
-    }
-  }
+  TABLES.salesforce = {};
+  TABLES.hubspot = {};
 }
 
 /** Translate a native record (as returned by the API) into canonical fields. */
@@ -155,7 +96,7 @@ export function toCanonicalFields(
   native: Record<string, unknown>,
 ): Record<string, FieldValue> {
   const out: Record<string, FieldValue> = {};
-  for (const rule of TABLES[system][type]) {
+  for (const rule of TABLES[system][type] ?? []) {
     const raw = getPath(native, rule.native);
     const value = coerce(raw);
     out[rule.canonical] = toCanonicalValue(
@@ -175,7 +116,7 @@ export function fromCanonicalFields(
   fields: Record<string, FieldValue>,
 ): Record<string, FieldValue> {
   const out: Record<string, FieldValue> = {};
-  for (const rule of TABLES[system][type]) {
+  for (const rule of TABLES[system][type] ?? []) {
     if (rule.readOnly) continue;
     if (!(rule.canonical in fields)) continue;
     // Native field can be a dotted path on read; on write we only support flat props.
@@ -188,9 +129,22 @@ export function fromCanonicalFields(
   return out;
 }
 
-/** The set of native field names to request from an API for a given type (read projection). */
+/**
+ * The set of native field names to request from an API for a given type (read projection).
+ * Deduplicated case-insensitively: two different canonical fields can legitimately map to
+ * the same native field (e.g. an alias), but a query's field-selection list can only name
+ * that native field once (Salesforce rejects "duplicate field selected" otherwise).
+ */
 export function nativeFields(system: SystemId, type: CanonicalType): string[] {
-  return TABLES[system][type].map((r) => r.native);
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const rule of TABLES[system][type] ?? []) {
+    const key = rule.native.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(rule.native);
+  }
+  return out;
 }
 
 export function nativeField(
@@ -198,7 +152,7 @@ export function nativeField(
   type: CanonicalType,
   canonical: string,
 ): string | undefined {
-  return TABLES[system][type].find((rule) => rule.canonical === canonical)?.native;
+  return (TABLES[system][type] ?? []).find((rule) => rule.canonical === canonical)?.native;
 }
 
 // ----------------- helpers / transforms -----------------
@@ -240,17 +194,50 @@ function transform(id: TransformId | undefined, value: FieldValue): FieldValue {
   if (id === 'number') {
     if (value === null || value === '') return null;
     const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : value;
+    // A value that doesn't parse as a plain number (e.g. a duration string like "0:0")
+    // can't be sent to a numeric field either way -- drop it rather than forwarding
+    // something the target system will reject.
+    return Number.isFinite(parsed) ? parsed : null;
   }
   if (id === 'boolean') {
     if (typeof value === 'boolean' || value === null) return value;
     if (typeof value === 'string') return ['true', '1', 'yes'].includes(value.toLowerCase());
     return Boolean(value);
   }
+  if (id === 'yes-no') {
+    // Same transform id works in both directions -- the input's own type tells us which way
+    // we're going: a native "yes"/"no" string coming in becomes a canonical boolean, and a
+    // canonical boolean going out becomes the literal "yes"/"no" string the field expects
+    // (e.g. a HubSpot custom property defined as an enumeration with options [yes, no]).
+    if (typeof value === 'boolean') return value ? 'yes' : 'no';
+    if (typeof value === 'string') return ['yes', 'true', '1'].includes(value.toLowerCase());
+    return value;
+  }
+  if (id === 'true-false') {
+    // Same shape as yes-no, for the other common enumeration encoding: a dropdown/checkbox
+    // property whose option values are the literal strings "true"/"false" rather than "yes"/"no".
+    if (typeof value === 'boolean') return value ? 'true' : 'false';
+    if (typeof value === 'string') return value.toLowerCase() === 'true';
+    return value;
+  }
   if (id === 'iso-date') {
     if (typeof value !== 'string' && typeof value !== 'number') return value;
     const parsed = new Date(value);
     return Number.isNaN(parsed.getTime()) ? value : parsed.toISOString();
+  }
+  if (id === 'epoch-millis') {
+    // Bidirectional by input type, like yes-no/true-false: a native epoch-ms number becomes
+    // a canonical ISO string, and a canonical ISO string becomes a native epoch-ms number --
+    // for the (uncommon) custom date property that stores a long instead of an ISO datetime.
+    if (typeof value === 'number') {
+      const parsed = new Date(value);
+      return Number.isNaN(parsed.getTime()) ? value : parsed.toISOString();
+    }
+    if (typeof value === 'string') {
+      const parsed = new Date(value);
+      return Number.isNaN(parsed.getTime()) ? value : parsed.getTime();
+    }
+    return value;
   }
   if (id === 'phone') {
     return typeof value === 'string' ? value.trim().replace(/[^\d+]/g, '') : value;

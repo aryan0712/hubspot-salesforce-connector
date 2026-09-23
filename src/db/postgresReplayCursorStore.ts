@@ -1,4 +1,5 @@
 import type { ReplayCursorStore } from '../connectors/salesforce/cdcWorker.js';
+import type { SystemId } from '../core/types.js';
 import type { PostgresDatabase } from './postgres.js';
 
 export class PostgresReplayCursorStore implements ReplayCursorStore {
@@ -7,7 +8,7 @@ export class PostgresReplayCursorStore implements ReplayCursorStore {
     private readonly tenantId: string,
   ) {}
 
-  async get(system: 'salesforce', stream: string): Promise<string | undefined> {
+  async get(system: SystemId, stream: string): Promise<string | undefined> {
     return this.db.tenant(this.tenantId, async (client) => {
       const result = await client.query<{ replay_id: string }>(
         `SELECT replay_id FROM webhook_cursors
@@ -18,7 +19,7 @@ export class PostgresReplayCursorStore implements ReplayCursorStore {
     });
   }
 
-  async commit(system: 'salesforce', stream: string, replayId: string): Promise<void> {
+  async commit(system: SystemId, stream: string, replayId: string): Promise<void> {
     await this.db.tenant(this.tenantId, async (client) => {
       await client.query(
         `INSERT INTO webhook_cursors(tenant_id, system, stream_name, replay_id)

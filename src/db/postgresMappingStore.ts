@@ -5,6 +5,7 @@ import {
   type FieldRule,
   type TransformId,
 } from '../core/mapping.js';
+import { listCanonicalObjects } from '../core/objectRegistry.js';
 import type { MappingStore } from '../core/mappingStore.js';
 import type { PostgresDatabase } from './postgres.js';
 
@@ -24,8 +25,11 @@ export class PostgresMappingStore implements MappingStore {
   ) {}
 
   async init(): Promise<void> {
+    // objectMappings.init() (app.ts) runs before this, so the tenant's full registry —
+    // not just the built-in 3 — is already populated by the time we loop here.
+    const types = listCanonicalObjects().map((object) => object.canonicalObject);
     for (const system of ['salesforce', 'hubspot'] as const) {
-      for (const type of ['contact', 'company', 'deal'] as const) {
+      for (const type of types) {
         const mapping = await this.load(system, type);
         if (mapping.configured) configureFieldRules(system, type, mapping.rules);
       }

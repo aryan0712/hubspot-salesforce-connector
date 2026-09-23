@@ -10,8 +10,13 @@
 
 export type SystemId = 'salesforce' | 'hubspot';
 
-/** The object types we support end-to-end. Extend as coverage grows. */
-export type CanonicalType = 'contact' | 'company' | 'deal';
+/**
+ * A canonical object identifier. Any standard or custom object from either CRM can be
+ * registered as a canonical object at runtime (see core/objectRegistry.ts) — this is no
+ * longer a closed set. 'contact' | 'company' | 'deal' remain the built-in defaults, but
+ * they are ordinary registry entries, not special-cased in the type system.
+ */
+export type CanonicalType = string;
 
 /** A vendor-agnostic scalar field value. */
 export type FieldValue = string | number | boolean | null;

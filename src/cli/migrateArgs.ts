@@ -1,11 +1,11 @@
 import type { CanonicalType, SystemId } from '../core/types.js';
 
 const SYSTEMS = new Set<SystemId>(['salesforce', 'hubspot']);
-const TYPES = new Set<CanonicalType>(['contact', 'company', 'deal']);
 
 export interface MigrationCliOptions {
   from: SystemId;
-  types: CanonicalType[];
+  /** undefined means "--types" was omitted; the caller resolves it to every registered object. */
+  types: CanonicalType[] | undefined;
   limit?: number;
   dryRun: boolean;
 }
@@ -27,14 +27,16 @@ export function parseMigrationArgs(argv: string[]): MigrationCliOptions {
     throw new Error('--from must be salesforce or hubspot');
   }
 
-  const rawTypes = (get('--types') ?? 'contact,company,deal')
-    .split(',')
-    .map((value) => value.trim())
-    .filter(Boolean);
-  if (!rawTypes.length || rawTypes.some((type) => !TYPES.has(type as CanonicalType))) {
-    throw new Error('--types must contain contact, company, or deal');
-  }
-  const types = [...new Set(rawTypes)] as CanonicalType[];
+  const rawTypesArg = get('--types');
+  const types = rawTypesArg === undefined
+    ? undefined
+    : (() => {
+        const parsed = [...new Set(
+          rawTypesArg.split(',').map((value) => value.trim()).filter(Boolean),
+        )];
+        if (!parsed.length) throw new Error('--types must list at least one object');
+        return parsed;
+      })();
 
   const rawLimit = get('--limit');
   const limit = rawLimit === undefined ? undefined : Number(rawLimit);
