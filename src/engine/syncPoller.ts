@@ -4,6 +4,7 @@ import type { ChangeEvent, CanonicalType, SystemId } from '../core/types.js';
 import {
   MAX_POLLING_INTERVAL_MINUTES,
   MIN_POLLING_INTERVAL_MINUTES,
+  nextCronOccurrences,
   syncAllows,
   type SyncConfig,
   type SyncConfigStore,
@@ -13,6 +14,7 @@ import type { IdMapStore } from '../core/idMap.js';
 import type { ActivityLog } from '../observability/activity.js';
 import type { SyncEngine } from './syncEngine.js';
 import { logger } from '../logger.js';
+import { friendlyErrorMessage } from '../core/vendorError.js';
 
 const POLL_STREAM_PREFIX = 'poll:';
 // Bounded first-run lookback so an initial poll can't trigger an unbounded backfill, unless
@@ -27,6 +29,13 @@ export interface SyncPollerSummary {
   changed: number;
   deleted: number;
   errors: number;
+  /**
+   * Human-readable cause for each failed system this cycle -- a poll failure happens before
+   * any sync job/event ever exists, so unlike a per-record sync error it has no dead-letter
+   * row to inspect in Activity; this is the only place it's ever recorded. Kept short (one
+   * entry per system) rather than accumulating history -- see the Activity log for that.
+   */
+  errorMessages: string[];
 }
 
 /**
@@ -46,6 +55,10 @@ export class SyncPoller {
   private readonly runningTypes = new Set<CanonicalType>();
   private readonly nextDueAt = new Map<CanonicalType, number>();
   private readonly lastRunByType = new Map<CanonicalType, SyncPollerSummary>();
+  // Bounded run history per object, newest first -- lastRunByType only ever answers "what
+  // happened most recently," which can't tell "did this fail yesterday too, or is this new."
+  private readonly historyByType = new Map<CanonicalType, SyncPollerSummary[]>();
+  private static readonly HISTORY_LIMIT = 20;
 
   constructor(
     private readonly connectors: Record<SystemId, CRMConnector>,
@@ -63,6 +76,16 @@ export class SyncPoller {
   /** Every object's most recent poll result, keyed by canonical type. */
   lastRuns(): Record<CanonicalType, SyncPollerSummary> {
     return Object.fromEntries(this.lastRunByType);
+  }
+
+  /** Up to the last 20 runs for one object, newest first. */
+  history(type: CanonicalType): SyncPollerSummary[] {
+    return this.historyByType.get(type) ?? [];
+  }
+
+  /** Every object's run history, keyed by canonical type. */
+  histories(): Record<CanonicalType, SyncPollerSummary[]> {
+    return Object.fromEntries(this.historyByType);
   }
 
   /** @param ensureReady  optional readiness hook (e.g. lazy live connector init), run before each cycle. */
@@ -95,7 +118,7 @@ export class SyncPoller {
         if (!config.objects[type]?.enabled || !pollingConfig?.enabled) continue;
         const due = this.nextDueAt.get(type) ?? 0;
         if (now < due) continue;
-        this.nextDueAt.set(type, now + clampInterval(pollingConfig.intervalMinutes) * 60_000);
+        this.nextDueAt.set(type, computeNextDueAt(pollingConfig, now));
         void this.pollObject(type).catch((err) => {
           logger.error({ err, type }, 'scheduled sync poll failed');
         });
@@ -119,10 +142,18 @@ export class SyncPoller {
 
   private async pollObject(type: CanonicalType): Promise<SyncPollerSummary> {
     if (this.runningTypes.has(type)) {
-      return this.lastRunByType.get(type) ?? { at: new Date().toISOString(), changed: 0, deleted: 0, errors: 0 };
+      return (
+        this.lastRunByType.get(type) ?? {
+          at: new Date().toISOString(),
+          changed: 0,
+          deleted: 0,
+          errors: 0,
+          errorMessages: [],
+        }
+      );
     }
     this.runningTypes.add(type);
-    const summary: SyncPollerSummary = { at: new Date().toISOString(), changed: 0, deleted: 0, errors: 0 };
+    const summary: SyncPollerSummary = { at: new Date().toISOString(), changed: 0, deleted: 0, errors: 0, errorMessages: [] };
     try {
       const config = this.syncConfig.get();
       if (!config.objects[type]?.enabled) return summary;
@@ -134,18 +165,25 @@ export class SyncPoller {
           summary.deleted += result.deleted;
         } catch (err) {
           summary.errors += 1;
-          logger.error({ err, system, type }, 'scheduled sync poll failed for object');
+          const label = system === 'salesforce' ? 'Salesforce' : 'HubSpot';
+          const message = friendlyErrorMessage(err, label);
+          summary.errorMessages.push(`${label}: ${message}`);
+          logger.error({ err, system, type, message }, 'scheduled sync poll failed for object');
         }
       }
       if (summary.changed || summary.deleted || summary.errors) {
         this.activity?.record({
-          kind: 'info',
-          message: `Scheduled sync (${type}): ${summary.changed} change${summary.changed === 1 ? '' : 's'}, ${summary.deleted} deletion${summary.deleted === 1 ? '' : 's'} detected${summary.errors ? `, ${summary.errors} error${summary.errors === 1 ? '' : 's'}` : ''}`,
+          kind: summary.errors ? 'error' : 'info',
+          message: summary.errors
+            ? `Scheduled sync (${type}) failed: ${summary.errorMessages.join(' · ')}`
+            : `Scheduled sync (${type}): ${summary.changed} change${summary.changed === 1 ? '' : 's'}, ${summary.deleted} deletion${summary.deleted === 1 ? '' : 's'} detected`,
         });
       }
     } finally {
       this.runningTypes.delete(type);
       this.lastRunByType.set(type, summary);
+      const history = [summary, ...(this.historyByType.get(type) ?? [])].slice(0, SyncPoller.HISTORY_LIMIT);
+      this.historyByType.set(type, history);
     }
     return summary;
   }
@@ -226,4 +264,21 @@ export class SyncPoller {
 function clampInterval(minutes: number): number {
   if (!Number.isFinite(minutes)) return 30;
   return Math.min(MAX_POLLING_INTERVAL_MINUTES, Math.max(MIN_POLLING_INTERVAL_MINUTES, Math.round(minutes)));
+}
+
+/**
+ * A cron expression, when set, decides the next due time instead of intervalMinutes -- it's
+ * the only way to express "every Monday at 9am," which a plain repeating interval can't. Falls
+ * back to the simple interval if the cron expression is missing or (shouldn't happen once
+ * PATCH /api/sync/settings validates it, but the config could predate validation) unparseable.
+ */
+function computeNextDueAt(pollingConfig: { intervalMinutes: number; cron?: string }, now: number): number {
+  if (pollingConfig.cron) {
+    try {
+      return nextCronOccurrences(pollingConfig.cron, new Date(now), 1)[0]!.getTime();
+    } catch (err) {
+      logger.warn({ err, cron: pollingConfig.cron }, 'invalid cron expression, falling back to interval');
+    }
+  }
+  return now + clampInterval(pollingConfig.intervalMinutes) * 60_000;
 }

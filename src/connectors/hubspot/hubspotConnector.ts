@@ -247,6 +247,14 @@ export class HubSpotConnector implements CRMConnector {
       }));
     } catch (err: unknown) {
       if (!axios.isAxiosError(err) || ![401, 403, 404].includes(err.response?.status ?? 0)) throw err;
+      // Missing the crm.schemas.custom.read scope (or no custom objects defined yet) both land
+      // here as a 403/404 -- silently returning zero custom objects either way used to look
+      // identical to "this portal genuinely has none," which is exactly the kind of silent
+      // failure this app is supposed to avoid. Surfacing which one it actually is.
+      logger.warn(
+        { status: err.response?.status, data: err.response?.data },
+        'could not list HubSpot custom object schemas -- likely a missing scope on the connected app/token',
+      );
     }
     return [...HUBSPOT_STANDARD_OBJECTS, ...custom]
       .map((object) => ({ ...object, canonicalType: canonicalObjectFor('hubspot', object.id) }))

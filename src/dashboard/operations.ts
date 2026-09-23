@@ -56,6 +56,10 @@ export function operationsHtml(): string {
     .object-poll-row .muted.error{color:var(--red)}
     .object-poll-row.disabled{opacity:.5}
     .object-links-row{display:flex;gap:14px;padding-left:25px}
+    .poll-history{padding:10px 12px 4px 25px;display:flex;flex-direction:column;gap:6px}
+    .poll-history-row{display:flex;gap:14px;font-size:12px;color:var(--text-2)}
+    .poll-history-row span:first-child{flex:none;width:150px;color:var(--muted)}
+    .poll-history-row.error span:last-child{color:var(--red)}
     .row-actions{display:flex;gap:6px;flex-wrap:nowrap;justify-content:flex-end}
     .row-actions button{padding:7px 11px;font-size:12px;white-space:nowrap}
     .condition-row{display:flex;align-items:center;gap:8px;margin-bottom:8px}
@@ -147,10 +151,13 @@ export function operationsHtml(): string {
 
         <div id="sync-wizard-step-2" hidden>
           <p class="subcopy" style="margin-top:0" id="sync-wizard-step2-hint"></p>
-          <div class="fields" style="grid-template-columns:1fr">
-            <div><label>Object</label><select id="sync-wizard-object-select"><option value="">Choose an object…</option></select></div>
+          <div class="fields" style="grid-template-columns:1fr 1fr">
+            <div><label>Salesforce object</label><select id="sync-wizard-sf-object"><option value="">Choose an object…</option></select></div>
+            <div><label>HubSpot object</label><select id="sync-wizard-hs-object"><option value="">Choose an object…</option></select></div>
           </div>
-          <div id="sync-wizard-target-picker"></div>
+          <p class="muted" id="sync-wizard-pair-preview" style="margin:10px 0 0;font-size:13px"></p>
+          <button class="run-link" id="sync-wizard-edit-objects" type="button" hidden style="margin-top:6px">Change objects…</button>
+          <div id="sync-wizard-label-row" hidden style="margin-top:10px"><label>Name this sync object <span class="muted" style="font-weight:400">(this Salesforce object is already mapped elsewhere — give this pairing its own name, e.g. "Person Account")</span></label><input id="sync-wizard-label" placeholder="e.g. Person Account"></div>
           <div id="sync-wizard-conditions-panel" hidden>
             <label style="margin-top:14px;display:block">Sync condition <span class="muted" style="font-weight:400">(optional — leave empty to sync every record)</span></label>
             <div id="sync-wizard-condition-rows"></div>
@@ -160,10 +167,20 @@ export function operationsHtml(): string {
               <textarea id="sync-wizard-raw-condition" rows="2" placeholder="e.g. Type = 'Customer'" style="width:100%;margin-top:8px;min-height:60px"></textarea>
               <p class="muted" style="font-size:11px">Appended as <code>AND (…)</code> to the sync query. No semicolons, comments, or write statements.</p>
             </details>
+            <div class="identity-actions" style="margin-top:10px">
+              <button class="secondary" id="sync-wizard-check-syntax" type="button">Check syntax</button>
+              <button class="secondary" id="sync-wizard-test" type="button">Test this setup</button>
+              <span id="sync-wizard-check-result"></span>
+            </div>
+            <div class="test-record-preview" id="sync-wizard-test-result" hidden style="border:1px solid var(--border);border-radius:8px;margin-top:10px">
+              <div class="test-record-head"><span class="pill" id="sync-wizard-test-action"></span><b id="sync-wizard-test-summary"></b></div>
+              <div class="test-record-fields" id="sync-wizard-test-fields"></div>
+            </div>
           </div>
           <div class="identity-actions" style="margin-top:16px"><button class="secondary" id="sync-wizard-step2-back" type="button">Back</button>
             <button id="sync-wizard-step2-continue" type="button" disabled>Continue to field mapping</button>
-            <button class="secondary" id="sync-wizard-save-conditions" type="button" hidden>Save conditions</button></div>
+            <button class="secondary" id="sync-wizard-save-conditions" type="button" hidden>Save conditions</button>
+            <button id="sync-wizard-save-native-objects" type="button" hidden disabled>Save object change</button></div>
           <div class="settings-message" id="sync-wizard-message"></div>
         </div>
       </div></div>
@@ -233,18 +250,26 @@ export function operationsHtml(): string {
       document.querySelector('.builder-summary').hidden=sync;
       $('back-to-sync').hidden=!sync;
       document.querySelectorAll('[data-migrate-open]').forEach(btn=>btn.hidden=sync);
-      document.querySelectorAll('.workspace-step').forEach(btn=>{btn.hidden=sync&&!['objects','fields'].includes(btn.dataset.step)});
-      const stepNumbers={objects:sync?1:2,fields:sync?2:3};
+      // The Sync setup wizard (direction -> object pair -> conditions) now fully owns object
+      // selection for Sync -- unlike the older single-picker flow, it never routes back
+      // through this shared workspace's own Objects step, so showing it here as a second,
+      // separate "step 1" was leftover scaffolding: confusing (looks like object selection is
+      // still pending) and dead (nothing on it does anything useful for a sync object, since
+      // the wizard already registered/paired it before ever landing here). Fields is the only
+      // step Sync actually uses this workspace for.
+      document.querySelectorAll('.workspace-step').forEach(btn=>{btn.hidden=sync?btn.dataset.step!=='fields':false});
+      const stepNumbers={objects:2,fields:sync?1:3};
       Object.entries(stepNumbers).forEach(([step,n])=>{const el=document.querySelector('.workspace-step[data-step="'+step+'"] .step-number');if(el)el.textContent=n});
-      document.querySelectorAll('[data-go-step="scope"],[data-go-step="values"],[data-go-step="validate"],[data-go-step="preview"]').forEach(btn=>btn.hidden=sync);
-      $('objects-step-eyebrow').hidden=sync;$('objects-step-title').textContent=sync?'Choose or register the object':'Choose the objects to migrate';
+      document.querySelectorAll('[data-go-step="scope"],[data-go-step="objects"],[data-go-step="values"],[data-go-step="validate"],[data-go-step="preview"]').forEach(btn=>btn.hidden=sync);
       $('fields-step-eyebrow').hidden=sync;$('fields-step-title').textContent=sync?'Map fields for this object':'Map and transform fields';
+      $('save-next-field-object').textContent=sync?'Save & back to Sync →':'Save & next object →';
     }
     $('back-to-sync').onclick=()=>{$('sync-wizard-natural-key').hidden=true;syncWizard.naturalKeyPending=false;history.replaceState(null,'','#sync');selectView('sync')};
     function selectView(view){
       if(!viewMeta[view])view='migration';
       document.querySelectorAll('.view').forEach(x=>x.classList.toggle('active',x.id==='view-'+view));
-      document.querySelectorAll('.app-nav a').forEach(x=>x.classList.toggle('active',x.getAttribute('href')==='/ops#'+view));
+      const navView=view==='migration'&&workspaceMode==='sync'?'sync':view;
+      document.querySelectorAll('.app-nav a').forEach(x=>x.classList.toggle('active',x.getAttribute('href')==='/ops#'+navView));
       if(view!=='migration')workspaceMode='migration';
       $('page-title').textContent=viewMeta[view][0];$('page-subtitle').textContent=viewMeta[view][1];
       if(view==='migration')applyWorkspaceMode();
@@ -301,7 +326,22 @@ export function operationsHtml(): string {
     document.querySelectorAll('[data-migrate-tab]').forEach(button=>button.onclick=()=>selectMigrateTab(button.dataset.migrateTab));
     document.querySelectorAll('[data-migrate-open]').forEach(button=>button.onclick=()=>selectMigrateTab(button.dataset.migrateOpen));
 
-    async function loadCatalog(){const source=$('mig-from').value;$('object-rows').innerHTML='<tr><td colspan="6" class="empty">Discovering CRM objects…</td></tr>';
+    // The page's own unconditional refreshAll() (fired once at load, regardless of which tab
+    // is active) and goMapFields()'s ensureCatalogForSyncObject() can both decide to call this
+    // within the same second -- e.g. clicking "Map fields" on the Sync tab shortly after the
+    // page loads. Two overlapping fetches used to each independently overwrite
+    // migrationState.catalog and call refreshObjectSelectors() when they resolved, and
+    // whichever one settled LAST (not necessarily the one that started last) won -- so a
+    // click's own careful sequencing could still get its selects reset out from under it right
+    // after by the other call's turn. Single-flighting the promise means every caller in the
+    // same window shares one fetch and one consistent set of renders after it, in-order.
+    let catalogLoadPromise=null;
+    function loadCatalog(){
+      if(catalogLoadPromise)return catalogLoadPromise;
+      catalogLoadPromise=loadCatalogNow().finally(()=>{catalogLoadPromise=null});
+      return catalogLoadPromise;
+    }
+    async function loadCatalogNow(){const source=$('mig-from').value;$('object-rows').innerHTML='<tr><td colspan="6" class="empty">Discovering CRM objects…</td></tr>';
       try{const result=await api('/api/object-catalog?from='+encodeURIComponent(source));migrationState.catalog=result.rows;migrationState.catalogError=null;migrationState.targets=result.targets||[];
         if(!migrationState.selectionInitialized){migrationState.selected=new Set(result.rows.filter(row=>row.registered).map(row=>row.canonicalType));migrationState.selectionInitialized=true}
         renderCatalog();refreshObjectSelectors();updateMigrationSummary()}
@@ -396,7 +436,7 @@ export function operationsHtml(): string {
     $('field-search').oninput=applyMappingFilters;$('field-filter').onchange=applyMappingFilters;
     function updateFieldObjectPosition(){const select=$('field-object'),count=select.options.length,index=select.selectedIndex;$('field-object-position').textContent=count&&index>=0?(index+1)+' of '+count:'No objects'}
     async function moveFieldObject(delta){const select=$('field-object'),next=select.selectedIndex+delta;if(next<0||next>=select.options.length)return;if(migrationState.mapping?.dirty)await saveFieldMappings(false);select.selectedIndex=next;await loadFieldWorkspace(select.value)}
-    $('save-next-field-object').onclick=async()=>{try{if(migrationState.mapping?.dirty)await saveFieldMappings(false);await moveFieldObject(1)}catch(e){setDraftStatus(e.message,'error')}};
+    $('save-next-field-object').onclick=async()=>{try{if(migrationState.mapping?.dirty)await saveFieldMappings(false);if(workspaceMode==='sync'){history.replaceState(null,'','#sync');selectView('sync')}else await moveFieldObject(1)}catch(e){setDraftStatus(e.message,'error')}};
     function previewTransform(id,value){if(!id||id==='identity')return value;if(id==='trim')return typeof value==='string'?value.trim():value;if(id==='lowercase')return typeof value==='string'?value.trim().toLowerCase():value;if(id==='domain'){if(typeof value!=='string'||!value)return value;try{const url=new URL(value.includes('://')?value:'http://'+value);return url.hostname.replace(/^www\\./,'').toLowerCase()}catch{return value.toLowerCase()}}if(id==='number'){if(value===null||value==='')return null;const parsed=Number(value);return Number.isFinite(parsed)?parsed:value}if(id==='boolean'){if(typeof value==='boolean'||value===null)return value;if(typeof value==='string')return ['true','1','yes'].includes(value.toLowerCase());return Boolean(value)}if(id==='yes-no'){if(typeof value==='boolean')return value?'yes':'no';if(typeof value==='string')return ['yes','true','1'].includes(value.toLowerCase());return value}if(id==='iso-date'){const parsed=new Date(value);return Number.isNaN(parsed.getTime())?value:parsed.toISOString()}if(id==='phone')return typeof value==='string'?value.trim().replace(/[^\\d+]/g,''):value;return value}
     function previewValue(value){return typeof value==='string'?value:JSON.stringify(value)}
     function updateTransformPreview(){
@@ -598,17 +638,75 @@ export function operationsHtml(): string {
     function minutesToUnit(min){if(min%1440===0)return{value:min/1440,unit:'days'};if(min%60===0)return{value:min/60,unit:'hours'};return{value:min,unit:'minutes'}}
     function unitToMinutes(value,unit){const n=Number(value)||0;return unit==='days'?n*1440:unit==='hours'?n*60:n}
     function pollingStatusText(status){if(!status)return 'No scheduled poll has run yet.';
-      return 'Last run '+new Date(status.at).toLocaleString()+' · '+status.changed+' change'+(status.changed===1?'':'s')+', '+status.deleted+' deletion'+(status.deleted===1?'':'s')+(status.errors?', '+status.errors+' error'+(status.errors===1?'':'s'):'')}
+      // A poll failure happens before any sync job/event exists, so it has no dead-letter row
+      // anywhere else to inspect -- this is the only place the actual cause is ever shown.
+      const detail=status.errors&&status.errorMessages?.length?' — '+status.errorMessages.join(' · '):'';
+      return 'Last run '+new Date(status.at).toLocaleString()+' · '+status.changed+' change'+(status.changed===1?'':'s')+', '+status.deleted+' deletion'+(status.deleted===1?'':'s')+(status.errors?', '+status.errors+' error'+(status.errors===1?'':'s')+detail:'')}
     // Only objects that finished the Sync setup wizard (enrolledForSync) ever appear here --
     // a canonical object can be registered for Migration alone and never show up in Sync.
     function enrolledSyncCatalog(){return syncObjectCatalog.filter(obj=>syncConfigState?.objects?.[obj.canonicalObject]?.enrolledForSync)}
+    // Sync tab loads via two independent calls that can land close together (the page's
+    // initial hash-based selectView('sync') and its own unconditional refreshAll()), each
+    // fully re-rendering #sync-object-settings -- a plain "hidden = !hidden" toggle on a
+    // freshly re-created element would get silently reset by whichever render lands second.
+    // Tracking which objects' history panels are open here, and re-applying that on every
+    // render, keeps the toggle correct regardless of how many renders overlap.
+    const openHistoryPanels=new Set();
     function renderSyncObjectRows(config){
       const enrolled=enrolledSyncCatalog();
       $('sync-object-settings').innerHTML=enrolled.length?enrolled.map(obj=>syncObjectRowHtml(obj,config)).join(''):'<div class="empty">No objects added to sync yet — use "+ Add object to sync" below.</div>';
       enrolled.forEach(obj=>{const type=obj.canonicalObject;
         $('poll-now-'+type).onclick=()=>pollObjectNow(type);$('map-fields-'+type).onclick=()=>goMapFields(type);$('edit-conditions-'+type).onclick=()=>openSyncWizardForEdit(type);
         document.querySelector('[data-sync-enabled="'+type+'"]').onchange=e=>setPollRowEnabled(type,e.target.checked);
+        document.querySelector('[data-poll-mode="'+type+'"]').onchange=e=>{
+          const cron=e.target.value==='cron';
+          document.querySelector('[data-poll-interval-fields="'+type+'"]').hidden=cron;
+          document.querySelector('[data-poll-cron-fields="'+type+'"]').hidden=!cron;
+          if(cron)previewCronExpression(type);
+        };
+        const cronInput=document.querySelector('[data-poll-cron="'+type+'"]');
+        let cronDebounce;
+        cronInput.oninput=()=>{clearTimeout(cronDebounce);cronDebounce=setTimeout(()=>previewCronExpression(type),400)};
+        if(config.polling[type]?.cron)previewCronExpression(type);
+        $('toggle-history-'+type).onclick=()=>toggleSyncHistory(type);
+        $('remove-sync-'+type).onclick=()=>removeFromSync(type,obj.label);
+        if(openHistoryPanels.has(type))renderSyncHistoryPanel(type);
       });
+    }
+    // Live "next run" feedback as the cron field is typed -- calls the exact same calculation
+    // SyncPoller itself uses to decide when an object is next due, so this can never disagree
+    // with what will actually happen once saved.
+    async function previewCronExpression(type){
+      const input=document.querySelector('[data-poll-cron="'+type+'"]'),next=document.querySelector('[data-poll-cron-next="'+type+'"]');
+      const expr=input.value.trim();
+      if(!expr){next.textContent='';next.className='muted';return}
+      try{
+        const res=await api('/api/sync/cron-preview?expr='+encodeURIComponent(expr));
+        next.className='muted';next.textContent='Next: '+res.occurrences.map(iso=>new Date(iso).toLocaleString()).join(', ');
+      }catch{next.className='muted error';next.textContent='Not a valid cron expression.'}
+    }
+    function renderSyncHistoryPanel(type){
+      const panel=$('poll-history-'+type);if(!panel)return;
+      panel.hidden=false;panel.innerHTML=pollHistoryHtml(syncConfigState?.pollHistory?.[type]);
+    }
+    function toggleSyncHistory(type){
+      if(openHistoryPanels.has(type)){openHistoryPanels.delete(type);$('poll-history-'+type).hidden=true}
+      else{openHistoryPanels.add(type);renderSyncHistoryPanel(type)}
+    }
+    // Un-enrolls the object from Sync without deleting its underlying registration/field
+    // mappings -- Migration (if it also uses this object) is unaffected, and re-adding it
+    // later through the wizard reuses the same canonical object instead of creating a
+    // duplicate one, since the Salesforce+HubSpot pair still matches exactly.
+    async function removeFromSync(type,label){
+      if(!confirm('Remove '+label+' from Sync? It stops syncing (webhook and scheduled) immediately. You can add it back later from "+ Add object to sync".'))return;
+      try{
+        const current=syncConfigState.objects[type];
+        syncConfigState=await api('/api/sync/settings',{method:'PATCH',body:JSON.stringify({
+          conflictStrategy:syncConfigState.conflictStrategy,sourceOfTruth:syncConfigState.sourceOfTruth,
+          objects:{[type]:{...current,enabled:false,enrolledForSync:false}},
+        })});
+        await loadSyncSettings();
+      }catch(e){alert(e.message)}
     }
     // Live-updates the poll sub-row's disabled/greyed state as soon as the master checkbox is
     // toggled, without waiting for a save + full re-render -- the whole point is that checking
@@ -621,6 +719,7 @@ export function operationsHtml(): string {
       statusEl.textContent=masterEnabled?statusEl.dataset.pollStatusText:'Turn on "Sync enabled" above to use scheduled polling.';
     }
     function directionLabel(direction){return direction==='salesforce_to_hubspot'?'Salesforce → HubSpot':direction==='hubspot_to_salesforce'?'HubSpot → Salesforce':'Bidirectional'}
+    function capitalizeWord(word){return word?word.charAt(0).toUpperCase()+word.slice(1):word}
     // Direction is chosen up front in the Sync setup wizard (step 1) -- showing it again here
     // as a second, independently-editable control was confusing and let it drift out of sync
     // with the conditions already configured for that direction's source system. It's
@@ -634,22 +733,48 @@ export function operationsHtml(): string {
     // and disabled to match, rather than offering a control with no effect.
     function syncObjectRowHtml(obj,config){
       const type=obj.canonicalObject,value=config.objects[type]||{enabled:false,direction:'bidirectional'},polling=config.polling[type]||{enabled:false,intervalMinutes:30},unit=minutesToUnit(polling.intervalMinutes),status=config.pollingStatus&&config.pollingStatus[type];
+      const cronMode=Boolean(polling.cron),dis=value.enabled?'':'disabled';
+      const pairLabel=capitalizeWord(obj.salesforceObject||'—')+' → '+capitalizeWord(obj.hubspotObject||'—');
       return '<div class="object-sync-row">'
-        +'<div class="object-sync-main"><label><input type="checkbox" data-sync-enabled="'+esc(type)+'" '+(value.enabled?'checked':'')+' title="Master switch -- turns sync off entirely, both webhooks and scheduled polling, when unchecked"><b>'+esc(obj.label)+'</b><span class="muted" style="font-weight:400;font-size:11px"> · Sync enabled</span></label>'
+        +'<div class="object-sync-main"><label><input type="checkbox" data-sync-enabled="'+esc(type)+'" '+(value.enabled?'checked':'')+' title="Master switch -- turns sync off entirely, both webhooks and scheduled polling, when unchecked"><b>'+esc(pairLabel)+'</b><span class="muted" style="font-weight:400;font-size:11px"> · Sync enabled</span></label>'
         +'<span class="pill '+(value.enabled?'completed':'queued')+'">'+(value.enabled?'Live':'Paused')+'</span>'
         +'<span class="muted" data-sync-direction-label="'+esc(type)+'">'+esc(directionLabel(value.direction))+'</span></div>'
         +'<div class="object-poll-row'+(value.enabled?'':' disabled')+'" data-poll-row="'+esc(type)+'">'
-        +'<label><input type="checkbox" data-poll-enabled="'+esc(type)+'" '+(polling.enabled?'checked':'')+' '+(value.enabled?'':'disabled')+'> Also poll on a schedule</label>'
-        +'<span>every</span><input type="number" min="1" step="1" value="'+unit.value+'" data-poll-value="'+esc(type)+'" '+(value.enabled?'':'disabled')+'>'
-        +'<select data-poll-unit="'+esc(type)+'" '+(value.enabled?'':'disabled')+'><option value="minutes" '+(unit.unit==='minutes'?'selected':'')+'>Minutes</option><option value="hours" '+(unit.unit==='hours'?'selected':'')+'>Hours</option><option value="days" '+(unit.unit==='days'?'selected':'')+'>Days</option></select>'
-        +'<button class="secondary" id="poll-now-'+esc(type)+'" type="button" '+(value.enabled?'':'disabled')+'>Sync now</button>'
-        +'<span class="muted" id="poll-status-'+esc(type)+'" data-poll-status-text="'+esc(pollingStatusText(status))+'">'+esc(value.enabled?pollingStatusText(status):'Turn on "Sync enabled" above to use scheduled polling.')+'</span></div>'
+        +'<label><input type="checkbox" data-poll-enabled="'+esc(type)+'" '+(polling.enabled?'checked':'')+' '+dis+'> Also poll on a schedule</label>'
+        +'<select data-poll-mode="'+esc(type)+'" '+dis+'><option value="interval" '+(cronMode?'':'selected')+'>Every…</option><option value="cron" '+(cronMode?'selected':'')+'>Cron schedule</option></select>'
+        +'<span data-poll-interval-fields="'+esc(type)+'" '+(cronMode?'hidden':'')+'>'
+        +'<span>every</span><input type="number" min="1" step="1" value="'+unit.value+'" data-poll-value="'+esc(type)+'" '+dis+'>'
+        +'<select data-poll-unit="'+esc(type)+'" '+dis+'><option value="minutes" '+(unit.unit==='minutes'?'selected':'')+'>Minutes</option><option value="hours" '+(unit.unit==='hours'?'selected':'')+'>Hours</option><option value="days" '+(unit.unit==='days'?'selected':'')+'>Days</option></select>'
+        +'</span>'
+        +'<span data-poll-cron-fields="'+esc(type)+'" '+(cronMode?'':'hidden')+'>'
+        +'<input type="text" placeholder="0 9 * * 1 (every Monday at 9am)" value="'+esc(polling.cron||'')+'" data-poll-cron="'+esc(type)+'" '+dis+' style="width:220px">'
+        +'<span class="muted" data-poll-cron-next="'+esc(type)+'"></span>'
+        +'</span>'
+        +'<button class="secondary" id="poll-now-'+esc(type)+'" type="button" '+dis+'>Sync now</button>'
+        +'<span class="muted'+(status?.errors?' error':'')+'" id="poll-status-'+esc(type)+'" data-poll-status-text="'+esc(pollingStatusText(status))+'">'+esc(value.enabled?pollingStatusText(status):'Turn on "Sync enabled" above to use scheduled polling.')+'</span></div>'
         +'<div class="object-links-row"><button class="run-link" id="map-fields-'+esc(type)+'" type="button">Map fields</button>'
-        +'<button class="run-link" id="edit-conditions-'+esc(type)+'" type="button">Direction &amp; conditions</button></div>'
+        +'<button class="run-link" id="edit-conditions-'+esc(type)+'" type="button">Direction &amp; conditions</button>'
+        +'<button class="run-link" id="toggle-history-'+esc(type)+'" type="button">History</button>'
+        +'<button class="run-link" style="color:var(--red)" id="remove-sync-'+esc(type)+'" type="button">Remove from sync</button></div>'
+        +'<div class="poll-history" id="poll-history-'+esc(type)+'" hidden></div>'
         +'</div>';
     }
+    function pollHistoryHtml(entries){
+      if(!entries||!entries.length)return '<div class="empty">No runs recorded yet.</div>';
+      return entries.map(entry=>{
+        const detail=entry.errors&&entry.errorMessages?.length?' — '+entry.errorMessages.join(' · '):'';
+        return '<div class="poll-history-row'+(entry.errors?' error':'')+'"><span>'+esc(new Date(entry.at).toLocaleString())+'</span><span>'+entry.changed+' change'+(entry.changed===1?'':'s')+', '+entry.deleted+' deletion'+(entry.deleted===1?'':'s')+(entry.errors?', '+entry.errors+' error'+(entry.errors===1?'':'s')+detail:'')+'</span></div>';
+      }).join('');
+    }
     function collectSyncObjects(){return Object.fromEntries(enrolledSyncCatalog().map(obj=>{const type=obj.canonicalObject;return [type,{enabled:document.querySelector('[data-sync-enabled="'+type+'"]').checked,direction:syncConfigState.objects[type]?.direction||'bidirectional'}]}))}
-    function collectSyncPolling(){return Object.fromEntries(enrolledSyncCatalog().map(obj=>{const type=obj.canonicalObject;return [type,{enabled:document.querySelector('[data-poll-enabled="'+type+'"]').checked,intervalMinutes:unitToMinutes(document.querySelector('[data-poll-value="'+type+'"]').value,document.querySelector('[data-poll-unit="'+type+'"]').value)}]}))}
+    function collectSyncPolling(){return Object.fromEntries(enrolledSyncCatalog().map(obj=>{
+      const type=obj.canonicalObject,isCron=document.querySelector('[data-poll-mode="'+type+'"]').value==='cron';
+      return [type,{
+        enabled:document.querySelector('[data-poll-enabled="'+type+'"]').checked,
+        intervalMinutes:unitToMinutes(document.querySelector('[data-poll-value="'+type+'"]').value,document.querySelector('[data-poll-unit="'+type+'"]').value),
+        cron:isCron?document.querySelector('[data-poll-cron="'+type+'"]').value.trim():null,
+      }];
+    }))}
     function persistSyncSettings(){return api('/api/sync/settings',{method:'PATCH',body:JSON.stringify({conflictStrategy:$('sync-conflict-strategy').value,sourceOfTruth:$('sync-source-of-truth').value,objects:collectSyncObjects(),polling:collectSyncPolling()})})}
     $('save-sync-settings').onclick=async()=>{const button=$('save-sync-settings'),message=$('sync-settings-message');button.disabled=true;message.className='settings-message';message.textContent='Saving sync policy…';try{syncConfigState=await persistSyncSettings();message.textContent='Saved. Webhooks use this immediately; scheduled sync within one interval.';await loadSyncSettings()}catch(e){message.className='settings-message error';message.textContent=e.message}finally{button.disabled=false}};
     async function pollObjectNow(type){
@@ -671,18 +796,38 @@ export function operationsHtml(): string {
     // (mig-from), so an object registered from the "other" side wouldn't be there yet.
     async function ensureCatalogForSyncObject(type){
       if(migrationState.catalog.some(row=>row.canonicalType===type))return;
-      const direction=syncConfigState?.objects?.[type]?.direction;
-      $('mig-from').value=direction==='hubspot_to_salesforce'?'hubspot':'salesforce';
+      $('mig-from').value='salesforce';
       await loadCatalog();
     }
-    async function goMapFields(type){workspaceMode='sync';history.replaceState(null,'','#migration');selectView('migration');selectMigrationStep('fields');await ensureCatalogForSyncObject(type);refreshObjectSelectors();await openFieldObject(type)}
+    // Order matters: selectMigrationStep('fields') itself triggers a loadFieldWorkspace() call
+    // using whatever $('field-object') already holds -- if the catalog/selector aren't ready
+    // yet (or still point at a previous object), that fires once with stale data, renders a
+    // wrong object-queue count, and then openFieldObject()'s own "already this type, skip"
+    // guard silently no-ops the correct reload right after. Getting the catalog, selector, and
+    // field-object value right BEFORE selectMigrationStep runs means there's only one load,
+    // and it's the right one.
+    async function goMapFields(type){
+      workspaceMode='sync';history.replaceState(null,'','#migration');selectView('migration');
+      await ensureCatalogForSyncObject(type);
+      refreshObjectSelectors();
+      $('field-object').value=type;
+      selectMigrationStep('fields');
+      await openFieldObject(type);
+    }
 
-    // ---------------- Sync setup wizard: direction -> object (+ conditions) -> fields ----------------
-    const syncWizard={active:false,editing:false,direction:null,browseSystem:null,type:null,row:null,schema:[],naturalKeyPending:false};
+    // ---------------- Sync setup wizard: direction -> object pair (+ conditions) -> fields ----------------
+    // Object picking always browses from Salesforce's catalog (GET /api/object-catalog?from=salesforce)
+    // regardless of the chosen direction -- that one call already carries every Salesforce object
+    // (each with its auto-matched HubSpot target, if any) AND the full HubSpot target list, so both
+    // dropdowns populate from it. Two independent picks (rather than one auto-matched pair) are what
+    // let a native object already registered one way (e.g. Salesforce Account -> HubSpot companies)
+    // get registered a SECOND time under a different pairing (e.g. Account -> contacts, for Person
+    // Accounts) -- the wizard no longer assumes "already has a canonical type" means "done."
+    const syncWizard={active:false,editing:false,direction:null,browseSystem:null,type:null,schema:[],naturalKeyPending:false};
     const conditionOperators=[['eq','is'],['ne','is not'],['gt','>'],['lt','<'],['contains','contains'],['is_null','is empty'],['is_not_null','is not empty']];
-    function resetSyncWizard(){syncWizard.active=false;syncWizard.editing=false;syncWizard.direction=null;syncWizard.browseSystem=null;syncWizard.type=null;syncWizard.row=null;syncWizard.schema=[];$('sync-wizard').hidden=true;document.querySelector('.sync-config-grid').hidden=false;$('sync-wizard-object-select').disabled=false}
+    function resetSyncWizard(){syncWizard.active=false;syncWizard.editing=false;syncWizard.direction=null;syncWizard.browseSystem=null;syncWizard.type=null;syncWizard.schema=[];$('sync-wizard').hidden=true;document.querySelector('.sync-config-grid').hidden=false;$('sync-wizard-sf-object').disabled=false;$('sync-wizard-hs-object').disabled=false;$('sync-wizard-sf-object').onchange=sfObjectChangeForNewPairing;$('sync-wizard-hs-object').onchange=updateSyncWizardObjectState;$('sync-wizard-test-result').hidden=true;$('sync-wizard-check-result').textContent='';$('sync-wizard-pair-preview').textContent='';$('sync-wizard-edit-objects').hidden=true;$('sync-wizard-save-native-objects').hidden=true}
     function openSyncWizardNew(){
-      syncWizard.active=true;syncWizard.editing=false;syncWizard.type=null;syncWizard.row=null;
+      syncWizard.active=true;syncWizard.editing=false;syncWizard.type=null;
       $('sync-wizard-heading').textContent='Add an object to sync';
       document.querySelector('.sync-config-grid').hidden=true;$('sync-wizard').hidden=false;
       $('sync-wizard-step-1').hidden=false;$('sync-wizard-step-2').hidden=true;
@@ -710,48 +855,94 @@ export function operationsHtml(): string {
       syncWizard.direction=document.querySelector('input[name="sync-wizard-direction"]:checked').value;
       syncWizard.browseSystem=syncWizard.direction==='hubspot_to_salesforce'?'hubspot':'salesforce';
       $('sync-wizard-step-1').hidden=true;$('sync-wizard-step-2').hidden=false;
+      $('sync-wizard-test-result').hidden=true;$('sync-wizard-check-result').textContent='';
       if(syncWizard.editing){
         const obj=syncObjectCatalog.find(o=>o.canonicalObject===syncWizard.type);
         $('sync-wizard-step2-hint').textContent='Editing when '+esc(obj.label)+' syncs, browsing '+(syncWizard.browseSystem==='salesforce'?'Salesforce':'HubSpot')+'\\'s schema.';
-        $('sync-wizard-object-select').innerHTML='<option value="'+esc(syncWizard.type)+'">'+esc(obj.label)+'</option>';$('sync-wizard-object-select').disabled=true;
-        $('sync-wizard-target-picker').innerHTML='';
+        $('sync-wizard-sf-object').innerHTML='<option>'+esc(obj.salesforceObject||'—')+'</option>';$('sync-wizard-sf-object').disabled=true;
+        $('sync-wizard-hs-object').innerHTML='<option>'+esc(obj.hubspotObject||'—')+'</option>';$('sync-wizard-hs-object').disabled=true;
+        $('sync-wizard-label-row').hidden=true;$('sync-wizard-pair-preview').textContent='';
         $('sync-wizard-step2-continue').hidden=true;$('sync-wizard-save-conditions').hidden=false;
+        $('sync-wizard-edit-objects').hidden=false;$('sync-wizard-save-native-objects').hidden=true;$('sync-wizard-save-native-objects').disabled=true;
         await loadSyncWizardConditionsPanel(syncWizard.type,syncConfigState.objects[syncWizard.type]||{});
         return;
       }
-      $('sync-wizard-step2-hint').textContent='Pick the '+(syncWizard.browseSystem==='salesforce'?'Salesforce':'HubSpot')+' object to sync.'+(syncWizard.direction==='bidirectional'?' (Bidirectional browses Salesforce first -- the object itself still syncs both ways.)':'');
-      $('sync-wizard-object-select').disabled=false;$('sync-wizard-object-select').innerHTML='<option value="">Loading objects…</option>';
-      $('sync-wizard-target-picker').innerHTML='';$('sync-wizard-conditions-panel').hidden=true;
+      $('sync-wizard-step2-hint').textContent='Pick the object on each side. A match is suggested automatically, but either side can be changed -- useful when one native object needs to sync as something different (e.g. Salesforce Person Accounts as HubSpot contacts instead of companies).';
+      $('sync-wizard-sf-object').disabled=false;$('sync-wizard-hs-object').disabled=false;
+      $('sync-wizard-sf-object').innerHTML='<option value="">Loading objects…</option>';$('sync-wizard-hs-object').innerHTML='<option value="">Loading objects…</option>';
+      $('sync-wizard-label-row').hidden=true;$('sync-wizard-conditions-panel').hidden=true;
       $('sync-wizard-step2-continue').hidden=false;$('sync-wizard-step2-continue').disabled=true;$('sync-wizard-save-conditions').hidden=true;
-      $('mig-from').value=syncWizard.browseSystem;await loadCatalog();renderSyncWizardObjectOptions();
+      $('sync-wizard-edit-objects').hidden=true;$('sync-wizard-save-native-objects').hidden=true;
+      $('mig-from').value='salesforce';await loadCatalog();renderSyncWizardObjectOptions();
     };
     $('sync-wizard-step2-back').onclick=()=>{$('sync-wizard-step-2').hidden=true;$('sync-wizard-step-1').hidden=false};
+    // row.supported only means "an auto-match by name already exists" (Migration's
+    // auto-suggest signal) -- it's not a readiness gate. Here the user is picking BOTH sides
+    // by hand, so every native object is offered, standard or custom: filtering to it
+    // silently hid every custom Salesforce object (a custom object's name essentially never
+    // matches a HubSpot object by name) and any standard object HubSpot has no same-named
+    // counterpart for (Lead, Case, Campaign, ...). The native id is shown alongside the label
+    // to tell apart two objects that happen to share a label (e.g. two objects both labeled
+    // "Note").
     function renderSyncWizardObjectOptions(){
-      const enrolledTypes=new Set(enrolledSyncCatalog().map(o=>o.canonicalObject));
-      const options=migrationState.catalog.filter(row=>row.supported&&!enrolledTypes.has(row.canonicalType));
-      $('sync-wizard-object-select').innerHTML='<option value="">Choose an object…</option>'+options.map(row=>'<option value="'+esc(row.source.id)+'">'+esc(row.source.label)+(row.target?' → '+esc(row.target.label):' (needs a target object)')+'</option>').join('');
+      const rows=migrationState.catalog.slice().sort((a,b)=>a.source.label.localeCompare(b.source.label));
+      $('sync-wizard-sf-object').innerHTML='<option value="">Choose an object…</option>'+rows.map(row=>'<option value="'+esc(row.source.id)+'">'+esc(row.source.label)+' ('+esc(row.source.id)+')'+(row.canonicalType?' — already mapped to '+esc(row.target?.label||row.canonicalType):'')+'</option>').join('');
+      $('sync-wizard-hs-object').innerHTML='<option value="">Choose an object…</option>'+(migrationState.targets||[]).slice().sort((a,b)=>a.label.localeCompare(b.label)).map(t=>'<option value="'+esc(t.id)+'">'+esc(t.label)+' ('+esc(t.id)+')'+'</option>').join('');
     }
-    $('sync-wizard-object-select').onchange=async()=>{
-      const sourceId=$('sync-wizard-object-select').value;$('sync-wizard-target-picker').innerHTML='';$('sync-wizard-conditions-panel').hidden=true;$('sync-wizard-step2-continue').disabled=true;
-      if(!sourceId)return;
-      const row=migrationState.catalog.find(r=>r.source.id===sourceId);syncWizard.row=row;
-      if(row.canonicalType){await syncWizardObjectReady(row.canonicalType,row)}
-      else if(row.target){try{await registerCatalogMapping(row);await syncWizardObjectReady(row.canonicalType,row)}catch(e){$('sync-wizard-message').textContent=e.message}}
-      else{
-        $('sync-wizard-target-picker').innerHTML='<div class="manual-target"><b>No automatic match found</b><p>Pick which object in the destination CRM this should map to.</p><div class="manual-target-controls"><select id="sync-wizard-manual-target"><option value="">Choose a destination object…</option>'+(migrationState.targets||[]).slice().sort((a,b)=>a.label.localeCompare(b.label)).map(t=>'<option value="'+esc(t.id)+'">'+esc(t.label)+' · '+esc(t.id)+'</option>').join('')+'</select><button id="sync-wizard-manual-target-confirm">Map to this object</button></div></div>';
-        $('sync-wizard-manual-target-confirm').onclick=async()=>{
-          const targetId=$('sync-wizard-manual-target').value;if(!targetId)return;
-          const target=(migrationState.targets||[]).find(t=>t.id===targetId);if(!target)return;
-          const button=$('sync-wizard-manual-target-confirm');button.disabled=true;button.textContent='Mapping…';
-          try{row.target=target;row.supported=true;await registerCatalogMapping(row);await syncWizardObjectReady(row.canonicalType,row)}
-          catch(e){$('sync-wizard-message').textContent=e.message}
-          finally{button.disabled=false;button.textContent='Map to this object'}
-        };
+    // Picking objects for a brand-new pairing and re-pointing an already-enrolled object's
+    // pairing (via "Change objects…", below) need different onchange behavior -- the new-pairing
+    // path may register a fresh canonical object on continue, which would be wrong for an edit
+    // (it must update the SAME canonical type in place, never create a second one). The selects
+    // only ever run one of these two handlers at a time, swapped in when each mode starts.
+    function sfObjectChangeForNewPairing(){
+      const row=migrationState.catalog.find(r=>r.source.id===$('sync-wizard-sf-object').value);
+      if(row?.target)$('sync-wizard-hs-object').value=row.target.id;
+      updateSyncWizardObjectState();
+    }
+    $('sync-wizard-sf-object').onchange=sfObjectChangeForNewPairing;
+    $('sync-wizard-hs-object').onchange=updateSyncWizardObjectState;
+    // The same native object can now legitimately appear as more than one catalog row (e.g.
+    // Salesforce Account backing both "company" -> companies and a separately-registered
+    // "account_contact" -> contacts) -- so once BOTH sides are picked, the row that actually
+    // answers "is this exact pairing already registered" has to match on source AND target id
+    // together, not source id alone (which would just resolve to whichever registration for
+    // that native object happens to come first).
+    function findExactCatalogRow(sfId,hsId){return migrationState.catalog.find(r=>r.source.id===sfId&&r.target?.id===hsId)}
+    function updateSyncWizardObjectState(){
+      const sfId=$('sync-wizard-sf-object').value,hsId=$('sync-wizard-hs-object').value;
+      $('sync-wizard-conditions-panel').hidden=true;$('sync-wizard-step2-continue').disabled=true;$('sync-wizard-test-result').hidden=true;$('sync-wizard-check-result').textContent='';
+      if(!sfId||!hsId){$('sync-wizard-label-row').hidden=true;$('sync-wizard-pair-preview').textContent='';return}
+      const sfLabel=migrationState.catalog.find(r=>r.source.id===sfId)?.source.label||sfId;
+      const hsLabel=(migrationState.targets||[]).find(t=>t.id===hsId)?.label||hsId;
+      // Always shown, whether this exact pair is a brand-new pairing or one that's already
+      // registered -- previously this only appeared for a new pairing, so picking the SAME
+      // Salesforce object with a DIFFERENT (already-registered) HubSpot target looked like
+      // nothing had happened, even though the picks were registered correctly underneath.
+      $('sync-wizard-pair-preview').textContent='Salesforce '+sfLabel+' → HubSpot '+hsLabel;
+      const exactRow=findExactCatalogRow(sfId,hsId);
+      $('sync-wizard-label-row').hidden=Boolean(exactRow?.canonicalType);
+      if(!exactRow?.canonicalType){
+        const alreadyMappedElsewhere=migrationState.catalog.some(r=>r.source.id===sfId&&r.canonicalType);
+        $('sync-wizard-label').value=alreadyMappedElsewhere?sfLabel+' ('+hsLabel+')':sfLabel;
       }
-    };
-    async function syncWizardObjectReady(type,row){
-      syncWizard.type=type;$('sync-wizard-step2-continue').disabled=false;
-      await loadSyncWizardConditionsPanel(type,{});
+      syncWizardObjectReady();
+    }
+    async function syncWizardObjectReady(){
+      const sfId=$('sync-wizard-sf-object').value,hsId=$('sync-wizard-hs-object').value;
+      const exactRow=findExactCatalogRow(sfId,hsId);
+      try{
+        let type;
+        if(exactRow?.canonicalType){type=exactRow.canonicalType}
+        else{
+          const sfLabel=migrationState.catalog.find(r=>r.source.id===sfId)?.source.label||sfId;
+          const hsLabel=(migrationState.targets||[]).find(t=>t.id===hsId)?.label||hsId;
+          const label=$('sync-wizard-label').value.trim()||sfLabel+' → '+hsLabel;
+          const registration=await api('/api/object-mappings',{method:'POST',body:JSON.stringify({label,salesforceObject:sfId,hubspotObject:hsId})});
+          type=registration.canonicalObject;migrationState.metadata.clear();
+        }
+        syncWizard.type=type;$('sync-wizard-step2-continue').disabled=false;
+        await loadSyncWizardConditionsPanel(type,{});
+      }catch(e){$('sync-wizard-message').textContent=e.message}
     }
     function conditionRowHtml(field,operator,value){
       const options=syncWizard.schema.map(f=>'<option value="'+esc(f.name)+'" '+(f.name===field?'selected':'')+'>'+esc(f.label)+' · '+esc(f.name)+'</option>').join('');
@@ -798,11 +989,85 @@ export function operationsHtml(): string {
       syncConfigState=config;
       return config;
     }
+    // Both "Check syntax" and "Test this setup" send the exact same shape the settings PATCH
+    // will eventually save -- the point of both buttons is to catch a broken condition (like
+    // last session's "Select Id, Name FROM Account" instead of a WHERE fragment) before it
+    // ever reaches a scheduled poll, so the check has to run the real thing, not a lint.
+    function syncWizardTestBody(){
+      const conditions=collectSyncWizardConditions(),rawText=$('sync-wizard-raw-condition').value.trim();
+      return {
+        system:syncWizard.browseSystem,
+        type:syncWizard.type,
+        conditions:conditions.length?{[syncWizard.browseSystem]:conditions}:{},
+        rawCondition:(rawText&&syncWizard.browseSystem==='salesforce')?{salesforce:rawText}:{},
+      };
+    }
+    $('sync-wizard-check-syntax').onclick=async()=>{
+      const button=$('sync-wizard-check-syntax'),result=$('sync-wizard-check-result');
+      button.disabled=true;button.textContent='Checking…';result.className='muted';result.textContent='';
+      try{
+        const res=await api('/api/sync/test',{method:'POST',body:JSON.stringify(syncWizardTestBody())});
+        if(res.ok){result.textContent='✓ Query runs. '+(res.matched?res.matched+' record'+(res.matched===1?'':'s')+' match right now.':'No records match right now.')}
+        else{result.className='muted error';result.textContent='✗ '+res.message}
+      }catch(e){result.className='muted error';result.textContent=e.message}
+      finally{button.disabled=false;button.textContent='Check syntax'}
+    };
+    $('sync-wizard-test').onclick=async()=>{
+      const button=$('sync-wizard-test'),result=$('sync-wizard-check-result');
+      button.disabled=true;button.textContent='Testing…';$('sync-wizard-test-result').hidden=true;result.className='muted';result.textContent='';
+      try{
+        const res=await api('/api/sync/test',{method:'POST',body:JSON.stringify(syncWizardTestBody())});
+        if(!res.ok){result.className='muted error';result.textContent='✗ '+res.message}
+        else if(!res.matched){result.textContent='Query runs, but no records match right now -- nothing to preview.'}
+        else if(!res.plan){result.textContent='✓ '+res.matched+' record'+(res.matched===1?'':'s')+' match.'}
+        else{renderSyncWizardTestResult(res.plan,res.matched)}
+      }catch(e){result.className='muted error';result.textContent=e.message}
+      finally{button.disabled=false;button.textContent='Test this setup'}
+    };
+    function renderSyncWizardTestResult(plan,matched){
+      $('sync-wizard-test-result').hidden=false;
+      $('sync-wizard-test-action').className='pill '+plan.action;$('sync-wizard-test-action').textContent=plan.action;
+      $('sync-wizard-test-summary').textContent=matched+' record'+(matched===1?'':'s')+' match -- showing the first.';
+      $('sync-wizard-test-fields').innerHTML=plan.fieldDiff.length?plan.fieldDiff.map(diff=>'<div class="test-field"><span>'+esc(diff.field)+'</span><b>'+esc(testValue(diff.source))+(diff.target===undefined?'':' ← current '+esc(testValue(diff.target)))+'</b></div>').join(''):'<div class="test-field"><span>Result</span><b>'+esc(plan.warnings.join('; ')||'No field changes yet -- map fields below to see a full preview')+'</b></div>';
+    }
     $('sync-wizard-save-conditions').onclick=async()=>{
       const button=$('sync-wizard-save-conditions');button.disabled=true;button.textContent='Saving…';
       try{const keepEnabled=syncConfigState.objects[syncWizard.type]?.enabled??false;await persistSyncWizardConditions(syncWizard.type,{enabled:keepEnabled});await loadSyncSettings();resetSyncWizard()}
       catch(e){$('sync-wizard-message').textContent=e.message}
       finally{button.disabled=false;button.textContent='Save conditions'}
+    };
+    // Editing an existing sync object's native objects reuses the same two selects, but must
+    // update the SAME canonical type in place -- never register a second one -- so it runs its
+    // own onchange handler and its own save action instead of the new-pairing flow above.
+    function updateEditObjectsPreview(){
+      const sfId=$('sync-wizard-sf-object').value,hsId=$('sync-wizard-hs-object').value;
+      const sfLabel=migrationState.catalog.find(r=>r.source.id===sfId)?.source.label||sfId;
+      const hsLabel=(migrationState.targets||[]).find(t=>t.id===hsId)?.label||hsId;
+      $('sync-wizard-pair-preview').textContent=sfId&&hsId?'Salesforce '+sfLabel+' → HubSpot '+hsLabel:'';
+      $('sync-wizard-save-native-objects').disabled=!(sfId&&hsId);
+    }
+    $('sync-wizard-edit-objects').onclick=()=>{
+      const obj=syncObjectCatalog.find(o=>o.canonicalObject===syncWizard.type);if(!obj)return;
+      if(!confirm('Change which objects "'+obj.label+'" syncs? Field mappings and the matching key will be reset to redo for the new objects, and sync will pause if it\\'s currently live. Conditions and direction stay as they are.'))return;
+      $('sync-wizard-sf-object').disabled=false;$('sync-wizard-hs-object').disabled=false;
+      renderSyncWizardObjectOptions();
+      $('sync-wizard-sf-object').value=obj.salesforceObject||'';$('sync-wizard-hs-object').value=obj.hubspotObject||'';
+      $('sync-wizard-sf-object').onchange=updateEditObjectsPreview;$('sync-wizard-hs-object').onchange=updateEditObjectsPreview;
+      $('sync-wizard-edit-objects').hidden=true;$('sync-wizard-save-conditions').hidden=true;$('sync-wizard-conditions-panel').hidden=true;
+      $('sync-wizard-save-native-objects').hidden=false;
+      updateEditObjectsPreview();
+    };
+    $('sync-wizard-save-native-objects').onclick=async()=>{
+      const button=$('sync-wizard-save-native-objects');button.disabled=true;button.textContent='Saving…';
+      try{
+        const salesforceObject=$('sync-wizard-sf-object').value,hubspotObject=$('sync-wizard-hs-object').value;
+        const type=syncWizard.type;
+        const result=await api('/api/object-mappings/'+type+'/native-objects',{method:'PUT',body:JSON.stringify({salesforceObject,hubspotObject})});
+        resetSyncWizard();await loadSyncSettings();
+        alert('Objects updated. Field mappings and the matching key were reset'+(result.syncPaused?' and sync was paused for this object -- turn it back on once fields are remapped.':' -- map fields for the new objects, then re-check your natural key, before relying on sync.'));
+        await goMapFields(type);
+      }catch(e){$('sync-wizard-message').textContent=e.message}
+      finally{button.disabled=false;button.textContent='Save object change'}
     };
     // enabled stays false through field mapping and the matching-rule step below -- there's
     // nothing to protect yet on a brand-new object, but nothing to sync correctly either

@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import type { CRMConnector, ConnectorAssociation } from '../../core/connector.js';
+import type { CRMConnector, ConnectorAssociation, QueryCondition } from '../../core/connector.js';
 import type {
   CanonicalRecord,
   CanonicalType,
@@ -19,6 +19,7 @@ import {
 } from '../../core/mapping.js';
 import { naturalKey } from '../../core/idMap.js';
 import { canonicalObjectsFor } from '../../core/objectRegistry.js';
+import { evaluateConditions } from '../../core/syncConfig.js';
 
 /**
  * An in-memory CRM that behaves like a real connector but needs no credentials. It stores
@@ -61,10 +62,21 @@ export class MockConnector implements CRMConnector {
     return map;
   }
 
-  async list(type: CanonicalType, cursor?: string, modifiedSince?: string): Promise<RecordPage> {
+  // rawCondition is ignored -- there's no SOQL/search-filter engine to fake it against here;
+  // structured conditions run through the same evaluateConditions() the real connectors'
+  // compiled SOQL/search filters are checked against, so a test asserting "this condition
+  // matches N records" behaves the same way it would against a live CRM.
+  async list(
+    type: CanonicalType,
+    cursor?: string,
+    modifiedSince?: string,
+    condition?: QueryCondition,
+  ): Promise<RecordPage> {
     const sinceMs = modifiedSince ? Date.parse(modifiedSince) : undefined;
     const all = [...this.bucket(type).values()].filter(
-      (n) => sinceMs === undefined || Date.parse(n.__modifiedAt) >= sinceMs,
+      (n) =>
+        (sinceMs === undefined || Date.parse(n.__modifiedAt) >= sinceMs) &&
+        evaluateConditions(condition?.conditions, n),
     );
     const pageSize = 100;
     const start = cursor ? Number(cursor) : 0;

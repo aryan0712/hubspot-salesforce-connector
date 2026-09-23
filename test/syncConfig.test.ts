@@ -3,6 +3,8 @@ import {
   defaultSyncConfig,
   evaluateConditions,
   InMemorySyncConfigStore,
+  isValidCronExpression,
+  nextCronOccurrences,
   syncAllows,
   type SyncCondition,
 } from '../src/core/syncConfig.js';
@@ -66,5 +68,25 @@ describe('sync conditions', () => {
     expect(evaluateConditions([{ field: 'Email', operator: 'is_null' }], {})).toBe(true);
     expect(evaluateConditions([{ field: 'Email', operator: 'is_null' }], { Email: 'a@b.com' })).toBe(false);
     expect(evaluateConditions([{ field: 'Email', operator: 'is_not_null' }], { Email: 'a@b.com' })).toBe(true);
+  });
+});
+
+describe('cron scheduling', () => {
+  it('accepts a standard 5-field cron expression and rejects garbage', () => {
+    expect(isValidCronExpression('*/2 * * * *')).toBe(true);
+    expect(isValidCronExpression('0 9 * * 1')).toBe(true);
+    expect(isValidCronExpression('not a cron expression')).toBe(false);
+    expect(isValidCronExpression('')).toBe(false);
+  });
+
+  it('computes the next occurrences after a given moment, in order', () => {
+    // cron-parser evaluates in the server's local time zone (documented on PollingConfig.cron),
+    // so assert against local getters rather than UTC ones to stay timezone-independent.
+    const from = new Date('2024-01-01T00:00:00'); // a Monday, local time
+    const occurrences = nextCronOccurrences('0 9 * * 1', from, 2); // every Monday at 9am
+    expect(occurrences).toHaveLength(2);
+    expect(occurrences[0]!.getHours()).toBe(9);
+    expect(occurrences[0]!.getDay()).toBe(1); // Monday
+    expect(occurrences[1]!.getTime()).toBeGreaterThan(occurrences[0]!.getTime());
   });
 });

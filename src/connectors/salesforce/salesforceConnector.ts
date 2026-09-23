@@ -164,7 +164,7 @@ export class SalesforceConnector implements CRMConnector {
   async listObjects(): Promise<CRMObjectDescriptor[]> {
     const { data } = await this.http.get('/sobjects');
     return (data.sobjects as SfObject[])
-      .filter((object) => object.queryable && !object.deprecatedAndHidden)
+      .filter((object) => object.queryable && !object.deprecatedAndHidden && !isInternalCompanionObject(object))
       .map((object) => ({
         id: object.name,
         label: object.label,
@@ -402,6 +402,22 @@ interface SfObject {
   updateable: boolean;
   deletable: boolean;
   deprecatedAndHidden?: boolean;
+}
+
+// Every standard and custom object automatically gets several auto-generated companion
+// objects (feed/history/sharing/change-data-capture) that are queryable but were never meant
+// to be picked as a sync/migration object in their own right -- without this, listObjects()
+// returns thousands of entries buried in noise (a real org: ~2000, only a few hundred of
+// which are actual business objects). A handful of well-known Salesforce-generated suffixes
+// catches essentially all of them; a genuine custom object always ends in "__c" first, so
+// e.g. "Payment_History__c" is untouched -- only the exact auto-generated companion names
+// (e.g. "AccountHistory", "MyObject__Share") match.
+const INTERNAL_COMPANION_SUFFIXES = ['History', 'Feed', 'Share', 'ChangeEvent', 'Tag'];
+function isInternalCompanionObject(object: SfObject): boolean {
+  if (object.label.includes('__MISSING LABEL__')) return true;
+  return INTERNAL_COMPANION_SUFFIXES.some(
+    (suffix) => object.name.endsWith(suffix) || object.name.endsWith(`__${suffix}`),
+  );
 }
 
 interface SfRelationship {

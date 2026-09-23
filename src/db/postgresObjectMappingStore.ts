@@ -1,4 +1,4 @@
-import { configureNaturalKeyFields, isAllowedNaturalKeyField, naturalKeyFields } from '../core/idMap.js';
+import { clearNaturalKeyFields, configureNaturalKeyFields, isAllowedNaturalKeyField, naturalKeyFields } from '../core/idMap.js';
 import {
   listCanonicalObjects,
   registerObjectMapping,
@@ -114,5 +114,40 @@ export class PostgresObjectMappingStore {
     if (result.rowCount === 0) {
       throw new Error(`object "${type}" is not registered; create it before setting natural keys`);
     }
+  }
+
+  /**
+   * Re-points an already-registered canonical object at a different native object on either
+   * (or both) sides -- e.g. fixing "Account -> Contact" to "Account -> Company" without
+   * deleting and recreating the whole registration (which would also lose polling config and
+   * history). Field mappings and the natural key are the caller's responsibility to reset --
+   * they describe the OLD native object's fields and rarely make sense on the new one.
+   */
+  async setNativeObjects(
+    type: CanonicalType,
+    input: { salesforceObject?: string; hubspotObject?: string },
+  ): Promise<ObjectRegistration> {
+    const result = await this.db.tenant(this.tenantId, async (client) =>
+      client.query<{ label: string }>(
+        `UPDATE object_mappings SET salesforce_object = $3, hubspot_object = $4,
+                natural_key_fields = '{}', updated_at = now()
+         WHERE tenant_id = $1 AND canonical_object = $2
+         RETURNING label`,
+        [this.tenantId, type, input.salesforceObject ?? null, input.hubspotObject ?? null],
+      ),
+    );
+    const row = result.rows[0];
+    if (!row) {
+      throw new Error(`object "${type}" is not registered; create it before changing its native objects`);
+    }
+    clearNaturalKeyFields(type);
+    const registration: ObjectRegistration = {
+      canonicalObject: type,
+      label: row.label,
+      salesforceObject: input.salesforceObject,
+      hubspotObject: input.hubspotObject,
+    };
+    registerObjectMapping(registration);
+    return registration;
   }
 }

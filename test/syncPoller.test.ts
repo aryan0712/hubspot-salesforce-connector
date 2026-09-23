@@ -95,6 +95,33 @@ describe('scheduled sync polling', () => {
     expect(summary.changed).toBe(0);
     expect((await ctx.hs.list('contact')).records).toHaveLength(0);
   });
+
+  it('only picks up records matching the object\'s configured condition', async () => {
+    const config = ctx.syncConfig.get();
+    // A condition's `field` names the SOURCE system's own native field (e.g. Salesforce's
+    // "Email", not the canonical "email") -- it's checked directly against the raw record.
+    config.objects.contact.conditions = { salesforce: [{ field: 'Email', operator: 'contains', value: '@keep.co' }] };
+    await ctx.syncConfig.update(config);
+    ctx.sf.seed('contact', { firstName: 'Ada', email: 'ada@keep.co' });
+    ctx.sf.seed('contact', { firstName: 'Grace', email: 'grace@excluded.co' });
+
+    const summary = await ctx.poller.runOnce('contact');
+    await ctx.sync.drain();
+
+    expect(summary.changed).toBe(1);
+    const hsRecords = (await ctx.hs.list('contact')).records;
+    expect(hsRecords).toHaveLength(1);
+    expect(hsRecords[0]!.fields.email).toBe('ada@keep.co');
+  });
+
+  it('keeps a bounded, newest-first run history per object', async () => {
+    for (let i = 0; i < 25; i += 1) {
+      await ctx.poller.runOnce('contact');
+    }
+    const history = ctx.poller.history('contact');
+    expect(history).toHaveLength(20);
+    expect(new Date(history[0]!.at).getTime()).toBeGreaterThanOrEqual(new Date(history[1]!.at).getTime());
+  });
 });
 
 describe('scheduled sync polling -- independent per-object intervals', () => {
@@ -143,6 +170,40 @@ describe('scheduled sync polling -- independent per-object intervals', () => {
     expect((await hs.list('company')).records).toHaveLength(0);
 
     await vi.advanceTimersByTimeAsync(11 * 60_000); // well past company's 10-minute interval
+    expect((await hs.list('company')).records).toHaveLength(1);
+
+    poller.stop();
+  }, 15_000);
+
+  it('supports a cron expression as an alternative to a plain interval', async () => {
+    const sf = new MockConnector('salesforce');
+    const hs = new MockConnector('hubspot');
+    const connectors: Record<SystemId, CRMConnector> = { salesforce: sf, hubspot: hs };
+    const idMap = new FileIdMapStore(path.join(os.tmpdir(), `idmap-poller-cron-${crypto.randomUUID()}.json`));
+    await idMap.init();
+    const reconciler = new Reconciler(connectors, idMap);
+    const syncConfig = new InMemorySyncConfigStore(defaultSyncConfig('last-write-wins', 'salesforce', ['company']));
+    const store = new InMemorySyncEventStore();
+    const sync = new SyncEngine(connectors, reconciler, store);
+    await sync.init();
+    const cursors = new InMemoryReplayCursorStore();
+    const poller = new SyncPoller(connectors, syncConfig, cursors, sync);
+
+    const config = syncConfig.get();
+    // intervalMinutes is present but irrelevant here -- a cron expression takes precedence.
+    config.polling.company = { enabled: true, intervalMinutes: 30, cron: '*/2 * * * *' };
+    await syncConfig.update(config);
+
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2024-01-01T00:00:00.000Z'));
+    poller.start();
+    await vi.advanceTimersByTimeAsync(30_000); // consume the unconditional first tick
+
+    sf.seed('company', { name: 'Acme', domain: 'acme.com' });
+    await vi.advanceTimersByTimeAsync(60_000); // 90s elapsed -- comfortably under the 2-minute mark
+    expect((await hs.list('company')).records).toHaveLength(0);
+
+    await vi.advanceTimersByTimeAsync(90_000); // 180s elapsed -- comfortably past it
     expect((await hs.list('company')).records).toHaveLength(1);
 
     poller.stop();

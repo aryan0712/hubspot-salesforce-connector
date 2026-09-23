@@ -11,7 +11,7 @@ import { dashboardHtml } from './dashboard/html.js';
 import { operationsHtml } from './dashboard/operations.js';
 import { connections, type Environment } from './core/connectionStore.js';
 import { settings } from './core/settingsStore.js';
-import type { CanonicalRecord, CanonicalType, SystemId } from './core/types.js';
+import type { CanonicalRecord, CanonicalType, CRMObjectDescriptor, SystemId } from './core/types.js';
 import * as sfAuth from './connectors/salesforce/auth.js';
 import * as hsAuth from './connectors/hubspot/auth.js';
 import { authenticate, requireRole } from './security/access.js';
@@ -21,10 +21,16 @@ import { PublicError } from './core/publicError.js';
 import { MigrationCopilot, validateOpenAIKey } from './ai/migrationCopilot.js';
 import { keyFingerprint } from './db/postgresAiSettingsStore.js';
 import { isAllowedNaturalKeyField } from './core/idMap.js';
-import { isRegisteredCanonicalObject, slugifyCanonicalObject } from './core/objectRegistry.js';
+import { canonicalObjectsFor, isRegisteredCanonicalObject, slugifyCanonicalObject } from './core/objectRegistry.js';
 import { friendlyErrorMessage } from './core/vendorError.js';
-import { MAX_POLLING_INTERVAL_MINUTES, MIN_POLLING_INTERVAL_MINUTES } from './core/syncConfig.js';
+import {
+  isValidCronExpression,
+  MAX_POLLING_INTERVAL_MINUTES,
+  MIN_POLLING_INTERVAL_MINUTES,
+  nextCronOccurrences,
+} from './core/syncConfig.js';
 import { resolveCanonicalType } from './engine/typeResolver.js';
+import type { QueryCondition } from './core/connector.js';
 
 /**
  * HTTP surface:
@@ -335,21 +341,14 @@ async function main(): Promise<void> {
     ]);
     const normalized = (value: string): string =>
       value.toLowerCase().replace(/[^a-z0-9]/g, '').replace(/s$/, '');
-    const rows = await Promise.all(sources.map(async (source) => {
-      // A canonicalType means this native object is already a registered mapping; otherwise
-      // we still suggest a plausible target by name so the operator can register the pair.
-      const target = source.canonicalType
-        ? targets.find((candidate) => candidate.canonicalType === source.canonicalType)
-        : targets.find((candidate) =>
-            normalized(candidate.id) === normalized(source.id) ||
-            normalized(candidate.label) === normalized(source.label));
-      const registered = Boolean(source.canonicalType);
-      const sourceRules = registered
-        ? await app.mappingStore.get(from, source.canonicalType!)
-        : [];
-      const targetRules = registered
-        ? await app.mappingStore.get(to, source.canonicalType!)
-        : [];
+    const buildRow = async (
+      source: CRMObjectDescriptor,
+      target: CRMObjectDescriptor | undefined,
+      canonicalType: CanonicalType | undefined,
+    ) => {
+      const registered = Boolean(canonicalType);
+      const sourceRules = registered ? await app.mappingStore.get(from, canonicalType!) : [];
+      const targetRules = registered ? await app.mappingStore.get(to, canonicalType!) : [];
       const mapped = new Set(sourceRules.map((rule) => rule.canonical));
       const mappedFields = targetRules.filter((rule) => mapped.has(rule.canonical)).length;
       return {
@@ -357,11 +356,33 @@ async function main(): Promise<void> {
         target,
         supported: Boolean(target),
         registered,
-        canonicalType: source.canonicalType,
+        canonicalType,
         mappedFields,
         totalMappedFields: Math.max(sourceRules.length, targetRules.length),
         reason: target ? undefined : 'No matching object found in the other CRM',
       };
+    };
+    // A native object can legitimately back more than one canonical object at once (e.g.
+    // Salesforce Account -> both "company" and a separately-registered "person_account"
+    // routed to HubSpot contacts, see core/objectRegistry.ts). source.canonicalType (from
+    // listObjects()) only ever names ONE of those -- picking whichever registration happens
+    // to be first, arbitrarily -- so it's never used here; canonicalObjectsFor() returns every
+    // registration for this native object, and each one becomes its own row, paired with its
+    // OWN registered target (looked up by native id, not by the same ambiguous canonicalType
+    // matching) so an operator can see and edit either pairing independently.
+    const rows = await Promise.all(sources.flatMap((source) => {
+      const registrations = canonicalObjectsFor(from, source.id);
+      if (!registrations.length) {
+        const target = targets.find((candidate) =>
+          normalized(candidate.id) === normalized(source.id) ||
+          normalized(candidate.label) === normalized(source.label));
+        return [buildRow(source, target, undefined)];
+      }
+      return registrations.map((registration) => {
+        const targetNativeId = to === 'salesforce' ? registration.salesforceObject : registration.hubspotObject;
+        const target = targets.find((candidate) => candidate.id === targetNativeId);
+        return buildRow(source, target, registration.canonicalObject);
+      });
     }));
     res.json({ from, to, rows, targets, sourceCount: sources.length, targetCount: targets.length });
   });
@@ -1075,6 +1096,38 @@ async function main(): Promise<void> {
     const syncPaused = await pauseSyncIfLive(type, res.locals.auth?.actorId, 'matching (natural key) changed');
     res.json({ ok: true, type, naturalKeyFields: app.objectMappings.getNaturalKeyFields(type), syncPaused });
   });
+  // Re-points an already-enrolled sync object at a different native object on either side --
+  // e.g. fixing "Account -> Contact" to "Account -> Company" -- without forcing the operator
+  // to delete and recreate the whole registration (which would also throw away polling config
+  // and run history). Field mappings and the natural key describe the OLD native object's
+  // fields, so they're cleared rather than carried forward stale; the operator re-maps fields
+  // right after via the normal Map Fields step.
+  server.put('/api/object-mappings/:type/native-objects', requireRole('operator'), async (req, res) => {
+    const type = req.params.type as CanonicalType;
+    if (!app.objectMappings) return res.status(503).json({ error: 'postgres_required' });
+    if (!isType(type) || !isRegisteredCanonicalObject(type)) {
+      return res.status(400).json({ error: 'bad_object_type' });
+    }
+    const salesforceObject = String(req.body?.salesforceObject ?? '').trim();
+    const hubspotObject = String(req.body?.hubspotObject ?? '').trim();
+    if (!salesforceObject || !hubspotObject) {
+      return res.status(400).json({ error: 'invalid_native_objects' });
+    }
+    const registration = await app.objectMappings.setNativeObjects(type, { salesforceObject, hubspotObject });
+    await Promise.all([
+      app.mappingStore.set('salesforce', type, []),
+      app.mappingStore.set('hubspot', type, []),
+    ]);
+    const syncPaused = await pauseSyncIfLive(type, res.locals.auth?.actorId, 'object pairing changed');
+    await app.operations?.recordAudit({
+      actorId: res.locals.auth?.actorId,
+      action: 'object_mapping.native_objects_changed',
+      resourceType: 'object_mapping',
+      resourceId: type,
+      detail: { salesforceObject, hubspotObject },
+    });
+    res.json({ ok: true, registration, syncPaused });
+  });
   server.put('/api/value-mappings/:type/:field', requireRole('operator'), async (req, res) => {
     const type = req.params.type as CanonicalType;
     if (!app.valueMappings) return res.status(503).json({ error: 'postgres_required' });
@@ -1115,6 +1168,7 @@ async function main(): Promise<void> {
     res.json({
       ...app.syncConfig.get(),
       pollingStatus: app.poller.lastRuns(),
+      pollHistory: app.poller.histories(),
       webhooks: {
         salesforce: {
           connected: Boolean(await connections.get('salesforce')),
@@ -1171,7 +1225,12 @@ async function main(): Promise<void> {
       (typeof pollingInput === 'object' &&
         pollingInput !== null &&
         Object.entries(pollingInput as Record<string, unknown>).every(([type, value]) => {
-          const polling = value as { enabled?: unknown; intervalMinutes?: unknown; lookbackDays?: unknown } | null;
+          const polling = value as {
+            enabled?: unknown;
+            intervalMinutes?: unknown;
+            lookbackDays?: unknown;
+            cron?: unknown;
+          } | null;
           return (
             isType(type) &&
             polling &&
@@ -1182,7 +1241,13 @@ async function main(): Promise<void> {
             (polling.lookbackDays === undefined ||
               (Number.isFinite(Number(polling.lookbackDays)) &&
                 Number(polling.lookbackDays) >= 1 &&
-                Number(polling.lookbackDays) <= 365))
+                Number(polling.lookbackDays) <= 365)) &&
+            // Empty string / null clears cron (switches the object back to simple-interval
+            // mode) -- only a non-empty value has to actually parse as a cron expression.
+            (polling.cron === undefined ||
+              polling.cron === null ||
+              polling.cron === '' ||
+              (typeof polling.cron === 'string' && isValidCronExpression(polling.cron)))
           );
         }));
     if (
@@ -1203,14 +1268,20 @@ async function main(): Promise<void> {
     const polling = { ...current.polling };
     if (pollingInput) {
       for (const [type, value] of Object.entries(
-        pollingInput as Record<string, { enabled: boolean; intervalMinutes: number; lookbackDays?: number }>,
+        pollingInput as Record<
+          string,
+          { enabled: boolean; intervalMinutes: number; lookbackDays?: number; cron?: string | null }
+        >,
       )) {
-        polling[type] = {
+        const merged: typeof polling[string] = {
           ...current.polling[type],
           enabled: Boolean(value.enabled),
           intervalMinutes: Math.round(Number(value.intervalMinutes)),
           ...(value.lookbackDays !== undefined ? { lookbackDays: Math.round(Number(value.lookbackDays)) } : {}),
         };
+        if (value.cron) merged.cron = value.cron;
+        else if (value.cron === '' || value.cron === null) delete merged.cron;
+        polling[type] = merged;
       }
     }
     const config = await app.syncConfig.update({
@@ -1254,6 +1325,50 @@ async function main(): Promise<void> {
         { at: new Date().toISOString(), changed: 0, deleted: 0, errors: 0 },
       ),
     );
+  });
+  /**
+   * Runs a sync object's condition against the live CRM right now, without waiting for a
+   * scheduled poll -- exactly the check that would have caught last session's broken raw-SOQL
+   * condition immediately instead of it failing silently on every scheduled run. Used two ways
+   * from the wizard: "Check syntax" (only reads ok/message/matched, works before any field is
+   * mapped) and "Test this setup" (also reads `plan` once fields exist, for a full dry-run
+   * preview -- no write ever happens either way, this only reuses Reconciler.preview()).
+   */
+  server.post('/api/sync/test', requireRole('operator'), async (req, res) => {
+    const system = String(req.body?.system ?? '');
+    const type = String(req.body?.type ?? '');
+    if (!isSystem(system) || !isType(type)) {
+      return res.status(400).json({ error: 'bad_test_target' });
+    }
+    if (!isValidConditionsBySystem(req.body?.conditions) || !isValidRawConditionBySystem(req.body?.rawCondition)) {
+      return res.status(400).json({ error: 'invalid_condition' });
+    }
+    await ensureLiveInit();
+    const condition: QueryCondition = {
+      conditions: req.body?.conditions?.[system],
+      rawCondition: req.body?.rawCondition?.[system],
+    };
+    try {
+      const page = await app.connectors[system].list(type, undefined, undefined, condition);
+      if (!page.records.length) {
+        return res.json({ ok: true, matched: 0 });
+      }
+      const plan = await app.reconciler.preview(page.records[0]!);
+      res.json({ ok: true, matched: page.records.length, plan });
+    } catch (err) {
+      const label = system === 'salesforce' ? 'Salesforce' : 'HubSpot';
+      res.json({ ok: false, message: friendlyErrorMessage(err, label) });
+    }
+  });
+  /** Live feedback for the cron-schedule field: validates the expression and shows what it
+   * actually means before saving, using the exact same calculation SyncPoller uses to decide
+   * when an object is next due -- so the preview can never disagree with the real schedule. */
+  server.get('/api/sync/cron-preview', (req, res) => {
+    const expr = String(req.query.expr ?? '');
+    if (!expr || !isValidCronExpression(expr)) {
+      return res.status(400).json({ error: 'invalid_cron_expression' });
+    }
+    res.json({ occurrences: nextCronOccurrences(expr, new Date(), 3).map((d) => d.toISOString()) });
   });
   server.post('/api/sync/jobs/:id/replay', requireRole('operator'), async (req, res) => {
     await app.sync.replay(String(req.params.id));

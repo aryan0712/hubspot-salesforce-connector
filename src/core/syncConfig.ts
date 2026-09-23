@@ -1,3 +1,4 @@
+import { CronExpressionParser } from 'cron-parser';
 import type { ConflictStrategy } from './conflict.js';
 import type { CanonicalType, FieldValue, SystemId } from './types.js';
 
@@ -59,6 +60,13 @@ export interface PollingConfig {
   intervalMinutes: number;
   /** How far back the first-ever poll looks for changes, before a cursor exists. Default 1. */
   lookbackDays?: number;
+  /**
+   * A standard 5-field cron expression ("0 9 * * 1" = every Monday at 9am), evaluated in the
+   * server's local time zone. When present, this replaces `intervalMinutes` for deciding when
+   * this object is next due -- "every N minutes/hours/days" can't express "every Monday,"
+   * so this is additive rather than a replacement for the simple-interval mode.
+   */
+  cron?: string;
 }
 
 export interface SyncConfig {
@@ -160,4 +168,29 @@ export function evaluateConditions(
         return true;
     }
   });
+}
+
+/** True if `expr` is a parseable standard 5-field cron expression. */
+export function isValidCronExpression(expr: string): boolean {
+  if (!expr.trim()) return false;
+  try {
+    CronExpressionParser.parse(expr);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The next N occurrences of a cron expression at/after `from`. Used both to compute a
+ * polling object's actual next-due time (SyncPoller) and to show a "next run: ..." preview
+ * in the wizard before saving -- same calculation, so the preview is never misleading.
+ * Throws if `expr` doesn't parse; validate with isValidCronExpression() first when the
+ * caller needs to distinguish a bad expression from any other failure.
+ */
+export function nextCronOccurrences(expr: string, from: Date, count = 1): Date[] {
+  const interval = CronExpressionParser.parse(expr, { currentDate: from });
+  const out: Date[] = [];
+  for (let i = 0; i < count; i += 1) out.push(interval.next().toDate());
+  return out;
 }

@@ -93,6 +93,12 @@ export function naturalKeyFields(type: CanonicalType): string[] {
   return [...(NATURAL_KEY_FIELDS[type] ?? [])];
 }
 
+/** Used when an object's native pairing changes -- the old natural key described the old native
+ * object's fields and rarely makes sense on the new one, so it's cleared rather than kept stale. */
+export function clearNaturalKeyFields(type: CanonicalType): void {
+  delete NATURAL_KEY_FIELDS[type];
+}
+
 export function naturalKeyQuery(record: CanonicalRecord): NaturalKeyQuery | undefined {
   const f = record.fields;
   const criteria: { field: string; value: string }[] = [];
