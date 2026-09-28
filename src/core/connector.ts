@@ -4,6 +4,7 @@ import type {
   ChangeEvent,
   CRMObjectDescriptor,
   CRMObjectMetadata,
+  FieldValue,
   RecordPage,
   NaturalKeyQuery,
   SchemaField,
@@ -11,6 +12,54 @@ import type {
   UpsertResult,
 } from './types.js';
 import type { SyncCondition } from './syncConfig.js';
+
+export interface WriteOptions {
+  /** Reject an update if the record was modified after this ISO instant (when supported). */
+  ifUnmodifiedSince?: string;
+}
+
+/** The vendor rejected a conditional write because the record changed after review. */
+export class ConditionalWriteRejectedError extends Error {
+  constructor(message = 'record changed after it was reviewed') {
+    super(message);
+    this.name = 'ConditionalWriteRejectedError';
+  }
+}
+
+/**
+ * A natural-key search returned a truncated candidate set (vendor page/limit reached), so
+ * "no other match exists" cannot be proven. Matching must stop for review rather than
+ * accept an incomplete candidate list.
+ */
+export class IncompleteCandidateSetError extends Error {
+  constructor(message = 'the destination search returned an incomplete candidate set') {
+    super(message);
+    this.name = 'IncompleteCandidateSetError';
+  }
+}
+
+/** The destination cannot represent this relationship (no lookup field, unknown label, junction). */
+export class UnsupportedAssociationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'UnsupportedAssociationError';
+  }
+}
+
+/**
+ * A verified vendor webhook event before object-type resolution (R12). `nativeObject` is what
+ * the vendor names: a HubSpot objectTypeId (e.g. "0-1") or a Salesforce sObject API name.
+ */
+export interface NativeWebhookEvent {
+  system: SystemId;
+  /** Stable per vendor event, so redeliveries are recognized as the same event. */
+  deliveryId: string;
+  accountId?: string;
+  nativeObject: string;
+  sourceId: string;
+  changeType: 'created' | 'updated' | 'deleted';
+  occurredAt: string;
+}
 
 export interface ConnectorAssociation {
   toType: CanonicalType;
@@ -111,23 +160,42 @@ export interface CRMConnector {
    */
   upsert(record: CanonicalRecord, targetId?: string): Promise<UpsertResult>;
 
+  /**
+   * Send an exact, already-translated native payload. Approved migration plans are executed
+   * through this method so the bytes written are the bytes the operator reviewed -- no
+   * re-mapping happens at execution time.
+   *
+   * `ifUnmodifiedSince` asks the vendor to reject an update when the record changed after
+   * that instant (Salesforce honors If-Unmodified-Since); connectors without a conditional
+   * write report `conditional: false` so the caller knows a residual race remained.
+   */
+  write(
+    type: CanonicalType,
+    payload: Record<string, FieldValue>,
+    targetId?: string,
+    options?: WriteOptions,
+  ): Promise<UpsertResult & { conditional: boolean }>;
+
+  /**
+   * A stable description of the connected account (org/portal), used to bind approvals to
+   * the exact account they were reviewed against. Undefined when not connected.
+   */
+  accountIdentity(): Promise<string | undefined>;
+
   /** Soft/hard delete by native id. */
   remove(type: CanonicalType, sourceId: string): Promise<UpsertResult>;
 
   /**
-   * Parse & verify a raw inbound webhook request into normalized ChangeEvents.
-   * Returns [] if the payload is valid but irrelevant; throws on signature failure.
+   * Maps an already verified, persisted webhook event (R12: verification, validation and
+   * account routing happen at ingress, src/webhooks/) to a ChangeEvent, or null when the
+   * native object is not one this workspace syncs. Runs on an initialized worker, so it may
+   * use connector metadata (e.g. HubSpot custom object type ids).
    *
    * `resolveType` is consulted only when a native object is ambiguous (registered against
-   * more than one canonical object) -- the connector itself only knows the single-match case.
-   * The caller (server.ts) supplies it bound to a live syncConfig + connector, keeping
-   * connectors themselves free of a SyncConfig dependency. Omitted in tests that don't
-   * exercise the shared-native-object case; ambiguous events are then dropped with a warning
-   * rather than guessed at.
+   * more than one canonical object); without it such events are not guessed at.
    */
-  parseWebhook(
-    headers: Record<string, string | string[] | undefined>,
-    rawBody: Buffer,
+  resolveWebhookEvent(
+    event: NativeWebhookEvent,
     resolveType?: (nativeObjectId: string, sourceId: string) => Promise<CanonicalType | undefined>,
-  ): Promise<ChangeEvent[]>;
+  ): Promise<ChangeEvent | null>;
 }

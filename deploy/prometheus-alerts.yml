@@ -1,0 +1,65 @@
+# Example Prometheus alerting rules for crm-sync (R14). Scrape /metrics with
+# `Authorization: Bearer $METRICS_TOKEN`. Tune thresholds to the agreed pilot targets.
+groups:
+  - name: crm-sync
+    rules:
+      - alert: CrmSyncNotReady
+        expr: up{job="crm-sync"} == 0 or crm_sync_shutting_down == 1
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: crm-sync is down or stuck draining
+
+      - alert: CrmSyncOperationalAlert
+        expr: crm_sync_alert_active == 1
+        for: 10m
+        labels: { severity: "{{ $labels.severity }}" }
+        annotations:
+          summary: "{{ $labels.alert }} in workspace {{ $labels.tenant }}"
+
+      - alert: CrmSyncStale
+        expr: crm_sync_sync_oldest_pending_seconds > 900
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "Sync in workspace {{ $labels.tenant }} is more than 15 minutes behind"
+
+      - alert: CrmSyncDeadLetters
+        expr: increase(crm_sync_sync_jobs{status="deadLetter"}[1h]) > 0
+        labels: { severity: warning }
+        annotations:
+          summary: "New dead-lettered sync jobs in workspace {{ $labels.tenant }}"
+
+      - alert: CrmSyncCrmCircuitOpen
+        expr: crm_sync_crm_circuit_open == 1
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $labels.system }} requests are failing for workspace {{ $labels.tenant }}"
+
+      - alert: CrmSyncAuthFailures
+        expr: rate(crm_sync_auth_failures_total[5m]) > 1
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: Elevated authentication failures (possible credential stuffing)
+
+      - alert: CrmSyncWebhookRejections
+        expr: sum by (outcome) (rate(crm_sync_webhook_deliveries_total{outcome=~"bad_signature|account_mismatch|replayed"}[10m])) > 0
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "Webhook deliveries rejected: {{ $labels.outcome }}"
+
+      - alert: CrmSyncMigrationDrift
+        expr: increase(crm_sync_migration_refusals_total{reason=~"preview_drift|approval_invalidated"}[1h]) > 0
+        labels: { severity: warning }
+        annotations:
+          summary: Migration writes were refused because data or approvals changed
+
+      - alert: CrmSyncDatabasePoolExhausted
+        expr: crm_sync_db_pool_connections{state="waiting"} > 0
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: Requests are waiting for database connections

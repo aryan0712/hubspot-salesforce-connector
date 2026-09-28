@@ -1,6 +1,7 @@
 import type { SystemId } from './types.js';
 import type { PostgresDatabase } from '../db/postgres.js';
 import type { SecretCipher } from '../db/security.js';
+import { currentTenantScope, tenantScopeRequired } from './tenantScope.js';
 
 export interface AppCredentials {
   clientId: string;
@@ -78,11 +79,15 @@ export class PostgresSettingsStore implements SettingsStore {
 
 let active: SettingsStore | undefined;
 
+/** Single-tenant default; multi-tenant processes use the request/worker tenant scope. */
 export function configureSettingsStore(store: SettingsStore): void {
   active = store;
 }
 
 function store(): SettingsStore {
+  const scoped = currentTenantScope()?.settings;
+  if (scoped) return scoped;
+  if (tenantScopeRequired()) throw new Error('settings store used outside a tenant scope');
   if (!active) throw new Error('settings store has not been configured');
   return active;
 }

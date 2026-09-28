@@ -19,9 +19,13 @@ import type {
  *      If the incoming content-hash equals the hash we last pushed, we drop it.
  *   3. CONFLICT INPUT - we keep each side's last-seen modifiedAt for last-write-wins.
  *
- * This reference implementation persists to a JSON file so the scaffold runs with zero
- * infra. Swap `FileIdMapStore` for a Postgres/Redis-backed store in production
- * (the interface is what the engines depend on).
+ * Identity rules every store enforces (R05):
+ *   - native ids are unique per (system, object type) -- not per system -- because HubSpot
+ *     ids repeat across object types;
+ *   - a natural key has at most one CURRENT owner; claiming a key another link owns throws
+ *     NaturalKeyCollisionError instead of silently reassigning it;
+ *   - a key a link no longer carries is RETIRED, not deleted, so a reused value (a recycled
+ *     email) can later identify a different record without rewriting history.
  */
 
 export interface Link {
@@ -33,21 +37,82 @@ export interface Link {
   hashes: Partial<Record<SystemId, string>>;
   /** last modifiedAt we observed per system (ISO 8601) */
   modifiedAt: Partial<Record<SystemId, string>>;
-  /** Persisted natural keys so the dedup index survives process restarts. */
+  /** The link's CURRENT natural keys. Keys removed from this list are retired by the store. */
   naturalKeys?: string[];
   updatedAt: string;
 }
 
 export interface IdMapStore {
   init(): Promise<void>;
-  bySource(system: SystemId, sourceId: string): Promise<Link | undefined>;
-  /** Find an existing link by a natural key (email/domain) to avoid duplicates on first sync. */
+  /**
+   * Find the link for a native record. Pass the canonical `type`: native ids are only
+   * unique within one object type (a HubSpot contact and company can share an id).
+   */
+  bySource(system: SystemId, sourceId: string, type?: CanonicalType): Promise<Link | undefined>;
+  /** The link that CURRENTLY owns a natural key (retired keys are ignored). */
   byNaturalKey(type: CanonicalType, key: string): Promise<Link | undefined>;
+  /**
+   * Persist a link. Throws NaturalKeyCollisionError if one of its natural keys is currently
+   * owned by another link, or NativeIdCollisionError if a native id is already linked
+   * elsewhere for the same object type. Keys no longer listed are retired.
+   */
   upsertLink(link: Link): Promise<void>;
 }
 
-/** Stable content hash of the canonical fields (order-independent). Drives echo detection. */
-export function contentHash(fields: Record<string, FieldValue>): string {
+/** A natural key is already the current identity of another link; needs operator review. */
+export class NaturalKeyCollisionError extends Error {
+  constructor(
+    readonly type: CanonicalType,
+    readonly key: string,
+    readonly ownerLinkId: string,
+  ) {
+    super(`natural key ${key} already identifies another ${type} record`);
+    this.name = 'NaturalKeyCollisionError';
+  }
+}
+
+/** A native record is already linked to a different canonical record. */
+export class NativeIdCollisionError extends Error {
+  constructor(system: SystemId, type: CanonicalType, nativeId: string) {
+    super(`${system} ${type} ${nativeId} is already linked to another record`);
+    this.name = 'NativeIdCollisionError';
+  }
+}
+
+/**
+ * Content hash format version. v2 is a full SHA-256 over a typed, JSON-encoded, key-sorted
+ * representation of the canonical fields, so distinct values can never collide by
+ * concatenation ({a:'x|b=y'} vs {a:'x', b:'y'}) and null, '' , 0, false, '0' and an absent
+ * field all hash differently. Only canonical fields are hashed -- record metadata such as
+ * modified timestamps or native ids is deliberately excluded, so an unchanged record keeps
+ * an unchanged hash.
+ */
+export const CONTENT_HASH_VERSION = 'v2';
+
+export function contentHash(fields: Record<string, FieldValue | undefined>): string {
+  const encoded = JSON.stringify(
+    Object.keys(fields)
+      .sort()
+      .map((key) => [key, typedValue(fields[key])]),
+  );
+  return `${CONTENT_HASH_VERSION}:${crypto.createHash('sha256').update(encoded).digest('hex')}`;
+}
+
+function typedValue(value: FieldValue | undefined): unknown[] {
+  if (value === undefined) return ['absent'];
+  if (value === null) return ['null'];
+  if (typeof value === 'string') return ['s', value];
+  if (typeof value === 'boolean') return ['b', value];
+  // Numbers keep their exact text (JSON cannot carry NaN/Infinity).
+  return ['n', Number.isFinite(value) ? value : String(value)];
+}
+
+/**
+ * The pre-R05 hash (16 hex chars of SHA-256 over "k=v|k=v"). Kept ONLY to recognise hashes
+ * already stored in the id map, so upgrading never mistakes unchanged content for a change
+ * (which would trigger a mass rewrite). Never used to write new hashes.
+ */
+export function legacyContentHash(fields: Record<string, FieldValue | undefined>): string {
   const normalized = Object.keys(fields)
     .sort()
     .map((k) => `${k}=${fields[k] ?? ''}`)
@@ -55,18 +120,24 @@ export function contentHash(fields: Record<string, FieldValue>): string {
   return crypto.createHash('sha256').update(normalized).digest('hex').slice(0, 16);
 }
 
-/** The natural key we use to match records across systems on the very first sync. */
-export function naturalKey(record: CanonicalRecord): string | undefined {
-  return naturalKeyQuery(record)?.key;
+export function isLegacyHash(hash: string | undefined): boolean {
+  return Boolean(hash) && !hash!.startsWith(`${CONTENT_HASH_VERSION}:`);
 }
 
 /**
- * Natural-key config per canonical object. No object type is pre-registered here — the
- * built-in defaults (contact/company/deal) are seeded as ordinary data by
- * core/defaultObjects.ts + the object mapping store, same as any custom object a tenant adds.
+ * Whether a stored hash describes these fields. A legacy hash is compared in its own
+ * format; callers then rebaseline it to v2 from this read-only observation.
  */
-const NATURAL_KEY_FIELDS: Record<CanonicalType, string[]> = {};
+export function hashMatches(stored: string | undefined, fields: Record<string, FieldValue | undefined>): boolean {
+  if (!stored) return false;
+  return isLegacyHash(stored) ? stored === legacyContentHash(fields) : stored === contentHash(fields);
+}
 
+/**
+ * Natural-key rules live on each app's ConfigContext (core/configContext.ts); nothing here
+ * is pre-registered. The built-in defaults (contact/company/deal) are seeded as ordinary
+ * data by core/defaultObjects.ts, the same as any custom object a tenant adds.
+ */
 export function isAllowedNaturalKeyField(_type: CanonicalType, field: string): boolean {
   const key = field.replace(/[^a-z0-9]/gi, '').toLowerCase();
   if (!key) return false;
@@ -81,28 +152,31 @@ export function isAllowedNaturalKeyField(_type: CanonicalType, field: string): b
   return true;
 }
 
-export function configureNaturalKeyFields(type: CanonicalType, fields: string[]): void {
+/** Validates a natural-key definition and returns it de-duplicated; throws when unsafe. */
+export function validateNaturalKeyFields(type: CanonicalType, fields: string[]): string[] {
   if (!fields.length) throw new Error('at least one natural-key field is required');
   if (fields.length > 3) throw new Error('natural keys can contain at most three fields');
   const unsafe = fields.find((field) => !isAllowedNaturalKeyField(type, field));
   if (unsafe) throw new Error(`unsafe natural-key field: ${unsafe}`);
-  NATURAL_KEY_FIELDS[type] = [...new Set(fields)];
+  return [...new Set(fields)];
 }
 
-export function naturalKeyFields(type: CanonicalType): string[] {
-  return [...(NATURAL_KEY_FIELDS[type] ?? [])];
+/** Fields that identify a person or deal only weakly: they change or repeat in practice. */
+const WEAK_KEY_FIELDS = /^(name|firstname|lastname|fullname|title|phone|mobilephone|closedate|city|companyname)$/i;
+
+/** True when a natural key relies only on weak, mutable or commonly repeated values. */
+export function isWeakNaturalKey(fields: readonly string[]): boolean {
+  return fields.length > 0 && fields.every((field) => WEAK_KEY_FIELDS.test(field.replace(/[^a-z0-9]/gi, '')));
 }
 
-/** Used when an object's native pairing changes -- the old natural key described the old native
- * object's fields and rarely makes sense on the new one, so it's cleared rather than kept stale. */
-export function clearNaturalKeyFields(type: CanonicalType): void {
-  delete NATURAL_KEY_FIELDS[type];
-}
-
-export function naturalKeyQuery(record: CanonicalRecord): NaturalKeyQuery | undefined {
+/** Builds the natural-key lookup for one record from its object's configured key fields. */
+export function buildNaturalKeyQuery(
+  record: CanonicalRecord,
+  keyFields: readonly string[],
+): NaturalKeyQuery | undefined {
   const f = record.fields;
   const criteria: { field: string; value: string }[] = [];
-  for (const field of NATURAL_KEY_FIELDS[record.type] ?? []) {
+  for (const field of keyFields) {
     const raw = f[field];
     if (typeof raw !== 'string' && typeof raw !== 'number') return undefined;
     const value = normalizeKeyValue(field, String(raw));
@@ -121,18 +195,29 @@ export function naturalKeyQuery(record: CanonicalRecord): NaturalKeyQuery | unde
 
 export class FileIdMapStore implements IdMapStore {
   private links = new Map<string, Link>();
-  private sourceIndex = new Map<string, string>(); // `${system}:${sourceId}` -> canonicalId
-  private naturalIndex = new Map<string, string>(); // `${type}:${key}` -> canonicalId
+  private sourceIndex = new Map<string, string>(); // `${system}:${type}:${sourceId}` -> canonicalId
+  private naturalIndex = new Map<string, string>(); // `${type}:${key}` -> current owner canonicalId
+  /** Retired keys per link (provenance only; never used for matching). */
+  private retired = new Map<string, Set<string>>();
   private dirty = false;
 
-  constructor(private readonly file = path.resolve('data/idmap.json')) {}
+  /** Pass `null` for a purely in-memory store (load tests); nothing touches the disk. */
+  constructor(private readonly file: string | null = path.resolve('data/idmap.json')) {}
 
   async init(): Promise<void> {
+    if (this.file === null) return;
     await fs.mkdir(path.dirname(this.file), { recursive: true });
     try {
       const raw = await fs.readFile(this.file, 'utf8');
-      const arr: Link[] = JSON.parse(raw);
-      for (const link of arr) this.index(link);
+      const arr: (Link & { retiredNaturalKeys?: string[] })[] = JSON.parse(raw);
+      for (const link of arr) {
+        this.links.set(link.canonicalId, link);
+        this.indexSides(link);
+        for (const key of link.naturalKeys ?? []) {
+          if (!this.naturalIndex.has(`${link.type}:${key}`)) this.naturalIndex.set(`${link.type}:${key}`, link.canonicalId);
+        }
+        if (link.retiredNaturalKeys?.length) this.retired.set(link.canonicalId, new Set(link.retiredNaturalKeys));
+      }
     } catch (err: unknown) {
       if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
     }
@@ -140,43 +225,86 @@ export class FileIdMapStore implements IdMapStore {
     setInterval(() => void this.flush(), 2000).unref();
   }
 
-  async bySource(system: SystemId, sourceId: string): Promise<Link | undefined> {
-    const cid = this.sourceIndex.get(`${system}:${sourceId}`);
-    return cid ? this.links.get(cid) : undefined;
+  async bySource(system: SystemId, sourceId: string, type?: CanonicalType): Promise<Link | undefined> {
+    if (type) {
+      const cid = this.sourceIndex.get(`${system}:${type}:${sourceId}`);
+      return this.copy(cid);
+    }
+    for (const link of this.links.values()) {
+      if (link.ids[system] === sourceId) return structuredClone(link);
+    }
+    return undefined;
   }
 
   async byNaturalKey(type: CanonicalType, key: string): Promise<Link | undefined> {
     const cid = this.naturalIndex.get(`${type}:${key}`);
-    return cid ? this.links.get(cid) : undefined;
+    return this.copy(cid);
+  }
+
+  /** Callers mutate the links they receive; they must go through upsertLink to persist. */
+  private copy(canonicalId: string | undefined): Link | undefined {
+    const link = canonicalId ? this.links.get(canonicalId) : undefined;
+    return link ? structuredClone(link) : undefined;
   }
 
   async upsertLink(link: Link): Promise<void> {
+    for (const key of link.naturalKeys ?? []) {
+      const owner = this.naturalIndex.get(`${link.type}:${key}`);
+      if (owner && owner !== link.canonicalId) {
+        throw new NaturalKeyCollisionError(link.type, key, owner);
+      }
+    }
+    for (const [system, id] of Object.entries(link.ids) as [SystemId, string | undefined][]) {
+      const owner = id ? this.sourceIndex.get(`${system}:${link.type}:${id}`) : undefined;
+      if (owner && owner !== link.canonicalId) throw new NativeIdCollisionError(system, link.type, id!);
+    }
+    const previous = this.links.get(link.canonicalId);
     link.updatedAt = new Date().toISOString();
-    this.index(link);
+    if (previous) {
+      for (const [system, id] of Object.entries(previous.ids) as [SystemId, string | undefined][]) {
+        if (id && link.ids[system] !== id) this.sourceIndex.delete(`${system}:${previous.type}:${id}`);
+      }
+      const current = new Set(link.naturalKeys ?? []);
+      for (const key of previous.naturalKeys ?? []) {
+        if (current.has(key)) continue;
+        if (this.naturalIndex.get(`${previous.type}:${key}`) === link.canonicalId) {
+          this.naturalIndex.delete(`${previous.type}:${key}`);
+        }
+        const retired = this.retired.get(link.canonicalId) ?? new Set<string>();
+        retired.add(key);
+        this.retired.set(link.canonicalId, retired);
+      }
+    }
+    const stored = structuredClone(link);
+    this.links.set(link.canonicalId, stored);
+    this.indexSides(stored);
+    for (const key of stored.naturalKeys ?? []) {
+      this.naturalIndex.set(`${stored.type}:${key}`, stored.canonicalId);
+      this.retired.get(stored.canonicalId)?.delete(key);
+    }
     this.dirty = true;
     await this.flush();
   }
 
-  private index(link: Link): void {
-    this.links.set(link.canonicalId, link);
+  /** Retired keys of one link (provenance, e.g. an email a contact used to have). */
+  retiredKeys(canonicalId: string): string[] {
+    return [...(this.retired.get(canonicalId) ?? [])];
+  }
+
+  private indexSides(link: Link): void {
     for (const [system, id] of Object.entries(link.ids)) {
-      if (id) this.sourceIndex.set(`${system}:${id}`, link.canonicalId);
-    }
-    for (const key of link.naturalKeys ?? []) {
-      this.naturalIndex.set(`${link.type}:${key}`, link.canonicalId);
+      if (id) this.sourceIndex.set(`${system}:${link.type}:${id}`, link.canonicalId);
     }
   }
 
   private async flush(): Promise<void> {
-    if (!this.dirty) return;
+    if (!this.dirty || this.file === null) return;
     this.dirty = false;
-    const arr = [...this.links.values()];
+    const arr = [...this.links.values()].map((link) => ({
+      ...link,
+      retiredNaturalKeys: [...(this.retired.get(link.canonicalId) ?? [])],
+    }));
     await fs.writeFile(this.file, JSON.stringify(arr, null, 2));
-  }
-
-  /** Register a natural-key -> canonicalId mapping (called by the engine after matching). */
-  indexNaturalKey(type: CanonicalType, key: string, canonicalId: string): void {
-    this.naturalIndex.set(`${type}:${key}`, canonicalId);
   }
 }
 
@@ -184,10 +312,14 @@ export function newCanonicalId(): string {
   return crypto.randomUUID();
 }
 
-function normalizeDomain(value: string): string {
+/**
+ * Normalises a company domain for EXACT comparison: scheme, "www.", path, port and case
+ * are removed; nothing else. `example.com` and `notexample.com` stay different.
+ */
+export function normalizeDomain(value: string): string {
   try {
     const url = value.includes('://') ? new URL(value) : new URL(`https://${value}`);
-    return url.hostname.replace(/^www\./, '').toLowerCase();
+    return url.hostname.replace(/^www\./, '').replace(/\.$/, '').toLowerCase();
   } catch {
     return value.trim().replace(/^www\./, '').toLowerCase();
   }

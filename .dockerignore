@@ -1,0 +1,16 @@
+# R14: never ship local state or secrets in an image.
+data/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+node_modules/
+dist/
+coverage/
+.git/
+.sf/
+.sfdx/
+hubspot-app/
+test/
+*.log

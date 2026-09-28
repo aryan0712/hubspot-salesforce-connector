@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { toCanonicalFields, fromCanonicalFields, nativeFields } from '../src/core/mapping.js';
+import { createDefaultConfigContext } from '../src/core/configContext.js';
+
+const config = createDefaultConfigContext('mapping-test');
 
 describe('field mapping', () => {
   it('translates a Salesforce Contact into canonical fields', () => {
@@ -11,7 +13,7 @@ describe('field mapping', () => {
       Title: 'Mathematician',
       Account: { Name: 'Analytical Engine Co' },
     };
-    const c = toCanonicalFields('salesforce', 'contact', native);
+    const c = config.toCanonicalFields('salesforce', 'contact', native);
     expect(c).toMatchObject({
       firstName: 'Ada',
       lastName: 'Lovelace',
@@ -23,7 +25,7 @@ describe('field mapping', () => {
   });
 
   it('translates canonical fields into HubSpot properties', () => {
-    const native = fromCanonicalFields('hubspot', 'contact', {
+    const native = config.fromCanonicalFields('hubspot', 'contact', {
       firstName: 'Ada',
       lastName: 'Lovelace',
       email: 'ada@analytical.co',
@@ -39,7 +41,7 @@ describe('field mapping', () => {
 
   it('does not write read-only or dotted-path fields back to a system', () => {
     // companyName maps to Account.Name (dotted + readOnly) in Salesforce → never written.
-    const native = fromCanonicalFields('salesforce', 'contact', {
+    const native = config.fromCanonicalFields('salesforce', 'contact', {
       firstName: 'Ada',
       companyName: 'Should Not Appear',
     });
@@ -48,20 +50,20 @@ describe('field mapping', () => {
   });
 
   it('normalizes company website to a bare domain for cross-system matching', () => {
-    const a = toCanonicalFields('salesforce', 'company', { Website: 'https://www.Acme.com/path' });
-    const b = toCanonicalFields('hubspot', 'company', { domain: 'acme.com' });
+    const a = config.toCanonicalFields('salesforce', 'company', { Website: 'https://www.Acme.com/path' });
+    const b = config.toCanonicalFields('hubspot', 'company', { domain: 'acme.com' });
     expect(a.domain).toBe('acme.com');
     expect(a.domain).toBe(b.domain);
   });
 
   it('coerces missing native values to null, not undefined', () => {
-    const c = toCanonicalFields('hubspot', 'contact', { firstname: 'Ada' });
+    const c = config.toCanonicalFields('hubspot', 'contact', { firstname: 'Ada' });
     expect(c.lastName).toBeNull();
     expect(Object.prototype.hasOwnProperty.call(c, 'lastName')).toBe(true);
   });
 
   it('nativeFields lists the projection to request from each API', () => {
-    expect(nativeFields('hubspot', 'deal')).toContain('dealname');
-    expect(nativeFields('salesforce', 'deal')).toContain('StageName');
+    expect(config.nativeFields('hubspot', 'deal')).toContain('dealname');
+    expect(config.nativeFields('salesforce', 'deal')).toContain('StageName');
   });
 });

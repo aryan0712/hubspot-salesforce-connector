@@ -61,7 +61,7 @@ export async function isConfigured(): Promise<boolean> {
   return Boolean(c.clientId && c.clientSecret) || Boolean(env.HUBSPOT_PRIVATE_APP_TOKEN);
 }
 
-function redirectUri(): string {
+export function redirectUri(): string {
   return env.HUBSPOT_REDIRECT_URI ?? `${env.PUBLIC_BASE_URL}/auth/hubspot/callback`;
 }
 
@@ -83,7 +83,11 @@ export async function hubspotAuthUrl(_environment: Environment, state: string, c
   return u.toString();
 }
 
-export async function exchangeCode(environment: Environment, code: string, codeVerifier?: string): Promise<void> {
+/**
+ * Exchanges the authorization code for tokens and returns the connection WITHOUT storing
+ * it: the caller confirms the exact account (portal id) before it replaces a current one.
+ */
+export async function exchangeCode(environment: Environment, code: string, codeVerifier?: string): Promise<Connection> {
   const credentials = await creds();
   const body: Record<string, string> = {
     grant_type: 'authorization_code',
@@ -94,16 +98,18 @@ export async function exchangeCode(environment: Environment, code: string, codeV
   };
   if (codeVerifier) body.code_verifier = codeVerifier;
   const { data } = await axios.post(TOKEN, new URLSearchParams(body));
-  await connections.set({
+  const hub = await hubInfo(data.access_token);
+  logger.info({ environment }, 'HubSpot authorization exchanged');
+  return {
     system: 'hubspot',
     environment,
     refreshToken: data.refresh_token,
     accessToken: data.access_token,
     expiresAt: Date.now() + data.expires_in * 1000,
-    accountLabel: await hubLabel(data.access_token),
+    accountLabel: hub.label,
+    accountId: hub.id,
     connectedAt: new Date().toISOString(),
-  });
-  logger.info({ environment }, 'HubSpot connected');
+  };
 }
 
 export async function getAccessToken(): Promise<string> {
@@ -126,6 +132,27 @@ export async function getAccessToken(): Promise<string> {
   }
   if (!refreshInFlight) {
     refreshInFlight = refreshAccessToken(conn).finally(() => {
+      refreshInFlight = undefined;
+    });
+  }
+  return refreshInFlight;
+}
+
+/**
+ * Called after HubSpot rejected `rejectedToken` (401). Invalidates it and runs ONE shared
+ * refresh; concurrent callers reuse it, and a token someone else already refreshed is
+ * returned as-is. A private-app token cannot be refreshed, so it is returned unchanged and
+ * the single retry fails with a clear authorization error.
+ */
+export async function refreshAfterRejection(rejectedToken: string): Promise<string> {
+  if (env.HUBSPOT_PRIVATE_APP_TOKEN) return env.HUBSPOT_PRIVATE_APP_TOKEN;
+  const conn = await connections.get('hubspot');
+  if (!conn) throw new Error('HubSpot not connected. Start OAuth at /auth/hubspot/start');
+  if (conn.accessToken && conn.accessToken !== rejectedToken && (conn.expiresAt ?? 0) > Date.now() + 60_000) {
+    return conn.accessToken;
+  }
+  if (!refreshInFlight) {
+    refreshInFlight = refreshAccessToken({ ...conn, accessToken: undefined, expiresAt: undefined }).finally(() => {
       refreshInFlight = undefined;
     });
   }
@@ -167,11 +194,14 @@ async function refreshAccessToken(conn: Connection): Promise<string> {
 }
 
 /** Look up the portal's domain for a friendly UI label. */
-async function hubLabel(accessToken: string): Promise<string | undefined> {
+async function hubInfo(accessToken: string): Promise<{ label?: string; id?: string }> {
   try {
     const { data } = await axios.get(`https://api.hubapi.com/oauth/v1/access-tokens/${accessToken}`);
-    return data.hub_domain ?? (data.hub_id ? `Hub ${data.hub_id}` : undefined);
+    return {
+      label: data.hub_domain ?? (data.hub_id ? `Hub ${data.hub_id}` : undefined),
+      id: data.hub_id !== undefined ? String(data.hub_id) : undefined,
+    };
   } catch {
-    return undefined;
+    return {};
   }
 }

@@ -1,24 +1,33 @@
 # crm-sync — Project Handoff & Status
 
-**Last updated:** 2026-09-23 (review plan added; prior live verification remains 2026-07-29)
+**Last updated:** 2026-09-24 (remediation plan R01–R12 and R14 complete, R13 core
+delivered; prior live CRM verification remains 2026-07-29)
 **Status:** PostgreSQL product upgrade is installed and running locally. Schema migrations
-and the legacy-state import completed successfully, and the live app was verified healthy.
+and the legacy-state import completed successfully, and the live app was verified healthy
+on 2026-07-29. Extensive engine/security/operability work has since landed on the
+`remediation-plan` branch (below); none of it has touched live Salesforce or HubSpot, and
+none of it has been verified against those live accounts.
 
 This is the single source of truth after a restart.
 
-## Review remediation plan — 2026-09-23
+## Review remediation plan — updated 2026-09-24
 
 The application review and implementation plan are tracked in
-[docs/REMEDIATION_PLAN.md](docs/REMEDIATION_PLAN.md). Implementation under that plan has
-not started. It covers migration preview/source-write correctness, demo configuration
-isolation, concurrent linking and execution, canary verification, retries, durable
-workers, authentication/tenancy, webhooks, and operational/product verification.
+[docs/REMEDIATION_PLAN.md](docs/REMEDIATION_PLAN.md), which is the authoritative,
+evidence-linked status for each package (R01–R15). As of this update: R01–R12 and R14 are
+complete, and R13's core is delivered (route/module extraction, strict CSP, real
+readiness, keyset pagination, conflict review UI, resumable runs, browser tests) with a
+short remaining list noted in the plan. R15 (lint, CI, this document) is in progress.
+It covers migration preview/source-write correctness, demo configuration isolation,
+concurrent linking and execution, canary verification, retries, durable workers,
+authentication/tenancy, webhook authenticity, and operational/product verification.
 
-Typecheck, build, all 116 tests, and the mock demo passed during the review; isolated
-probes still reproduced correctness gaps. Existing feature descriptions below describe
-implemented mechanisms, not proof that the newly identified safety gaps are resolved.
-No live CRM writes or connection changes were performed during the review. Follow the
-new plan's delivery order alongside the broader production-readiness checklist.
+Typecheck, lint, the full test suite (35 files / 314 tests, plus 10 real-browser tests),
+and the mock demo all pass — see §5 for the exact commands. Every fix a package claims has
+a regression test named in the plan's evidence line for that package. No live CRM writes
+or connection changes have been performed under this plan; everything above was verified
+against mock connectors and isolated, embedded PostgreSQL clusters, never against the live
+Salesforce org or HubSpot portal in §3.
 
 The plan also includes a **deferred next-phase feature roadmap** for assessment,
 explainable plans, a migration control center, relationship migration, reconciliation,
@@ -77,6 +86,35 @@ Implemented in the current worktree:
 - Credential-free unit and isolated PostgreSQL integration tests, plus a passing
   end-to-end mock CRM demo
 - Project-local PostgreSQL 18 for environments without Docker/admin access
+
+Added under the 2026-09-24 remediation plan (R01–R14, R13 core; all verified against mock
+connectors and isolated PostgreSQL, never against the live accounts in §3):
+
+- Instance-owned configuration, frozen approval context for every migration write, drift
+  checks before execution and before each write, and exact destination-side natural-key
+  verification (`findByNaturalKey` on `CRMConnector`, with truncated-search detection)
+- Durable migration executions: leases, a crash-safe worker, pause/resume/retry-failed/
+  cancel, and one-record canary verification gating a full run
+- Exclusive execution claims, persisted write intents (recovery evidence for every CRM
+  mutation), and identity locks serializing concurrent linking
+- Relationship propagation for live sync with retry once both ends are linked, labeled
+  HubSpot associations, and unsupported-relationship reporting; tombstoned deletes that
+  late/replayed events cannot resurrect, with an audited restore; an inspectable,
+  manually-resolvable conflict log
+- Sessions, CSRF, roles (viewer/operator/admin/owner), tenant-bound API keys, and an
+  optional multi-tenant mode with per-workspace App composition and forced row-level
+  security; session-bound OAuth state with confirmation before an account is replaced
+- Verified, replay-protected, account-routed inbound webhooks persisted to an inbox before
+  acknowledgement and resolved by a worker (HubSpot signature v3; a signed, nonce-protected
+  Salesforce sender contract, `docs/WEBHOOKS.md`)
+- A strict-CSP operator console (no inline scripts/handlers), accessible inline error
+  messages with correlation ids, real readiness/workspace identity, keyset pagination, a
+  conflict-review UI, and resumable-run controls
+- Verified TLS, pooled timeouts, serialized release migrations, versioned secret-key
+  rotation, persisted notification delivery state, daily data retention, correlated logs,
+  Prometheus metrics, operational alerts, liveness/readiness endpoints, and a Docker image
+- Real lint (with architectural layer boundaries), a typechecked test suite, and browser
+  tests against a real Chrome/Edge
 
 ## 2. Important safety/state note
 
@@ -137,17 +175,23 @@ npm test
 npm run dev
 ```
 
+`npm run dev` runs background workers (sync, the webhook inbox, migrations, alert
+digests, daily retention) in the same process by default. Set `RUN_WORKERS=false` and run
+`npm run worker` separately to scale them independently; either mode is fine locally.
+
 Verify:
 
-- `GET http://localhost:3000/health`
-- `GET http://localhost:3000/api/status`
+- `GET http://localhost:3000/health` (legacy alias), or the more specific
+  `GET http://localhost:3000/health/live` and `GET http://localhost:3000/health/ready`
+- `GET http://localhost:3000/api/status` and `GET http://localhost:3000/api/readiness`
 - Connections at `http://localhost:3000/`
 - Migrate at `http://localhost:3000/ops#migration`
 - Sync at `http://localhost:3000/ops#sync`
-- Activity at `http://localhost:3000/ops#activity`
+- Activity at `http://localhost:3000/ops#activity` (jobs, conflicts, and audit)
 - Settings at `http://localhost:3000/ops#settings`
 
-Verified on 2026-07-29:
+Verified on 2026-07-29 (predates the remediation-plan work in §1; not re-verified against
+the live accounts since):
 
 - PostgreSQL health returned OK
 - Salesforce and HubSpot connections decrypted successfully
@@ -158,63 +202,98 @@ Verified on 2026-07-29:
 ## 5. Commands
 
 ```bash
+npm run lint              # ESLint (correctness + architectural layer boundaries)
 npm run typecheck
+npm run typecheck:test    # tsc against src/ + test/ (vitest itself does not typecheck)
+npm run scan:secrets      # tracked/new files for credentials
 npm test
+npm run test:browser      # real Chrome/Edge against the HTTP app
 npm run build
 npm run demo
 npm run db:local
 npm run db:migrate
 npm run db:import-legacy -- --confirm
 npm run dev
+npm run worker            # separate background-worker process
+npm run secrets:rotate    # re-encrypts stored secrets under the current key (dry run by default)
+npm run db:retention      # applies data retention once by hand (workers also run it daily)
 ```
 
 The API and CLI both default to preview. A real API write requires `"confirm": true`;
 a real CLI write requires `--confirm`. API writes also require a passing preflight.
-Continue to use small limits first.
+Continue to use small limits first. Do not run `secrets:rotate -- --confirm` or
+`db:retention` against this environment's real data unless asked.
 
 ## 6. PostgreSQL model
 
-Migrations are under `db/migrations/`.
+Migrations are under `db/migrations/` (currently through `022_notification_deliveries.sql`)
+and run as a serialized release step (`npm run db:migrate`); see
+[docs/OPERATIONS.md](docs/OPERATIONS.md) for the schema-owner vs. runtime-role split.
 
 Core areas:
 
-- identity/access: `tenants`, `tenant_users`, `api_keys`
-- secrets: `oauth_app_credentials`, `crm_connections`
+- identity/access: `tenants`, `tenant_users`, `api_keys`, `users`, `user_sessions`,
+  `login_attempts` (sessions/roles are global identity tables; `tenant_users` stays
+  tenant-scoped)
+- secrets: `oauth_app_credentials`, `crm_connections`, `oauth_states` (persisted,
+  session-bound OAuth state, including staged account-replacement confirmations)
+- account routing: `account_routes` (global CRM account → workspace map for inbound
+  webhooks)
 - configuration: `object_mappings`, `field_mappings`, `value_mappings`,
   `owner_mappings`, `schema_snapshots`
 - sync identity: `record_links`, `record_link_sides`, `record_natural_keys`,
-  `record_associations`
-- operations: `migration_runs`, `migration_items`, `sync_events`, `webhook_cursors`
-- migration planning: `migration_plans` with revisioned drafts and preview/execution links
-- governance: `conflicts`, `deletion_requests`, `audit_entries`
+  `record_associations`, `pending_associations`, `record_tombstones`
+- operations: `migration_runs`, `migration_items`, `sync_events`, `webhook_cursors`,
+  `webhook_inbox`, `webhook_nonces`, `write_intents`
+- migration planning and execution: `migration_plans` with revisioned drafts and
+  preview/execution links, `migration_executions`, `migration_execution_items`
+- governance: `conflicts` (with field-level decisions), `deletion_requests`,
+  `audit_entries`
 - commercial: `subscriptions`, `usage_counters`
 - AI configuration: `ai_provider_credentials`
+- notifications: `notification_settings`, `notification_deliveries`,
+  `notification_alert_items`
 
-All tenant-owned tables set and enforce `app.tenant_id` via PostgreSQL RLS.
+All tenant-owned tables set and enforce `app.tenant_id` via PostgreSQL RLS (`users`,
+`user_sessions`, `login_attempts` and `account_routes` are the only global, non-tenant
+tables, by design — see [docs/SECURITY_MODEL.md](docs/SECURITY_MODEL.md)).
 
 ## 7. Webhooks
 
 Backend endpoints:
 
-- `/webhooks/hubspot`
-- `/webhooks/salesforce`
+- `/webhooks/hubspot` — verifies signature v3 (exact signature against the configured
+  public URI, 5-minute freshness, the delivery's portal must match the connected account)
+- `/webhooks/salesforce` — verifies a signed, timestamped, single-use-nonce sender
+  contract (`v2`); a legacy body-only signature keeps working in the default `compat`
+  mode
+
+Every verified delivery is persisted to a per-workspace inbox before it is acknowledged; a
+worker resolves inbox entries into sync jobs once connectors are ready. Full contract,
+response codes and the Apex sender snippet: [docs/WEBHOOKS.md](docs/WEBHOOKS.md).
 
 HubSpot generic webhooks are not deployed yet because a stable public HTTPS backend URL
 has not been selected. Use `docs/HUBSPOT_WEBHOOK_COMPONENT.example.json` only after
 replacing `YOUR_PUBLIC_HOST`. Follow `hubspot-app/AGENTS.md`, validate, then upload/deploy.
-Do not redeploy the HubSpot project unprompted.
+Do not redeploy the HubSpot project unprompted. Do not expose a public webhook endpoint or
+register it with either vendor unless asked.
 
-Salesforce’s signed webhook endpoint works. The next infrastructure task is a real Pub/Sub
-API CDC worker using the existing `webhook_cursors` table for Replay IDs.
+Salesforce's signed webhook endpoint works (now with the stronger `v2` sender contract
+above). The next infrastructure task remains a real Pub/Sub API CDC worker using the
+existing `webhook_cursors` table for Replay IDs — still deferred, not built.
 
 ## 8. Architecture constraints
 
 - ESM TypeScript; relative imports use `.js`.
-- Connector-specific shapes stay in connectors.
+- Connector-specific shapes stay in connectors; engines depend on core contracts only,
+  never connector or database implementations; routes go through services and contracts,
+  never connectors or the database directly. `eslint.config.js` enforces this layering —
+  `npm run lint` fails on a violation.
 - Field translation stays in `core/mapping.ts`.
 - Both migration and live sync must continue through `Reconciler`.
-- Logs use pino; no bare `console.log` under `src/`.
-- Tests run against mock connectors without credentials.
+- Logs use pino; no bare `console.log` under `src/` (`no-console` is an ESLint error there).
+- Tests run against mock connectors or an isolated embedded PostgreSQL cluster, without
+  credentials; `npm run typecheck:test` typechecks them (vitest itself does not).
 - Never trigger live migration writes without explicit user approval.
 
 ## 9. Deferred external/deployment actions
@@ -236,6 +315,9 @@ of the separate live-sync engine. Generic custom-object execution still requires
 planned dynamic canonical-object work.
 
 If this workstation becomes a long-term environment, add automated backups for both
-`data/postgres/` and `data/.encryption-key`.
+`data/postgres/` and `data/.encryption-key`. `docs/OPERATIONS.md` now documents a measured
+restore procedure and objectives for a deployed environment, but nothing here has been
+scheduled or exercised specifically for this workstation.
 
-See `README.md`, `docs/ARCHITECTURE.md`, and `docs/OPERATIONS.md`.
+See `README.md`, `docs/ARCHITECTURE.md`, `docs/OPERATIONS.md`,
+`docs/SECURITY_MODEL.md`, `docs/WEBHOOKS.md`, and `docs/REMEDIATION_PLAN.md`.

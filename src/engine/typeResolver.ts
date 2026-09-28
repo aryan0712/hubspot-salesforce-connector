@@ -1,5 +1,5 @@
 import { logger } from '../logger.js';
-import { canonicalObjectsFor } from '../core/objectRegistry.js';
+import type { ConfigContext } from '../core/configContext.js';
 import { evaluateConditions, type SyncConfig } from '../core/syncConfig.js';
 import type { CRMConnector } from '../core/connector.js';
 import type { CanonicalType, SystemId } from '../core/types.js';
@@ -21,8 +21,9 @@ export async function resolveCanonicalType(
   sourceId: string,
   connector: CRMConnector,
   syncConfig: SyncConfig,
+  config: ConfigContext,
 ): Promise<CanonicalType | undefined> {
-  const candidates = canonicalObjectsFor(system, nativeObjectId);
+  const candidates = config.canonicalObjectsFor(system, nativeObjectId);
   if (candidates.length === 0) return undefined;
   if (candidates.length === 1) return candidates[0]!.canonicalObject;
 

@@ -1,9 +1,6 @@
-import { clearNaturalKeyFields, configureNaturalKeyFields, isAllowedNaturalKeyField, naturalKeyFields } from '../core/idMap.js';
-import {
-  listCanonicalObjects,
-  registerObjectMapping,
-  type ObjectRegistration,
-} from '../core/objectRegistry.js';
+import { isAllowedNaturalKeyField, validateNaturalKeyFields } from '../core/idMap.js';
+import type { ObjectRegistration } from '../core/objectRegistry.js';
+import type { ConfigContext } from '../core/configContext.js';
 import type { CanonicalType } from '../core/types.js';
 import type { PostgresDatabase } from './postgres.js';
 
@@ -26,13 +23,15 @@ export interface NewObjectMapping {
 /**
  * The tenant's object registry: which canonical objects exist, and their native name in each
  * CRM. Backed by object_mappings, which already stores salesforce_object/hubspot_object per
- * row — this class persists whatever native names a caller actually selected, rather than
- * re-deriving them from a fixed contact/company/deal ternary.
+ * row -- this class persists whatever native names a caller actually selected, rather than
+ * re-deriving them from a fixed contact/company/deal ternary. It hydrates and updates only
+ * its own tenant's ConfigContext, always persisting before publishing.
  */
 export class PostgresObjectMappingStore {
   constructor(
     private readonly db: PostgresDatabase,
     private readonly tenantId: string,
+    private readonly config: ConfigContext,
   ) {}
 
   async init(): Promise<void> {
@@ -44,34 +43,39 @@ export class PostgresObjectMappingStore {
         [this.tenantId],
       ),
     );
-    for (const row of rows.rows) {
-      registerObjectMapping({
-        canonicalObject: row.canonical_object,
-        label: row.label,
-        salesforceObject: row.salesforce_object ?? undefined,
-        hubspotObject: row.hubspot_object ?? undefined,
-      });
-      if (
-        row.natural_key_fields.length &&
-        row.natural_key_fields.length <= 3 &&
-        row.natural_key_fields.every((field) =>
-          isAllowedNaturalKeyField(row.canonical_object, field))
-      ) {
-        configureNaturalKeyFields(row.canonical_object, row.natural_key_fields);
+    this.config.publish((draft) => {
+      for (const row of rows.rows) {
+        draft.objects.set(row.canonical_object, {
+          canonicalObject: row.canonical_object,
+          label: row.label,
+          salesforceObject: row.salesforce_object ?? undefined,
+          hubspotObject: row.hubspot_object ?? undefined,
+        });
+        if (
+          row.natural_key_fields.length &&
+          row.natural_key_fields.length <= 3 &&
+          row.natural_key_fields.every((field) =>
+            isAllowedNaturalKeyField(row.canonical_object, field))
+        ) {
+          draft.naturalKeys[row.canonical_object] = [...new Set(row.natural_key_fields)];
+        }
       }
-    }
+    }, rows.rows.map((row) => row.canonical_object));
   }
 
   list(): ObjectRegistration[] {
-    return listCanonicalObjects();
+    return this.config.listCanonicalObjects();
   }
 
   getNaturalKeyFields(type: CanonicalType): string[] {
-    return naturalKeyFields(type);
+    return this.config.naturalKeyFields(type);
   }
 
   /** Registers a brand-new canonical object with the native names the operator picked. */
   async create(input: NewObjectMapping): Promise<ObjectRegistration> {
+    const naturalKeyFields = input.naturalKeyFields?.length
+      ? validateNaturalKeyFields(input.canonicalObject, input.naturalKeyFields)
+      : [];
     await this.db.tenant(this.tenantId, async (client) => {
       await client.query(
         `INSERT INTO object_mappings(
@@ -84,7 +88,7 @@ export class PostgresObjectMappingStore {
           input.label,
           input.salesforceObject ?? null,
           input.hubspotObject ?? null,
-          input.naturalKeyFields ?? [],
+          naturalKeyFields,
         ],
       );
     });
@@ -94,26 +98,27 @@ export class PostgresObjectMappingStore {
       salesforceObject: input.salesforceObject,
       hubspotObject: input.hubspotObject,
     };
-    registerObjectMapping(registration);
-    if (input.naturalKeyFields?.length) {
-      configureNaturalKeyFields(input.canonicalObject, input.naturalKeyFields);
-    }
+    this.config.publish((draft) => {
+      draft.objects.set(registration.canonicalObject, { ...registration });
+      if (naturalKeyFields.length) draft.naturalKeys[registration.canonicalObject] = naturalKeyFields;
+    }, [registration.canonicalObject]);
     return registration;
   }
 
   /** Updates natural-key fields for an already-registered object; native names are untouched. */
   async setNaturalKeyFields(type: CanonicalType, fields: string[]): Promise<void> {
-    configureNaturalKeyFields(type, fields);
+    const normalized = validateNaturalKeyFields(type, fields);
     const result = await this.db.tenant(this.tenantId, async (client) =>
       client.query(
         `UPDATE object_mappings SET natural_key_fields = $3, updated_at = now()
          WHERE tenant_id = $1 AND canonical_object = $2`,
-        [this.tenantId, type, fields],
+        [this.tenantId, type, normalized],
       ),
     );
     if (result.rowCount === 0) {
       throw new Error(`object "${type}" is not registered; create it before setting natural keys`);
     }
+    this.config.configureNaturalKeyFields(type, normalized);
   }
 
   /**
@@ -140,14 +145,16 @@ export class PostgresObjectMappingStore {
     if (!row) {
       throw new Error(`object "${type}" is not registered; create it before changing its native objects`);
     }
-    clearNaturalKeyFields(type);
     const registration: ObjectRegistration = {
       canonicalObject: type,
       label: row.label,
       salesforceObject: input.salesforceObject,
       hubspotObject: input.hubspotObject,
     };
-    registerObjectMapping(registration);
+    this.config.publish((draft) => {
+      draft.objects.set(type, { ...registration });
+      delete draft.naturalKeys[type];
+    }, [type]);
     return registration;
   }
 }

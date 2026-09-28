@@ -489,7 +489,7 @@ export function migrationWorkspaceHtml(): string {
 
             <section class="workspace-panel" id="workspace-preview">
               <div class="card step-card">
-                <div class="step-intro"><div class="step-intro-row"><div><div class="step-eyebrow">Step 6 of 6</div><h2>Test one real record</h2><p>Choose a representative source record, review exactly what will happen, then run and verify that single destination write.</p></div><span id="mig-status" class="muted"></span></div></div>
+                <div class="step-intro"><div class="step-intro-row"><div><div class="step-eyebrow">Step 6 of 6</div><h2>Test one real record</h2><p>Choose a representative source record, review exactly what will happen, then run and verify that single destination write.</p></div><span id="mig-status" class="muted" role="status" aria-live="polite"></span></div></div>
                 <div class="execution-safety"><b>One-record safety</b><p>The plan, schemas, mappings, and selected source record are rechecked immediately before the write.</p></div>
                 <div class="test-record-controls">
                   <label>Object<select id="test-record-type"></select></label>

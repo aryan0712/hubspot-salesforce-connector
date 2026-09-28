@@ -10,6 +10,9 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    # A standard PostgreSQL image (distinct from the embedded cluster the test suite starts
+    # itself) so the release migration step is exercised against a real server, not just the
+    # bundled binary used for isolated per-file test databases.
     services:
       postgres:
         image: postgres:17-alpine
@@ -36,8 +39,15 @@ jobs:
           node-version: 20
           cache: npm
       - run: npm ci
-      - run: npm run db:migrate
+      - run: npm run scan:secrets
+      - run: npm run lint
       - run: npm run typecheck
+      - run: npm run typecheck:test
+      # Exercises the release (migration) step against a real, standard PostgreSQL server.
+      - run: npm run db:migrate
       - run: npm test
       - run: npm run build
-      - run: npm audit --audit-level=high
+      # GitHub-hosted ubuntu-latest runners ship Google Chrome; the suite uses it via
+      # playwright-core (no browser download step needed).
+      - run: npm run test:browser
+      - run: npm run audit:deps

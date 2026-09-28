@@ -1,9 +1,11 @@
 import type { CanonicalType, SystemId } from '../core/types.js';
-import type {
-  MigrationPlan,
-  MigrationPlanInput,
-  MigrationPlanStatus,
-  MigrationPlanStore,
+import {
+  PlanStateError,
+  type CanaryVerification,
+  type MigrationPlan,
+  type MigrationPlanInput,
+  type MigrationPlanStatus,
+  type MigrationPlanStore,
 } from '../engine/migrationPlanStore.js';
 import type { PostgresDatabase } from './postgres.js';
 
@@ -21,17 +23,25 @@ interface PlanRow {
   preview_run_id: string | null;
   preview_revision: number | null;
   execution_run_id: string | null;
+  active_execution_id: string | null;
   canary_preview_run_id: string | null;
   canary_preview_revision: number | null;
   canary_execution_run_id: string | null;
   canary_object_type: CanonicalType | null;
   canary_source_id: string | null;
   canary_verified_at: Date | null;
+  canary_verification: CanaryVerification | null;
   created_by: string | null;
   created_at: Date;
   updated_at: Date;
 }
 
+/**
+ * Every transition is a single conditional UPDATE, so concurrent requests from separate
+ * processes cannot interleave a read-check-write: an edit never lands on an executing plan,
+ * and previews/canaries only attach to the revision they were made for. Execution claims
+ * and their fenced completion live in PostgresExecutionStore.
+ */
 export class PostgresMigrationPlanStore implements MigrationPlanStore {
   constructor(
     private readonly db: PostgresDatabase,
@@ -93,8 +103,9 @@ export class PostgresMigrationPlanStore implements MigrationPlanStore {
            execution_run_id = NULL, canary_preview_run_id = NULL,
            canary_preview_revision = NULL, canary_execution_run_id = NULL,
            canary_object_type = NULL, canary_source_id = NULL,
-           canary_verified_at = NULL, updated_at = now()
+           canary_verified_at = NULL, canary_verification = NULL, updated_at = now()
          WHERE tenant_id = $1 AND id = $2
+           AND status <> 'executing' AND active_execution_id IS NULL
          RETURNING *`,
         [
           this.tenantId,
@@ -107,7 +118,15 @@ export class PostgresMigrationPlanStore implements MigrationPlanStore {
           JSON.stringify(input.config ?? {}),
         ],
       );
-      return result.rows[0] ? mapRow(result.rows[0]) : undefined;
+      if (result.rows[0]) return mapRow(result.rows[0]);
+      const exists = await client.query(
+        `SELECT 1 FROM migration_plans WHERE tenant_id = $1 AND id = $2`,
+        [this.tenantId, id],
+      );
+      if (exists.rowCount) {
+        throw new PlanStateError('plan_executing', 'a plan cannot be edited while it is executing');
+      }
+      return undefined;
     });
   }
 
@@ -118,9 +137,10 @@ export class PostgresMigrationPlanStore implements MigrationPlanStore {
   ): Promise<boolean> {
     return this.db.tenant(this.tenantId, async (client) => {
       const result = await client.query(
-        `UPDATE migration_plans SET status = 'validated', schema_hashes = $4,
-                updated_at = now()
-         WHERE tenant_id = $1 AND id = $2 AND revision = $3`,
+        `UPDATE migration_plans SET
+                status = CASE WHEN status = 'previewed' THEN 'previewed' ELSE 'validated' END,
+                schema_hashes = $4, updated_at = now()
+         WHERE tenant_id = $1 AND id = $2 AND revision = $3 AND status <> 'executing'`,
         [this.tenantId, id, revision, JSON.stringify(schemaHashes)],
       );
       return Boolean(result.rowCount);
@@ -132,7 +152,7 @@ export class PostgresMigrationPlanStore implements MigrationPlanStore {
       const result = await client.query(
         `UPDATE migration_plans SET status = 'previewed', preview_run_id = $4,
                 preview_revision = $3, updated_at = now()
-         WHERE tenant_id = $1 AND id = $2 AND revision = $3`,
+         WHERE tenant_id = $1 AND id = $2 AND revision = $3 AND status <> 'executing'`,
         [this.tenantId, id, revision, runId],
       );
       return Boolean(result.rowCount);
@@ -151,47 +171,56 @@ export class PostgresMigrationPlanStore implements MigrationPlanStore {
         `UPDATE migration_plans SET canary_preview_run_id = $6,
                 canary_preview_revision = $3, canary_execution_run_id = NULL,
                 canary_object_type = $4, canary_source_id = $5,
-                canary_verified_at = NULL, updated_at = now()
-         WHERE tenant_id = $1 AND id = $2 AND revision = $3`,
+                canary_verified_at = NULL,
+                canary_verification = CASE WHEN canary_preview_revision = $3
+                                           THEN canary_verification ELSE NULL END,
+                updated_at = now()
+         WHERE tenant_id = $1 AND id = $2 AND revision = $3
+           AND status <> 'executing' AND active_execution_id IS NULL`,
         [this.tenantId, id, revision, type, sourceId, runId],
       );
       return Boolean(result.rowCount);
     });
   }
 
-  async finishCanary(id: string, revision: number, runId: string): Promise<boolean> {
+  async finishCanary(
+    id: string,
+    revision: number,
+    previewRunId: string,
+    runId: string,
+    verification: CanaryVerification,
+  ): Promise<boolean> {
     return this.db.tenant(this.tenantId, async (client) => {
       const result = await client.query(
-        `UPDATE migration_plans SET canary_execution_run_id = $4,
-                canary_verified_at = now(), updated_at = now()
+        `UPDATE migration_plans SET canary_execution_run_id = $5,
+                canary_verification = $6,
+                canary_verified_at = CASE WHEN $7::boolean THEN now() ELSE NULL END,
+                updated_at = now()
          WHERE tenant_id = $1 AND id = $2 AND revision = $3
            AND canary_preview_revision = revision
-           AND canary_preview_run_id IS NOT NULL`,
-        [this.tenantId, id, revision, runId],
+           AND canary_preview_run_id = $4`,
+        [this.tenantId, id, revision, previewRunId, runId, JSON.stringify(verification), verification.passed],
       );
       return Boolean(result.rowCount);
     });
   }
 
-  async startExecution(id: string, revision: number): Promise<boolean> {
+  async invalidateApprovals(types: CanonicalType[]): Promise<number> {
+    if (!types.length) return 0;
     return this.db.tenant(this.tenantId, async (client) => {
       const result = await client.query(
-        `UPDATE migration_plans SET status = 'executing', updated_at = now()
-         WHERE tenant_id = $1 AND id = $2 AND revision = $3
-           AND preview_revision = revision AND preview_run_id IS NOT NULL`,
-        [this.tenantId, id, revision],
+        `UPDATE migration_plans SET
+           status = CASE WHEN status IN ('previewed', 'validated') THEN 'draft' ELSE status END,
+           preview_run_id = NULL, preview_revision = NULL,
+           canary_preview_run_id = NULL, canary_preview_revision = NULL,
+           canary_execution_run_id = NULL, canary_object_type = NULL, canary_source_id = NULL,
+           canary_verified_at = NULL, canary_verification = NULL, updated_at = now()
+         WHERE tenant_id = $1 AND object_types && $2::text[]
+           AND status <> 'executing' AND active_execution_id IS NULL
+           AND (preview_run_id IS NOT NULL OR canary_preview_run_id IS NOT NULL)`,
+        [this.tenantId, types],
       );
-      return Boolean(result.rowCount);
-    });
-  }
-
-  async finishExecution(id: string, runId: string | undefined, ok: boolean): Promise<void> {
-    await this.db.tenant(this.tenantId, async (client) => {
-      await client.query(
-        `UPDATE migration_plans SET status = $3, execution_run_id = $4, updated_at = now()
-         WHERE tenant_id = $1 AND id = $2`,
-        [this.tenantId, id, ok ? 'completed' : 'failed', runId ?? null],
-      );
+      return result.rowCount ?? 0;
     });
   }
 }
@@ -210,6 +239,7 @@ function mapRow(row: PlanRow): MigrationPlan {
     previewRunId: row.preview_run_id ?? undefined,
     previewRevision: row.preview_revision ?? undefined,
     executionRunId: row.execution_run_id ?? undefined,
+    activeExecutionId: row.active_execution_id ?? undefined,
     canary:
       row.canary_preview_run_id &&
       row.canary_preview_revision !== null &&
@@ -222,6 +252,7 @@ function mapRow(row: PlanRow): MigrationPlan {
             previewRevision: row.canary_preview_revision,
             executionRunId: row.canary_execution_run_id ?? undefined,
             verifiedAt: row.canary_verified_at?.toISOString(),
+            verification: row.canary_verification ?? undefined,
           }
         : undefined,
     createdBy: row.created_by ?? undefined,
@@ -229,3 +260,6 @@ function mapRow(row: PlanRow): MigrationPlan {
     updatedAt: row.updated_at.toISOString(),
   };
 }
+
+export { mapRow as mapMigrationPlanRow };
+export type { PlanRow as MigrationPlanRow };

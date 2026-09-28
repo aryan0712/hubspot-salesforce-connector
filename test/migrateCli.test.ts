@@ -10,23 +10,25 @@ describe('migration CLI safety', () => {
     });
   });
 
-  it('only enables writes with explicit confirmation', () => {
+  it('only enables writes when confirming a specific reviewed preview', () => {
     expect(
-      parseMigrationArgs([
-        '--from',
-        'hubspot',
-        '--types',
-        'contact,company',
-        '--limit',
-        '20',
-        '--confirm',
-      ]),
+      parseMigrationArgs(['--confirm', '--preview', 'preview-run-1', '--idempotency-key', 'k1']),
     ).toEqual({
-      from: 'hubspot',
-      types: ['contact', 'company'],
-      limit: 20,
+      from: 'salesforce',
+      types: undefined,
+      limit: undefined,
       dryRun: false,
+      previewRunId: 'preview-run-1',
+      idempotencyKey: 'k1',
     });
+  });
+
+  it('never previews and writes in one unreviewed step', () => {
+    expect(() =>
+      parseMigrationArgs(['--from', 'hubspot', '--types', 'contact', '--limit', '20', '--confirm']),
+    ).toThrow('--confirm requires --preview');
+    expect(() => parseMigrationArgs(['--preview', 'preview-run-1'])).toThrow('--confirm');
+    expect(() => parseMigrationArgs(['--confirm', '--preview'])).toThrow('--preview requires');
   });
 
   it('rejects conflicting or invalid arguments', () => {

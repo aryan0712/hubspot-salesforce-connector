@@ -38,7 +38,7 @@ export async function isConfigured(): Promise<boolean> {
   return Boolean(c.clientId && c.clientSecret);
 }
 
-function redirectUri(): string {
+export function redirectUri(): string {
   return env.SF_REDIRECT_URI ?? `${env.PUBLIC_BASE_URL}/auth/salesforce/callback`;
 }
 
@@ -62,8 +62,11 @@ export async function salesforceAuthUrl(environment: Environment, state: string,
   return u.toString();
 }
 
-/** Exchange the authorization code for tokens and persist the connection. */
-export async function exchangeCode(environment: Environment, code: string, codeVerifier?: string): Promise<void> {
+/**
+ * Exchanges the authorization code for tokens and returns the connection WITHOUT storing
+ * it: the caller confirms the exact account (org id) before it replaces a current one.
+ */
+export async function exchangeCode(environment: Environment, code: string, codeVerifier?: string): Promise<Connection> {
   const credentials = await creds();
   const body: Record<string, string> = {
     grant_type: 'authorization_code',
@@ -77,7 +80,8 @@ export async function exchangeCode(environment: Environment, code: string, codeV
     `${LOGIN_URL[environment]}/services/oauth2/token`,
     new URLSearchParams(body),
   );
-  await connections.set({
+  logger.info({ environment, instanceUrl: data.instance_url }, 'Salesforce authorization exchanged');
+  return {
     system: 'salesforce',
     environment,
     refreshToken: data.refresh_token,
@@ -85,9 +89,15 @@ export async function exchangeCode(environment: Environment, code: string, codeV
     accessToken: data.access_token,
     expiresAt: Date.now() + 90 * 60_000,
     accountLabel: hostLabel(data.instance_url),
+    accountId: salesforceOrgId(data.id),
     connectedAt: new Date().toISOString(),
-  });
-  logger.info({ environment, instanceUrl: data.instance_url }, 'Salesforce connected');
+  };
+}
+
+/** The org id from the identity URL Salesforce returns (…/id/<orgId>/<userId>). */
+export function salesforceOrgId(identityUrl?: string): string | undefined {
+  const match = identityUrl?.match(/\/id\/([a-zA-Z0-9]{15,18})\/[a-zA-Z0-9]{15,18}\/?$/);
+  return match?.[1];
 }
 
 /** Return a valid access token + instance URL, refreshing via the stored refresh token. */
@@ -111,6 +121,28 @@ export async function getAccessToken(): Promise<{ accessToken: string; instanceU
   }
   if (!refreshInFlight) {
     refreshInFlight = refreshAccessToken(conn).finally(() => {
+      refreshInFlight = undefined;
+    });
+  }
+  return refreshInFlight;
+}
+
+/**
+ * Called after the vendor rejected `rejectedToken` (401). If the cached token is still that
+ * rejected one it is invalidated and ONE refresh runs, shared by every concurrent caller;
+ * if another request already refreshed it, the newer token is returned without refreshing
+ * again. The caller retries once with the returned token and never with the stale one.
+ */
+export async function refreshAfterRejection(
+  rejectedToken: string,
+): Promise<{ accessToken: string; instanceUrl: string }> {
+  const conn = await connections.get('salesforce');
+  if (!conn) throw new Error('Salesforce not connected. Start OAuth at /auth/salesforce/start');
+  if (conn.accessToken && conn.accessToken !== rejectedToken && (conn.expiresAt ?? 0) > Date.now() + 60_000) {
+    return { accessToken: conn.accessToken, instanceUrl: conn.instanceUrl ?? '' };
+  }
+  if (!refreshInFlight) {
+    refreshInFlight = refreshAccessToken({ ...conn, accessToken: undefined, expiresAt: undefined }).finally(() => {
       refreshInFlight = undefined;
     });
   }

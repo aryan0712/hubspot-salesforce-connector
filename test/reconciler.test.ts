@@ -9,18 +9,20 @@ import { MockConnector } from '../src/connectors/mock/mockConnector.js';
 import { FileIdMapStore } from '../src/core/idMap.js';
 import { Reconciler } from '../src/engine/reconciler.js';
 import { MigrationEngine } from '../src/engine/migrationEngine.js';
+import { createDefaultConfigContext } from '../src/core/configContext.js';
 
 function setup() {
-  const sf = new MockConnector('salesforce');
-  const hs = new MockConnector('hubspot');
+  const config = createDefaultConfigContext('reconciler-test');
+  const sf = new MockConnector('salesforce', config);
+  const hs = new MockConnector('hubspot', config);
   const connectors: Record<SystemId, CRMConnector> = { salesforce: sf, hubspot: hs };
   const idMap = new FileIdMapStore(path.join(os.tmpdir(), `idmap-test-${crypto.randomUUID()}.json`));
   const events: ChangeEvent[] = [];
   sf.onChange((e) => events.push(e));
   hs.onChange((e) => events.push(e));
-  const reconciler = new Reconciler(connectors, idMap);
-  const migration = new MigrationEngine(connectors, reconciler);
-  return { sf, hs, idMap, reconciler, migration, events };
+  const reconciler = new Reconciler(connectors, idMap, config);
+  const migration = new MigrationEngine(connectors, config, reconciler);
+  return { sf, hs, idMap, reconciler, migration, events, config };
 }
 
 type Ctx = ReturnType<typeof setup>;
@@ -35,7 +37,7 @@ const ada = { firstName: 'Ada', lastName: 'Lovelace', email: 'ada@analytical.co'
 describe('migration', () => {
   it('backfills Salesforce contacts into HubSpot and links them', async () => {
     const sfId = ctx.sf.seed('contact', ada);
-    await ctx.migration.run({ from: 'salesforce', types: ['contact'] });
+    await ctx.migration.run({ from: 'salesforce', types: ['contact'], dryRun: false });
 
     const hsRecs = (await ctx.hs.list('contact')).records;
     expect(hsRecs).toHaveLength(1);
@@ -47,8 +49,8 @@ describe('migration', () => {
 
   it('is idempotent — re-running migration does not create duplicates', async () => {
     ctx.sf.seed('contact', ada);
-    await ctx.migration.run({ from: 'salesforce', types: ['contact'] });
-    await ctx.migration.run({ from: 'salesforce', types: ['contact'] });
+    await ctx.migration.run({ from: 'salesforce', types: ['contact'], dryRun: false });
+    await ctx.migration.run({ from: 'salesforce', types: ['contact'], dryRun: false });
     expect((await ctx.hs.list('contact')).records).toHaveLength(1);
   });
 });
@@ -57,7 +59,7 @@ describe('loop prevention', () => {
   it('suppresses echo events caused by our own writes', async () => {
     const sfId = ctx.sf.seed('contact', ada);
     ctx.events.length = 0;
-    await ctx.migration.run({ from: 'salesforce', types: ['contact'] });
+    await ctx.migration.run({ from: 'salesforce', types: ['contact'], dryRun: false });
 
     // Migration wrote to HubSpot, which emitted "created" webhooks. Replay them.
     const echoes = ctx.events.filter((e) => e.system === 'hubspot');
@@ -79,7 +81,7 @@ describe('loop prevention', () => {
 describe('real-time bidirectional sync', () => {
   it('propagates a HubSpot edit back to Salesforce', async () => {
     const sfId = ctx.sf.seed('contact', ada);
-    await ctx.migration.run({ from: 'salesforce', types: ['contact'] });
+    await ctx.migration.run({ from: 'salesforce', types: ['contact'], dryRun: false });
     const hsId = (await ctx.hs.list('contact')).records[0]!.meta.sourceId;
 
     // User edits the phone in HubSpot.
@@ -95,7 +97,7 @@ describe('real-time bidirectional sync', () => {
 
   it('resolves concurrent edits by last-write-wins (default strategy)', async () => {
     const sfId = ctx.sf.seed('contact', ada);
-    await ctx.migration.run({ from: 'salesforce', types: ['contact'] });
+    await ctx.migration.run({ from: 'salesforce', types: ['contact'], dryRun: false });
     const hsId = (await ctx.hs.list('contact')).records[0]!.meta.sourceId;
 
     const now = Date.now();
@@ -131,6 +133,9 @@ describe('self-healing a stale link on a natural-key conflict', () => {
     const sfId = ctx.sf.seed('contact', ada);
     const correctHsId = ctx.hs.seed('contact', ada);
     const staleHsId = ctx.hs.seed('contact', { firstName: 'Placeholder', email: 'placeholder@example.com' });
+    // The stale record is older than the source edit, so last-write-wins deterministically
+    // keeps the Salesforce values (seeding in the same millisecond made this order-dependent).
+    ctx.hs.setModifiedAt('contact', staleHsId, '2020-01-01T00:00:00.000Z');
 
     // Simulate a link that's gone stale: this canonical record points at a HubSpot contact
     // that is NOT the one that actually owns ada's email.
@@ -144,14 +149,14 @@ describe('self-healing a stale link on a natural-key conflict', () => {
       updatedAt: new Date().toISOString(),
     });
 
-    const originalUpsert = ctx.hs.upsert.bind(ctx.hs);
+    const originalWrite = ctx.hs.write.bind(ctx.hs);
     let failOnce = true;
-    (ctx.hs as unknown as { upsert: typeof ctx.hs.upsert }).upsert = async (record, targetId) => {
+    ctx.hs.write = async (type, payload, targetId, options) => {
       if (failOnce && targetId === staleHsId) {
         failOnce = false;
         throw fakeDuplicateValueError('email', ada.email, staleHsId, correctHsId);
       }
-      return originalUpsert(record, targetId);
+      return originalWrite(type, payload, targetId, options);
     };
 
     const sfRecord = await ctx.sf.read('contact', sfId);
@@ -165,15 +170,18 @@ describe('self-healing a stale link on a natural-key conflict', () => {
   });
 
   it('does not self-heal a conflict on a field that is not the configured natural key', async () => {
-    const sfId = ctx.sf.seed('contact', ada);
+    // The source differs from the matched destination, so a real update is attempted (an
+    // identical record needs no write at all and would never reach the vendor).
+    const sfId = ctx.sf.seed('contact', { ...ada, title: 'Mathematician' });
     const hsId = ctx.hs.seed('contact', ada);
+    ctx.hs.setModifiedAt('contact', hsId, '2020-01-01T00:00:00.000Z');
 
-    const originalUpsert = ctx.hs.upsert.bind(ctx.hs);
-    (ctx.hs as unknown as { upsert: typeof ctx.hs.upsert }).upsert = async (record, targetId) => {
+    const originalWrite = ctx.hs.write.bind(ctx.hs);
+    ctx.hs.write = async (type, payload, targetId, options) => {
       if (targetId === hsId) {
         throw fakeDuplicateValueError('phone', '+1-111', hsId, 'some-other-id');
       }
-      return originalUpsert(record, targetId);
+      return originalWrite(type, payload, targetId, options);
     };
 
     const sfRecord = await ctx.sf.read('contact', sfId);
@@ -194,16 +202,16 @@ describe('required-field validation before writing', () => {
       const fields = await originalDescribe(type);
       return fields.map((field) => (field.name === 'phone' ? { ...field, required: true } : field));
     };
-    let upsertCalled = false;
-    const originalUpsert = ctx.hs.upsert.bind(ctx.hs);
-    ctx.hs.upsert = (record, targetId) => {
-      upsertCalled = true;
-      return originalUpsert(record, targetId);
+    let writeCalled = false;
+    const originalWrite = ctx.hs.write.bind(ctx.hs);
+    ctx.hs.write = (type, payload, targetId, options) => {
+      writeCalled = true;
+      return originalWrite(type, payload, targetId, options);
     };
 
     const sfRecord = await ctx.sf.read('contact', sfId);
     await expect(ctx.reconciler.reconcile(sfRecord!)).rejects.toThrow(/missing required value/i);
-    expect(upsertCalled).toBe(false);
+    expect(writeCalled).toBe(false);
   });
 
   it('does not flag a required field that has no mapping at all (a config issue, not a per-record one)', async () => {

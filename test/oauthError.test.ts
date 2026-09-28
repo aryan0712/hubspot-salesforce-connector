@@ -7,8 +7,8 @@ describe('OAuth refresh errors', () => {
     const response = {
       status: 400,
       statusText: 'Bad Request',
-      headers: {},
-      config: { headers: {} },
+      headers: new axios.AxiosHeaders(),
+      config: { headers: new axios.AxiosHeaders() },
       data: { error: 'invalid_grant', error_description: 'expired access/refresh token' },
     };
     const vendorError = new axios.AxiosError(

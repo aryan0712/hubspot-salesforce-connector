@@ -1,7 +1,8 @@
 import crypto from 'node:crypto';
 import type { CRMConnector } from '../core/connector.js';
-import { naturalKeyFields, naturalKeyQuery } from '../core/idMap.js';
-import { fieldRules, type FieldRule } from '../core/mapping.js';
+import type { ConfigContext } from '../core/configContext.js';
+import { isWeakNaturalKey } from '../core/idMap.js';
+import type { FieldRule } from '../core/mapping.js';
 import type { CanonicalRecord, CanonicalType, SchemaField, SystemId } from '../core/types.js';
 
 export type PreflightSeverity = 'error' | 'warning' | 'info';
@@ -31,6 +32,7 @@ export interface SchemaSnapshotStore {
 export class PreflightService {
   constructor(
     private readonly connectors: Record<SystemId, CRMConnector>,
+    private readonly config: ConfigContext,
     private readonly snapshots?: SchemaSnapshotStore,
   ) {}
 
@@ -40,8 +42,8 @@ export class PreflightService {
       this.connectors[from].describe(type),
       this.connectors[to].describe(type),
     ]);
-    const sourceMap = fieldRules(from, type);
-    const targetMap = fieldRules(to, type);
+    const sourceMap = this.config.fieldRules(from, type);
+    const targetMap = this.config.fieldRules(to, type);
     const sourceByName = new Map(sourceFields.map((field) => [field.name, field]));
     const targetByName = new Map(targetFields.map((field) => [field.name, field]));
     const issues: PreflightIssue[] = [];
@@ -155,14 +157,40 @@ export class PreflightService {
     type: CanonicalType,
     issues: PreflightIssue[],
   ): Promise<void> {
-    const fields = naturalKeyFields(type);
+    const fields = this.config.naturalKeyFields(type);
+    if (!fields.length) {
+      issues.push({
+        severity: 'warning',
+        code: 'NATURAL_KEY_MISSING',
+        message: `${type} has no matching rule, so existing destination records cannot be recognised and every record will be created`,
+      });
+    } else if (isWeakNaturalKey(fields)) {
+      issues.push({
+        severity: 'warning',
+        code: 'WEAK_NATURAL_KEY',
+        field: fields.join(' + '),
+        message: `${fields.join(' + ')} can change or repeat; prefer a shared external id or email/domain to match ${type} records`,
+      });
+    }
+    const mappedBoth = this.config.fieldRules(from, type).map((rule) => rule.canonical)
+      .filter((field) => this.config.fieldRules(to, type).some((rule) => rule.canonical === field));
+    const externalId = mappedBoth.find((field) => /external.*id/i.test(field));
+    if (externalId && !fields.includes(externalId)) {
+      issues.push({
+        severity: 'info',
+        code: 'EXTERNAL_ID_AVAILABLE',
+        field: externalId,
+        message: `${externalId} is mapped in both CRMs; using it as the matching rule is the most reliable identity`,
+      });
+    }
+    if (!fields.length) return;
     try {
       const [sourcePage, targetPage] = await Promise.all([
         this.connectors[from].list(type),
         this.connectors[to].list(type),
       ]);
-      const source = keyProfile(sourcePage.records);
-      const target = keyProfile(targetPage.records);
+      const source = keyProfile(this.config, sourcePage.records);
+      const target = keyProfile(this.config, targetPage.records);
       if (source.missing) {
         issues.push({
           severity: 'warning',
@@ -201,11 +229,11 @@ export class PreflightService {
   }
 }
 
-function keyProfile(records: CanonicalRecord[]): { missing: number; duplicates: number } {
+function keyProfile(config: ConfigContext, records: CanonicalRecord[]): { missing: number; duplicates: number } {
   const counts = new Map<string, number>();
   let missing = 0;
   for (const record of records) {
-    const query = naturalKeyQuery(record);
+    const query = config.naturalKeyQuery(record);
     if (!query) {
       missing += 1;
       continue;

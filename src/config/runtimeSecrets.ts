@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { Env } from './env.js';
+import { parsePreviousKeys, SecretCipher } from '../db/security.js';
 
 const LOCAL_DATABASE_URL =
   'postgresql://crm_sync:local-development-only@localhost:5432/crm_sync';
@@ -10,6 +11,17 @@ type RuntimeSecretEnv = Pick<
   Env,
   'NODE_ENV' | 'DATABASE_URL' | 'APP_ENCRYPTION_KEY' | 'APP_ENCRYPTION_KEY_FILE'
 >;
+
+/** The application cipher: current key (+ version) and any decrypt-only previous keys. */
+export function createCipher(
+  config: RuntimeSecretEnv & Pick<Env, 'APP_ENCRYPTION_KEY_VERSION' | 'APP_ENCRYPTION_PREVIOUS_KEYS'>,
+): SecretCipher {
+  return new SecretCipher(
+    resolveEncryptionKey(config),
+    config.APP_ENCRYPTION_KEY_VERSION,
+    parsePreviousKeys(config.APP_ENCRYPTION_PREVIOUS_KEYS),
+  );
+}
 
 export function resolveDatabaseUrl(config: RuntimeSecretEnv): string {
   if (config.DATABASE_URL) return config.DATABASE_URL;

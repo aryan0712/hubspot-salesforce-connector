@@ -1,8 +1,8 @@
+import type { PageCursor } from '../core/pagination.js';
 import type { ChangeEvent } from '../core/types.js';
 import {
   emptyStats,
   eventIdentity,
-  incrementStats,
   type SyncEventStore,
   type SyncJob,
   type SyncJobStats,
@@ -23,6 +23,8 @@ interface JobRow {
   next_attempt_at: Date;
   last_error: string | null;
   created_at: Date;
+  lease_token: string | null;
+  deferred_reason: string | null;
 }
 
 export class PostgresSyncEventStore implements SyncEventStore {
@@ -63,51 +65,91 @@ export class PostgresSyncEventStore implements SyncEventStore {
 
   async claim(limit: number, workerId: string): Promise<SyncJob[]> {
     return this.db.tenant(this.tenantId, async (client) => {
+      // One job per record at a time: skip records that already have a job processing, and
+      // take at most one due job per record in this batch. Each claim gets a fresh lease token.
       const result = await client.query<JobRow>(
-        `WITH selected AS (
-           SELECT id FROM sync_events
-           WHERE tenant_id = $1
-             AND status IN ('queued', 'retry')
-             AND next_attempt_at <= now()
-           ORDER BY created_at
-           FOR UPDATE SKIP LOCKED
+        `WITH due AS (
+           SELECT e.id, e.created_at,
+                  row_number() OVER (PARTITION BY e.system, e.object_type, e.source_id ORDER BY e.created_at) AS nth
+           FROM sync_events e
+           WHERE e.tenant_id = $1
+             AND e.status IN ('queued', 'retry')
+             AND e.next_attempt_at <= now()
+             AND NOT EXISTS (
+               SELECT 1 FROM sync_events p
+               WHERE p.tenant_id = e.tenant_id AND p.status = 'processing'
+                 AND p.system = e.system AND p.object_type = e.object_type AND p.source_id = e.source_id
+             )
+         ),
+         selected AS (
+           SELECT s.id FROM sync_events s
+           JOIN due ON due.id = s.id AND due.nth = 1
+           WHERE s.tenant_id = $1
+           ORDER BY due.created_at
+           FOR UPDATE OF s SKIP LOCKED
            LIMIT $2
          )
          UPDATE sync_events e
          SET status = 'processing', attempts = attempts + 1,
-             locked_at = now(), locked_by = $3, updated_at = now()
+             locked_at = now(), locked_by = $3, lease_token = gen_random_uuid()::text,
+             deferred_reason = NULL, updated_at = now()
          FROM selected
          WHERE e.id = selected.id
          RETURNING e.id, e.vendor_event_id, e.system, e.object_type, e.source_id,
                    e.change_type, e.occurred_at, e.status, e.attempts,
-                   e.next_attempt_at, e.last_error, e.created_at`,
+                   e.next_attempt_at, e.last_error, e.created_at, e.lease_token, e.deferred_reason`,
         [this.tenantId, limit, workerId],
       );
       return result.rows.map(toJob);
     });
   }
 
-  async complete(id: string): Promise<void> {
-    await this.setStatus(id, 'completed', null, null);
+  async complete(id: string, leaseToken?: string): Promise<boolean> {
+    return this.setStatus(id, 'completed', null, null, leaseToken);
   }
 
-  async retry(id: string, error: string, nextAttemptAt: string): Promise<void> {
-    await this.setStatus(id, 'retry', error, nextAttemptAt);
+  async retry(id: string, error: string, nextAttemptAt: string, leaseToken?: string): Promise<boolean> {
+    return this.setStatus(id, 'retry', error, nextAttemptAt, leaseToken);
   }
 
-  async deadLetter(id: string, error: string): Promise<void> {
-    await this.setStatus(id, 'dead_letter', error, null);
+  async deadLetter(id: string, error: string, leaseToken?: string): Promise<boolean> {
+    return this.setStatus(id, 'dead_letter', error, null, leaseToken);
   }
 
-  async manualReview(id: string, error: string): Promise<void> {
-    await this.setStatus(id, 'manual_review', error, null);
+  async manualReview(id: string, error: string, leaseToken?: string): Promise<boolean> {
+    return this.setStatus(id, 'manual_review', error, null, leaseToken);
+  }
+
+  async defer(id: string, until: string, reason: string, leaseToken?: string): Promise<boolean> {
+    return this.db.tenant(this.tenantId, async (client) => {
+      const result = await client.query(
+        `UPDATE sync_events SET status = 'queued', attempts = greatest(attempts - 1, 0),
+                next_attempt_at = $3, deferred_reason = $4,
+                locked_at = NULL, locked_by = NULL, lease_token = NULL, updated_at = now()
+         WHERE tenant_id = $1 AND id = $2 AND ($5::text IS NULL OR lease_token = $5)`,
+        [this.tenantId, id, until, reason.slice(0, 500), leaseToken ?? null],
+      );
+      return Boolean(result.rowCount);
+    });
+  }
+
+  async heartbeat(id: string, leaseToken: string): Promise<boolean> {
+    return this.db.tenant(this.tenantId, async (client) => {
+      const result = await client.query(
+        `UPDATE sync_events SET locked_at = now()
+         WHERE tenant_id = $1 AND id = $2 AND status = 'processing' AND lease_token = $3`,
+        [this.tenantId, id, leaseToken],
+      );
+      return Boolean(result.rowCount);
+    });
   }
 
   async replay(id: string): Promise<void> {
     await this.db.tenant(this.tenantId, async (client) => {
       await client.query(
         `UPDATE sync_events SET status = 'queued', attempts = 0, last_error = NULL,
-                next_attempt_at = now(), locked_at = NULL, locked_by = NULL, updated_at = now()
+                next_attempt_at = now(), locked_at = NULL, locked_by = NULL, lease_token = NULL,
+                updated_at = now()
          WHERE tenant_id = $1 AND id = $2`,
         [this.tenantId, id],
       );
@@ -120,7 +162,7 @@ export class PostgresSyncEventStore implements SyncEventStore {
     await this.db.tenant(this.tenantId, async (client) => {
       await client.query(
         `UPDATE sync_events SET status = 'dismissed',
-                locked_at = NULL, locked_by = NULL, updated_at = now()
+                locked_at = NULL, locked_by = NULL, lease_token = NULL, updated_at = now()
          WHERE tenant_id = $1 AND id = $2`,
         [this.tenantId, id],
       );
@@ -131,7 +173,8 @@ export class PostgresSyncEventStore implements SyncEventStore {
     return this.db.tenant(this.tenantId, async (client) => {
       const result = await client.query<JobRow>(
         `SELECT id, vendor_event_id, system, object_type, source_id, change_type,
-                occurred_at, status, attempts, next_attempt_at, last_error, created_at
+                occurred_at, status, attempts, next_attempt_at, last_error, created_at,
+                lease_token, deferred_reason
          FROM sync_events WHERE tenant_id = $1 AND id = $2`,
         [this.tenantId, id],
       );
@@ -139,19 +182,38 @@ export class PostgresSyncEventStore implements SyncEventStore {
     });
   }
 
-  async list(limit = 100, status?: SyncJobStatus): Promise<SyncJob[]> {
+  async list(limit = 100, status?: SyncJobStatus, before?: PageCursor): Promise<SyncJob[]> {
     return this.db.tenant(this.tenantId, async (client) => {
       const params: unknown[] = [this.tenantId, limit];
-      const statusClause = status ? 'AND status = $3' : '';
-      if (status) params.push(status);
+      let statusClause = '';
+      if (status) {
+        params.push(status);
+        statusClause += ` AND status = ${params.length}`;
+      }
+      if (before) {
+        params.push(before.createdAt, before.id);
+        statusClause += ` AND (created_at, id) < (${params.length - 1}::timestamptz, ${params.length}::uuid)`;
+      }
       const result = await client.query<JobRow>(
         `SELECT id, vendor_event_id, system, object_type, source_id, change_type,
-                occurred_at, status, attempts, next_attempt_at, last_error, created_at
+                occurred_at, status, attempts, next_attempt_at, last_error, created_at,
+                lease_token, deferred_reason
          FROM sync_events WHERE tenant_id = $1 ${statusClause}
-         ORDER BY created_at DESC LIMIT $2`,
+         ORDER BY created_at DESC, id DESC LIMIT $2`,
         params,
       );
       return result.rows.map(toJob);
+    });
+  }
+
+  async oldestPending(): Promise<string | undefined> {
+    return this.db.tenant(this.tenantId, async (client) => {
+      const result = await client.query<{ oldest: Date | null }>(
+        `SELECT min(created_at) AS oldest FROM sync_events
+         WHERE tenant_id = $1 AND status IN ('queued', 'retry')`,
+        [this.tenantId],
+      );
+      return result.rows[0]?.oldest?.toISOString();
     });
   }
 
@@ -177,7 +239,7 @@ export class PostgresSyncEventStore implements SyncEventStore {
     return this.db.tenant(this.tenantId, async (client) => {
       const result = await client.query(
         `UPDATE sync_events SET status = 'retry', next_attempt_at = now(),
-                locked_at = NULL, locked_by = NULL, updated_at = now(),
+                locked_at = NULL, locked_by = NULL, lease_token = NULL, updated_at = now(),
                 last_error = coalesce(last_error, 'worker lease expired')
          WHERE tenant_id = $1 AND status = 'processing' AND locked_at < $2`,
         [this.tenantId, olderThan],
@@ -186,21 +248,25 @@ export class PostgresSyncEventStore implements SyncEventStore {
     });
   }
 
+  /** Fenced when a lease token is given: a stale worker's update matches no row. */
   private async setStatus(
     id: string,
     status: SyncJobStatus,
     error: string | null,
     nextAttemptAt: string | null,
-  ): Promise<void> {
-    await this.db.tenant(this.tenantId, async (client) => {
-      await client.query(
+    leaseToken?: string,
+  ): Promise<boolean> {
+    return this.db.tenant(this.tenantId, async (client) => {
+      const result = await client.query(
         `UPDATE sync_events SET status = $3, last_error = $4,
                 next_attempt_at = coalesce($5, next_attempt_at),
                 completed_at = CASE WHEN $3 = 'completed' THEN now() ELSE completed_at END,
-                locked_at = NULL, locked_by = NULL, updated_at = now()
-         WHERE tenant_id = $1 AND id = $2`,
-        [this.tenantId, id, status, error, nextAttemptAt],
+                locked_at = NULL, locked_by = NULL, lease_token = NULL, updated_at = now()
+         WHERE tenant_id = $1 AND id = $2
+           AND ($6::text IS NULL OR (status = 'processing' AND lease_token = $6))`,
+        [this.tenantId, id, status, error, nextAttemptAt, leaseToken ?? null],
       );
+      return Boolean(result.rowCount);
     });
   }
 }
@@ -221,5 +287,7 @@ function toJob(row: JobRow): SyncJob {
     nextAttemptAt: row.next_attempt_at.toISOString(),
     lastError: row.last_error ?? undefined,
     createdAt: row.created_at.toISOString(),
+    leaseToken: row.lease_token ?? undefined,
+    deferredReason: row.deferred_reason ?? undefined,
   };
 }

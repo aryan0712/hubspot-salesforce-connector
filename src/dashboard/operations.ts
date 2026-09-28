@@ -1,4 +1,5 @@
 import { dashboardHeader, dashboardShellCss } from './shell.js';
+import { csrfFetchScript } from './csrf.js';
 import {
   migrationWorkspaceCss,
   migrationWorkspaceHtml,
@@ -94,19 +95,28 @@ export function operationsHtml(): string {
     @media(max-width:1050px){.ops-metrics{grid-template-columns:repeat(3,minmax(0,1fr))}}
     @media(max-width:900px){.layout,.settings-grid,.sync-config-grid{grid-template-columns:1fr}.fields{grid-template-columns:1fr 1fr}}
     @media(max-width:640px){.ops-metrics,.fields{grid-template-columns:1fr}.toolbar{align-items:stretch}.toolbar>*{width:100%}}
+    .readiness-list{list-style:none;margin:0;padding:0;display:grid;gap:10px}.readiness-list li{line-height:1.5}
+    .status-dot.warn{background:#f5b642}.linkbtn{background:none;border:0;color:inherit;font:inherit;font-weight:700;cursor:pointer;padding:0}
+    .linkbtn:focus-visible,button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid #53a6ff;outline-offset:2px}
   </style>
 </head>
 <body>
   ${dashboardHeader('migration')}
   <main class="page">
-    <div class="page-heading"><div><div class="eyebrow">Workspace · untangleit</div><h1 id="page-title">Migration</h1>
+    <div class="page-heading"><div><div class="eyebrow" id="workspace-name">Workspace</div><h1 id="page-title">Migration</h1>
       <p class="subcopy" id="page-subtitle">Test one real record, verify it, then run the full migration safely.</p></div>
-      <div class="status-pill"><span class="status-dot"></span><strong>Control plane ready</strong>
-        <button class="secondary" onclick="refreshAll()">Refresh</button></div></div>
+      <div class="status-pill"><span class="status-dot off" id="readiness-dot"></span>
+        <button class="linkbtn" type="button" id="readiness-label" aria-expanded="false" aria-controls="readiness-panel">Checking readiness…</button>
+        <button class="secondary" data-action="refreshAll">Refresh</button></div></div>
+    <section class="card" id="readiness-panel" hidden aria-label="Readiness checks"><div class="card-body"><ul class="readiness-list" id="readiness-list"></ul></div></section>
     <div class="notice" id="live-error-banner" hidden style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
       <span id="live-error-banner-text"></span>
       <button class="secondary" id="live-error-banner-view" type="button" style="margin-left:auto">View</button>
       <button class="secondary" id="live-error-banner-dismiss" type="button">Dismiss</button>
+    </div>
+    <div class="notice run-banner" id="run-banner" hidden style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:16px">
+      <span id="run-banner-text" role="status" aria-live="polite"></span>
+      <span id="execution-controls" class="execution-controls" style="margin-left:auto;display:flex;gap:8px;flex-wrap:wrap"></span>
     </div>
     ${migrationWorkspaceHtml()}
 
@@ -195,7 +205,7 @@ export function operationsHtml(): string {
 
     <section class="view" id="view-activity">
       <div class="card">
-        <div class="subtabs"><button class="active" data-activity-tab="jobs">Sync jobs</button><button data-activity-tab="audit">Audit log</button></div>
+        <div class="subtabs"><button class="active" data-activity-tab="jobs">Sync jobs</button><button data-activity-tab="conflicts">Conflicts</button><button data-activity-tab="audit">Audit log</button></div>
         <div class="activity-panel active" id="activity-jobs">
           <div class="toolbar jobs-head"><h2 style="margin:0 auto 0 0">Durable sync journal</h2>
             <button class="secondary" id="jobs-replay-selected" type="button" hidden>Replay selected</button>
@@ -203,6 +213,9 @@ export function operationsHtml(): string {
             <select id="job-filter"><option value="">All statuses</option><option>queued</option><option>retry</option><option>dead_letter</option><option>manual_review</option><option>completed</option><option>dismissed</option></select></div>
           <div class="scroll"><table><thead><tr><th style="width:36px"><input type="checkbox" id="jobs-select-all"></th><th>Status</th><th>Event</th><th>Attempts</th><th>Error</th><th></th></tr></thead><tbody id="jobs"></tbody></table></div>
         </div>
+        <div class="activity-panel" id="activity-conflicts"><div class="card-body">
+          <p class="muted">Each conflict was resolved automatically by the sync policy. Review it, and if the other side should have won, keep that side's recorded values instead.</p>
+          <div id="conflict-review" aria-live="polite"></div></div></div>
         <div class="activity-panel" id="activity-audit"><div id="audit" class="scroll card-body"></div></div>
       </div>
     </section>
@@ -226,9 +239,9 @@ export function operationsHtml(): string {
       </div>
     </section>
   </main>
-  <script>
+  <script>${csrfFetchScript}
     const $=id=>document.getElementById(id), esc=v=>String(v??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-    async function api(url,opts){const r=await fetch(url,{headers:{'content-type':'application/json',...(opts&&opts.headers)},...opts});const j=await r.json();if(!r.ok){const e=new Error(j.detail||j.error||r.statusText);e.code=j.error;e.system=j.system;e.actionUrl=j.actionUrl;throw e}return j}
+    async function api(url,opts){opts=opts||{};const r=await fetch(url,{...opts,headers:{'content-type':'application/json',...(opts.headers||{})}});const j=await r.json().catch(()=>({}));if(!r.ok){const e=new Error(j.detail||(r.status===403&&j.error==='insufficient_role'?'Your role cannot do this (requires '+j.required+').':j.error)||r.statusText);e.code=j.error;e.system=j.system;e.actionUrl=j.actionUrl;e.requestId=j.requestId||r.headers.get('x-request-id');throw e}return j}
     const viewMeta={
       migration:['Migrate','Build, validate, preview, and run a controlled CRM migration.'],
       sync:['Sync','Control live synchronization, webhook health, and conflict handling.'],
@@ -273,7 +286,7 @@ export function operationsHtml(): string {
       if(view!=='migration')workspaceMode='migration';
       $('page-title').textContent=viewMeta[view][0];$('page-subtitle').textContent=viewMeta[view][1];
       if(view==='migration')applyWorkspaceMode();
-      if(view==='sync')loadSyncWorkspace();if(view==='activity'){loadJobs();loadAudit()}if(view==='settings')loadSettingsWorkspace();
+      if(view==='sync')loadSyncWorkspace();if(view==='activity'){loadJobs();loadAudit();loadConflicts()}if(view==='settings')loadSettingsWorkspace();
       if(view==='sync'||view==='activity')checkForNewSyncErrors();
     }
     document.querySelectorAll('.app-nav a[href^="/ops#"]').forEach(a=>a.onclick=e=>{e.preventDefault();workspaceMode='migration';const view=a.getAttribute('href').split('#')[1];history.replaceState(null,'','#'+view);selectView(view)});
@@ -311,7 +324,7 @@ export function operationsHtml(): string {
       migrationState.plan=plan;migrationState.dirty=false;$('summary-plan').textContent=plan.name+' · r'+plan.revision;setDraftStatus('Autosaved · revision '+plan.revision,'saved');if(refreshPlans)await loadSavedPlans();updateMigrationSummary();updateMigrationStepper();return plan}
     async function ensurePlan(){return migrationState.plan&&!migrationState.dirty?migrationState.plan:savePlan(false)}
     function queuePlanAutosave(){clearTimeout(autosaveTimer);setDraftStatus('Waiting to autosave…');autosaveTimer=setTimeout(async()=>{try{if($('plan-name').value.trim()&&migrationState.selected.size)await savePlan(false)}catch(e){setDraftStatus(e.message,'error')}},650)}
-    $('save-plan').onclick=async()=>{try{$('save-plan').disabled=true;await savePlan();$('save-plan').textContent='Saved ✓';setTimeout(()=>$('save-plan').textContent='Save now',1200)}catch(e){setDraftStatus(e.message,'error');alert(e.message)}finally{$('save-plan').disabled=false}};
+    $('save-plan').onclick=async()=>{try{$('save-plan').disabled=true;await savePlan();$('save-plan').textContent='Saved ✓';setTimeout(()=>$('save-plan').textContent='Save now',1200)}catch(e){setDraftStatus(e.message,'error');showError(e.message,e.requestId)}finally{$('save-plan').disabled=false}};
     ['plan-name','mig-limit'].forEach(id=>$(id).addEventListener(id==='plan-name'?'input':'change',()=>{markPlanDirty();queuePlanAutosave()}));
     $('mig-from').onchange=async()=>{migrationState.plan=null;migrationState.selected=new Set();migrationState.selectionInitialized=false;updateDirectionPreview();markPlanDirty();await loadCatalog();queuePlanAutosave()};
 
@@ -464,7 +477,7 @@ export function operationsHtml(): string {
     async function saveFieldMappings(reload=true){const state=migrationState.mapping;if(!state)return;const rows=[...$('field-map-rows').querySelectorAll('tr[data-canonical]')];const existingSource=new Map(state.sourceMap.rules.map(r=>[r.canonical,r])),existingTarget=new Map(state.targetMap.rules.map(r=>[r.canonical,r]));const sourceRules=[],targetRules=[];
       for(const tr of rows){const canonical=tr.querySelector('.canonical').value.trim(),sourceNative=tr.querySelector('.source-native').value,targetNative=tr.querySelector('.target-native').value;if(!canonical||!sourceNative||!targetNative)continue;const oldS=existingSource.get(tr.dataset.canonical)||{},oldT=existingTarget.get(tr.dataset.canonical)||{};sourceRules.push({...oldS,canonical,native:sourceNative,toCanonical:tr.querySelector('.source-to').value,fromCanonical:tr.querySelector('.source-from').value});targetRules.push({...oldT,canonical,native:targetNative,toCanonical:tr.querySelector('.target-to').value,fromCanonical:tr.querySelector('.target-from').value})}
       const button=$('save-field-map');try{button.disabled=true;button.textContent='Saving…';const results=await Promise.all([api('/api/mappings/'+state.from+'/'+state.type,{method:'PUT',body:JSON.stringify({rules:sourceRules})}),api('/api/mappings/'+state.to+'/'+state.type,{method:'PUT',body:JSON.stringify({rules:targetRules})})]);state.dirty=false;migrationState.metadata.clear();markPlanDirty();queuePlanAutosave();await loadCatalog();if(reload)await loadFieldWorkspace(state.type);button.textContent='Saved ✓';setTimeout(()=>button.textContent='Save mappings',1200);
-        if(results.some(r=>r.syncPaused))alert('Heads up: '+state.type+' was live-syncing, so saving this mapping change paused both real-time and scheduled sync for it. Review the mapping, then re-enable it from the Sync tab when ready.')
+        if(results.some(r=>r.syncPaused))showNotice('Heads up: '+state.type+' was live-syncing, so saving this mapping change paused both real-time and scheduled sync for it. Review the mapping, then re-enable it from the Sync tab when ready.')
         if(workspaceMode==='sync')await maybeOfferNaturalKeyStep();
       }catch(e){button.textContent='Save mappings';throw e}finally{button.disabled=false}}
     $('save-field-map').onclick=()=>saveFieldMappings().catch(e=>setDraftStatus(e.message,'error'));
@@ -486,12 +499,12 @@ export function operationsHtml(): string {
       try{const [sourceMeta,targetMeta,sourceMap,targetMap,keyData]=await Promise.all([getMetadata(from,row.source.id),getMetadata(to,row.target.id),api('/api/mappings/'+from+'/'+type),api('/api/mappings/'+to+'/'+type),api('/api/object-mappings/'+type)]),sourceRules=new Map(sourceMap.rules.map(r=>[r.canonical,r])),targetRules=new Map(targetMap.rules.map(r=>[r.canonical,r])),canonicalFields=[...new Set([...sourceRules.keys()].filter(field=>targetRules.has(field)))],candidates=naturalKeyCandidates(type,sourceMeta,targetMeta,sourceRules,targetRules),enumFields=canonicalFields.filter(c=>{const s=sourceMeta.fields.find(f=>f.name===sourceRules.get(c)?.native),t=targetMeta.fields.find(f=>f.name===targetRules.get(c)?.native);return s?.options?.length||t?.options?.length});
         if(loadToken!==migrationState.valueLoadToken)return;migrationState.valueContext={type,sourceMeta,targetMeta,sourceRules,targetRules,keyData,keyPresets:[],keyCandidates:[],previousKeyUnsafe:false};renderNaturalKeyOptions(type,keyData,candidates);$('value-field').innerHTML='<option value="">Choose a picklist field</option>'+enumFields.map(field=>'<option>'+esc(field)+'</option>').join('')}catch(e){if(loadToken!==migrationState.valueLoadToken)return;$('value-map-rows').innerHTML='<tr><td colspan="3" class="empty">'+esc(e.message)+'</td></tr>';$('natural-key-options').innerHTML='<div class="empty">'+esc(e.message)+'</div>'}}
     $('save-natural-key').onclick=async()=>{const type=$('value-object').value,fields=selectedNaturalKeyFields(),button=$('save-natural-key');if(!fields.length){$('natural-key-warning').className='identity-warning';$('natural-key-warning').textContent='Choose at least one stable identity field.';return}try{button.disabled=true;button.textContent='Saving…';const result=await api('/api/object-mappings/'+type,{method:'PUT',body:JSON.stringify({naturalKeyFields:fields})});markPlanDirty();queuePlanAutosave();button.textContent='Saved ✓';$('natural-key-summary').textContent='Saved: '+fields.join(' + ');setTimeout(()=>button.textContent='Save matching rule',1200);
-      if(result.syncPaused)alert('Heads up: '+type+' was live-syncing, so saving this matching rule paused both real-time and scheduled sync for it. Review it, then re-enable from the Sync tab when ready.')
+      if(result.syncPaused)showNotice('Heads up: '+type+' was live-syncing, so saving this matching rule paused both real-time and scheduled sync for it. Review it, then re-enable from the Sync tab when ready.')
     }catch(e){$('natural-key-warning').className='identity-warning';$('natural-key-warning').textContent=e.message;button.textContent='Save matching rule'}finally{button.disabled=false}};
     $('load-values').onclick=async()=>{const context=migrationState.valueContext,field=$('value-field').value;if(!context||!field)return;const current=await api('/api/value-mappings/'+context.type+'/'+encodeURIComponent(field));const sfMeta=$('mig-from').value==='salesforce'?context.sourceMeta:context.targetMeta,hsMeta=$('mig-from').value==='hubspot'?context.sourceMeta:context.targetMeta;const sfRule=($('mig-from').value==='salesforce'?context.sourceRules:context.targetRules).get(field),hsRule=($('mig-from').value==='hubspot'?context.sourceRules:context.targetRules).get(field);const sfOptions=sfMeta.fields.find(f=>f.name===sfRule?.native)?.options||[],hsOptions=hsMeta.fields.find(f=>f.name===hsRule?.native)?.options||[];const values=new Map(current.entries.map(e=>[e.canonicalValue,e]));[...sfOptions,...hsOptions].forEach(o=>{if(!values.has(o.value))values.set(o.value,{canonicalValue:o.value,salesforceValue:sfOptions.find(x=>x.value===o.value)?.value,hubspotValue:hsOptions.find(x=>x.value===o.value)?.value})});$('value-map-rows').innerHTML=[...values.values()].map(e=>'<tr><td><input class="value-canonical" value="'+esc(e.canonicalValue)+'"></td><td><input class="value-sf" value="'+esc(e.salesforceValue||'')+'"></td><td><input class="value-hs" value="'+esc(e.hubspotValue||'')+'"></td></tr>').join('')||'<tr><td colspan="3" class="empty">No values discovered.</td></tr>'};
     $('save-values').onclick=async()=>{const type=$('value-object').value,field=$('value-field').value;if(!field)return;const entries=[...$('value-map-rows').querySelectorAll('tr')].map(tr=>({canonicalValue:tr.querySelector('.value-canonical')?.value.trim(),salesforceValue:tr.querySelector('.value-sf')?.value.trim()||undefined,hubspotValue:tr.querySelector('.value-hs')?.value.trim()||undefined})).filter(x=>x.canonicalValue);try{const result=await api('/api/value-mappings/'+type+'/'+encodeURIComponent(field),{method:'PUT',body:JSON.stringify({entries})});markPlanDirty();queuePlanAutosave();$('save-values').textContent='Saved ✓';setTimeout(()=>$('save-values').textContent='Save values',1200);
-      if(result.syncPaused)alert('Heads up: '+type+' was live-syncing, so saving this value mapping paused both real-time and scheduled sync for it. Review it, then re-enable from the Sync tab when ready.')
-    }catch(e){alert(e.message)}};
+      if(result.syncPaused)showNotice('Heads up: '+type+' was live-syncing, so saving this value mapping paused both real-time and scheduled sync for it. Review it, then re-enable from the Sync tab when ready.')
+    }catch(e){showError(e.message,e.requestId)}};
 
     async function runPlanPreflight(){try{const plan=await ensurePlan();migrationState.preflight=null;resetCopilot();$('summary-preflight').textContent='Running…';updateMigrationStepper();const result=await api('/api/migration-plans/'+plan.id+'/preflight',{method:'POST'});migrationState.preflight=result;renderPreflight(result);migrationState.plan=await api('/api/migration-plans/'+plan.id);updateMigrationSummary();updateMigrationStepper();return result}catch(e){$('ask-copilot').disabled=true;$('summary-preflight').textContent='Blocked';$('preflight-issues').innerHTML=e.code==='connection_refresh_required'?'<div class="preflight-blocked"><b>CRM connection needs attention</b><p>'+esc(e.message)+'</p><a class="button secondary" href="'+esc(e.actionUrl||'/')+'">Open Connections</a></div>':'<div class="empty">'+esc(e.message)+'</div>';updateMigrationStepper();throw e}}
     function renderPreflight(result){const issues=result.checks.flatMap(check=>check.issues.map(issue=>({...issue,type:check.type}))),errors=issues.filter(x=>x.severity==='error').length,warnings=issues.filter(x=>x.severity==='warning').length,fields=result.checks.reduce((sum,check)=>sum+Object.values(check.schemas).reduce((n,s)=>n+(s?.fields||0),0),0);$('preflight-summary').innerHTML='<div class="check-stat"><b>'+errors+'</b><span>Errors</span></div><div class="check-stat"><b>'+warnings+'</b><span>Warnings</span></div><div class="check-stat"><b>'+fields+'</b><span>Fields checked</span></div>';
@@ -560,7 +573,10 @@ export function operationsHtml(): string {
     $('run-preflight').onclick=()=>runPlanPreflight().catch(()=>{});$('side-preflight').onclick=()=>{selectMigrationStep('validate');runPlanPreflight().catch(()=>{})};
     $('ask-copilot').onclick=askCopilot;
     function testTypeLabel(type){return migrationState.catalog.find(row=>row.canonicalType===type)?.source.label||type}
-    function currentCanaryPassed(){return migrationState.canaryVerified||Boolean(migrationState.plan?.canary?.verifiedAt&&migrationState.plan.canary.previewRevision===migrationState.plan.revision)}
+    function untestedTypes(){const plan=migrationState.plan,verification=plan?.canary?.verification;if(!plan)return [...migrationState.selected];const tested=verification?.passed&&plan.canary.previewRevision===plan.revision?verification.testedTypes:[];return plan.types.filter(type=>!tested.includes(type))}
+    function currentCanaryPassed(){return Boolean(migrationState.plan?.canary?.verifiedAt&&migrationState.plan.canary.previewRevision===migrationState.plan.revision&&!untestedTypes().length)}
+    function newIdempotencyKey(){return (crypto.randomUUID?crypto.randomUUID():String(Date.now())+Math.random())}
+    function verificationSummary(verification){if(!verification)return 'The test could not be verified.';if(verification.passed){const remaining=untestedTypes();return 'Read back and matched '+verification.items.filter(item=>item.wrote).length+' written record(s).'+(remaining.length?' Also test: '+remaining.map(testTypeLabel).join(', ')+'.':'')}return 'Not verified: '+(verification.reasons||[]).join('; ')}
     function testValue(value){if(value===undefined)return 'Not set';if(value===null)return 'Empty';return typeof value==='string'?value:JSON.stringify(value)}
     function renderTestRecordPreview(plan){migrationState.canaryPreview={runId:migrationState.canaryPreview?.runId,plans:[plan]};$('test-record-preview').hidden=false;$('test-record-action').className='pill '+plan.action;$('test-record-action').textContent=plan.action;$('test-record-fields').innerHTML=plan.fieldDiff.length?plan.fieldDiff.map(diff=>'<div class="test-field"><span>'+esc(diff.field)+'</span><b>'+esc(testValue(diff.source))+(diff.target===undefined?'':' ← current '+esc(testValue(diff.target)))+'</b></div>').join(''):'<div class="test-field"><span>Result</span><b>'+esc(plan.warnings.join('; ')||'No field changes required')+'</b></div>';$('execute-canary').disabled=plan.action==='ambiguous';$('mig-status').textContent=plan.action==='ambiguous'?'Choose another record or resolve the ambiguous match.':'Review the action, then test this one record.';updateMigrationStepper()}
     function showCanaryPassed(detail){migrationState.canaryVerified=true;$('test-record-result').hidden=false;$('test-result-title').textContent='One-record test passed';$('test-result-detail').textContent=detail;$('full-migration').hidden=false;$('summary-preview').textContent='Passed';$('mig-status').textContent='Verified. Full migration is now unlocked.';updateMigrationStepper()}
@@ -581,42 +597,65 @@ export function operationsHtml(): string {
     async function loadTestRecordOptions(){const plan=await ensurePlan(),type=$('test-record-type').value,select=$('test-record-source');select.disabled=true;select.innerHTML='<option>Loading source records…</option>';$('test-record-preview').hidden=true;$('mig-status').textContent='Loading records…';const result=await api('/api/migration-plans/'+plan.id+'/test-records?type='+encodeURIComponent(type));select.innerHTML=result.entries.length?result.entries.map(record=>'<option value="'+esc(record.sourceId)+'">'+esc(record.label)+' · '+esc(record.sourceId)+'</option>').join(''):'<option value="">No source records found</option>';select.disabled=!result.entries.length;const saved=plan.canary&&plan.canary.previewRevision===plan.revision&&plan.canary.type===type&&result.entries.some(record=>record.sourceId===plan.canary.sourceId);if(saved)select.value=plan.canary.sourceId;if(!select.value){$('mig-status').textContent='No source records are available for this object.';return}if(saved){const frozen=await api('/api/migrations/'+plan.canary.previewRunId+'/items?limit=1');migrationState.canaryPreview={runId:plan.canary.previewRunId,plans:frozen.entries};if(frozen.entries[0])renderTestRecordPreview(frozen.entries[0]);if(plan.canary.verifiedAt)showCanaryPassed('Previously verified '+new Date(plan.canary.verifiedAt).toLocaleString()+'.')}else await prepareTestRecord()}
     async function prepareTestRecord(){const plan=await ensurePlan(),type=$('test-record-type').value,sourceId=$('test-record-source').value;if(!type||!sourceId)return;migrationState.canaryVerified=false;$('test-record-result').hidden=true;$('full-migration').hidden=true;$('execute-canary').disabled=true;$('summary-preview').textContent='Preparing…';$('mig-status').textContent='Checking this record against the destination…';try{const result=await api('/api/migration-plans/'+plan.id+'/test-record/preview',{method:'POST',body:JSON.stringify({type,sourceId})});migrationState.canaryPreview=result;migrationState.plan=await api('/api/migration-plans/'+plan.id);renderTestRecordPreview(result.plans[0]);$('summary-preview').textContent=result.plans[0]?.action==='ambiguous'?'Blocked':'Ready'}catch(e){$('test-record-preview').hidden=true;$('summary-preview').textContent='Blocked';$('mig-status').textContent=e.message;throw e}}
     $('test-record-type').onchange=()=>loadTestRecordOptions().catch(e=>$('mig-status').textContent=e.message);$('test-record-source').onchange=()=>prepareTestRecord().catch(e=>$('mig-status').textContent=e.message);
-    $('execute-canary').onclick=async()=>{if(!migrationState.plan||!migrationState.canaryPreview)return;const confirmed=await requestTypedConfirmation({title:'Test one real record',message:'This writes exactly one record to the destination CRM, then reads it back to verify the result.',token:'TEST',buttonLabel:'Test 1 record'});if(!confirmed)return;const button=$('execute-canary');button.disabled=true;button.textContent='Testing…';$('mig-status').textContent='Rechecking and writing one record…';try{const result=await api('/api/migration-plans/'+migrationState.plan.id+'/test-record/execute',{method:'POST',body:JSON.stringify({confirm:true,previewRunId:migrationState.canaryPreview.runId})});migrationState.plan=await api('/api/migration-plans/'+migrationState.plan.id);if(result.verification?.verified){showCanaryPassed('Verified in '+(result.verification.target==='salesforce'?'Salesforce':'HubSpot')+' as '+result.verification.targetId+'.');await Promise.all([loadRuns(),loadMetrics(),loadSavedPlans()])}else{$('summary-preview').textContent='Verification failed';$('mig-status').textContent='The write completed but the destination record could not be verified.'}}catch(e){$('summary-preview').textContent='Test failed';$('mig-status').textContent=e.message}finally{button.disabled=false;button.textContent='Test 1 record'}};
+    $('execute-canary').onclick=async()=>{if(!migrationState.plan||!migrationState.canaryPreview)return;const confirmed=await requestTypedConfirmation({title:'Test one real record',message:'This writes exactly the reviewed record to the destination CRM, then reads it back and compares every mapped value.',token:'TEST',buttonLabel:'Test 1 record'});if(!confirmed)return;const button=$('execute-canary');button.disabled=true;button.textContent='Testing…';$('mig-status').textContent='Rechecking and writing one record…';try{const result=await api('/api/migration-plans/'+migrationState.plan.id+'/test-record/execute',{method:'POST',headers:{'idempotency-key':newIdempotencyKey()},body:JSON.stringify({confirm:true,previewRunId:migrationState.canaryPreview.runId})});migrationState.plan=await api('/api/migration-plans/'+migrationState.plan.id);if(result.verification?.passed&&currentCanaryPassed()){showCanaryPassed(verificationSummary(result.verification))}else if(result.verification?.passed){migrationState.canaryVerified=false;$('summary-preview').textContent='More tests needed';$('mig-status').textContent=verificationSummary(result.verification)}else{migrationState.canaryVerified=false;$('full-migration').hidden=true;$('summary-preview').textContent='Verification failed';$('mig-status').textContent=verificationSummary(result.verification)}await Promise.all([loadRuns(),loadMetrics(),loadSavedPlans()])}catch(e){$('summary-preview').textContent='Test failed';$('mig-status').textContent=e.message}finally{button.disabled=false;button.textContent='Test 1 record'}};
     $('execute-batch').onclick=async()=>{
       if(!migrationState.plan)return;
       const type=$('test-record-type').value,count=Number($('batch-count').value);
       if(!type){$('mig-status').textContent='Choose an object first';return}
       if(!Number.isInteger(count)||count<1){$('mig-status').textContent='Enter a valid record count';return}
-      const confirmed=await requestTypedConfirmation({title:'Migrate a batch of records',message:'This writes up to '+count+' '+testTypeLabel(type)+' record(s) to the destination CRM immediately.',token:'MIGRATE',buttonLabel:'Migrate batch'});
-      if(!confirmed)return;
-      const button=$('execute-batch');button.disabled=true;button.textContent='Migrating…';$('batch-result').hidden=true;
-      $('mig-status').textContent='Rechecking and writing up to '+count+' records…';
+      const button=$('execute-batch');button.disabled=true;$('batch-result').hidden=true;
       try{
-        const result=await api('/api/migration-plans/'+migrationState.plan.id+'/test-batch/execute',{method:'POST',body:JSON.stringify({type,count,confirm:true})});
-        migrationState.plan=await api('/api/migration-plans/'+migrationState.plan.id);
-        const stats=result.perType[type]||{read:0,reconciled:0,errors:0,actions:{}};
+        // Step 1: freeze a preview of exactly these records; nothing is written yet.
+        button.textContent='Preparing…';$('mig-status').textContent='Previewing the first '+count+' '+testTypeLabel(type)+' record(s)…';
+        const preview=await api('/api/migration-plans/'+migrationState.plan.id+'/test-batch/preview',{method:'POST',body:JSON.stringify({type,count})});
+        const stats=preview.perType[type]||{read:0,actions:{}};
         const actionSummary=Object.entries(stats.actions).map(([action,n])=>n+' '+action).join(', ')||'no changes';
-        const failedRecords=(result.plans||[]).filter(p=>p.action==='error');
-        const errorList=failedRecords.length?'<div class="batch-error-list">'+failedRecords.map(p=>'<div class="batch-error-row"><b>'+esc(p.sourceId)+'</b><span>'+esc(p.warnings[p.warnings.length-1]||'Unknown error')+'</span></div>').join('')+'</div>':'';
-        $('batch-result').className='batch-result'+(stats.errors?' error':'');
+        if(stats.actions.ambiguous||stats.actions.error){$('batch-result').className='batch-result error';$('batch-result').hidden=false;$('batch-result').textContent='This batch cannot run: '+actionSummary+'. Resolve the flagged records first.';return}
+        const confirmed=await requestTypedConfirmation({title:'Migrate the reviewed batch',message:'Reviewed '+stats.read+' '+testTypeLabel(type)+' record(s): '+actionSummary+'. Exactly these records will be written, then read back and compared.',token:'MIGRATE',buttonLabel:'Migrate batch'});
+        if(!confirmed){$('mig-status').textContent='Batch not run.';return}
+        // Step 2: execute exactly that frozen preview, once.
+        button.textContent='Migrating…';$('mig-status').textContent='Rechecking and writing '+stats.read+' records…';
+        const result=await api('/api/migration-plans/'+migrationState.plan.id+'/test-batch/execute',{method:'POST',headers:{'idempotency-key':newIdempotencyKey()},body:JSON.stringify({confirm:true,previewRunId:preview.runId})});
+        migrationState.plan=await api('/api/migration-plans/'+migrationState.plan.id);
+        const verification=result.verification;
+        const failed=(verification?.items||[]).filter(item=>item.error||item.mismatches?.length);
+        const errorList=failed.length?'<div class="batch-error-list">'+failed.map(item=>'<div class="batch-error-row"><b>'+esc(item.sourceId)+'</b><span>'+esc(item.error||('Mismatch: '+item.mismatches.map(m=>m.field).join(', ')))+'</span></div>').join('')+'</div>':'';
+        $('batch-result').className='batch-result'+(verification?.passed?'':' error');
         $('batch-result').hidden=false;
-        $('batch-result').innerHTML='<b>'+stats.reconciled+' of '+stats.read+' records migrated</b><br>'+esc(actionSummary)+(stats.errors?' · '+stats.errors+' error'+(stats.errors===1?'':'s'):'')+errorList;
-        showCanaryPassed(stats.reconciled+' of '+stats.read+' '+testTypeLabel(type)+' record(s) migrated ('+actionSummary+').');
-        $('test-result-title').textContent=stats.reconciled+' of '+stats.read+' records migrated';
+        $('batch-result').innerHTML='<b>'+(verification?.passed?'Batch verified':'Batch not verified')+'</b><br>'+esc(verificationSummary(verification))+errorList;
+        if(verification?.passed&&currentCanaryPassed())showCanaryPassed(verificationSummary(verification));
+        else{migrationState.canaryVerified=false;$('mig-status').textContent=verificationSummary(verification)}
         await Promise.all([loadRuns(),loadMetrics(),loadSavedPlans()]);
       }catch(e){
         $('batch-result').className='batch-result error';$('batch-result').hidden=false;$('batch-result').textContent=e.message;
         $('mig-status').textContent=e.message;
       }finally{button.disabled=false;button.textContent='Migrate batch'}
     };
-    async function generatePreview(){if(!currentCanaryPassed()){$('mig-status').textContent='Pass the one-record test before preparing the full migration.';return}try{const plan=await ensurePlan();$('mig-status').textContent='Preparing full migration…';$('preview').disabled=true;const result=await api('/api/migration-plans/'+plan.id+'/preview',{method:'POST'});migrationState.preview=result;migrationState.plan=await api('/api/migration-plans/'+plan.id);renderPlans(result.plans);renderPreviewActions(result.plans);$('execute').disabled=result.plans.some(p=>p.action==='ambiguous')||!result.plans.length;$('mig-status').textContent=result.runId.slice(0,8)+' · '+result.plans.length+' records ready for review';$('summary-preflight').textContent='Passed';updateMigrationStepper();await loadRuns();await loadSavedPlans()}catch(e){$('mig-status').textContent=e.message;updateMigrationStepper()}finally{$('preview').disabled=false}}
+    async function generatePreview(){if(!currentCanaryPassed()){const remaining=untestedTypes();$('mig-status').textContent=remaining.length&&migrationState.plan?.canary?.verification?.passed?'Test a record of every selected object first (still untested: '+remaining.map(testTypeLabel).join(', ')+').':'Pass a verified test before preparing the full migration.';return}try{const plan=await ensurePlan();$('mig-status').textContent='Preparing full migration…';$('preview').disabled=true;const result=await api('/api/migration-plans/'+plan.id+'/preview',{method:'POST'});migrationState.preview=result;migrationState.plan=await api('/api/migration-plans/'+plan.id);renderPlans(result.plans);renderPreviewActions(result.plans);$('execute').disabled=result.plans.some(p=>p.action==='ambiguous')||!result.plans.length;$('mig-status').textContent=result.runId.slice(0,8)+' · '+result.plans.length+' records ready for review';$('summary-preflight').textContent='Passed';updateMigrationStepper();await loadRuns();await loadSavedPlans()}catch(e){$('mig-status').textContent=e.message;updateMigrationStepper()}finally{$('preview').disabled=false}}
     $('preview').onclick=generatePreview;$('side-preview').onclick=()=>goMigrationStep('preview');
-    function renderPreviewActions(plans){const actions=['create','update','match','skip','conflict','ambiguous','error'];const counts=Object.fromEntries(actions.map(action=>[action,plans.filter(p=>p.action===action).length]));$('preview-actions').innerHTML=actions.map(action=>'<div class="preview-action"><b>'+counts[action]+'</b><span>'+action+'</span></div>').join('')}
+    function renderPreviewActions(plans){const actions=['create','update','match','skip','conflict','ambiguous','review','error'];const counts=Object.fromEntries(actions.map(action=>[action,plans.filter(p=>p.action===action).length]));$('preview-actions').innerHTML=actions.map(action=>'<div class="preview-action"><b>'+counts[action]+'</b><span>'+action+'</span></div>').join('')+'<p class="preview-scope" role="note">Records only: relationships (contact–company links, deal associations) are not migrated and are not backfilled later by live sync.</p>'}
     function renderPlans(plans){$('plans').innerHTML=plans.length?plans.map(p=>'<tr><td><span class="pill '+p.action+'">'+esc(p.action)+'</span></td><td>'+esc(p.type)+'</td><td>'+esc(p.naturalKey||'—')+
       '</td><td>'+esc(p.targetId||'new')+'</td><td>'+esc(p.fieldDiff.map(d=>d.field).join(', ')||p.warnings.join('; ')||'No changes')+'</td></tr>').join(''):'<tr><td colspan="5" class="empty">No records in this scope.</td></tr>'}
-    $('execute').onclick=async()=>{if(!migrationState.plan||!migrationState.preview)return;const confirmed=await requestTypedConfirmation({title:'Run full migration',message:'This writes every reviewed record in the prepared migration to the destination CRM.',token:'EXECUTE',buttonLabel:'Run migration'});if(!confirmed)return;try{$('execute').disabled=true;$('mig-status').textContent='Rechecking the prepared migration…';const result=await api('/api/migration-plans/'+migrationState.plan.id+'/execute',{method:'POST',body:JSON.stringify({confirm:true})});$('mig-status').textContent='Completed '+result.runId.slice(0,8);$('summary-preview').textContent='Migration complete';await Promise.all([loadRuns(),loadMetrics(),loadSavedPlans()])}catch(e){$('mig-status').textContent=e.message}};
+    $('execute').onclick=async()=>{if(!migrationState.plan||!migrationState.preview)return;const confirmed=await requestTypedConfirmation({title:'Run full migration',message:'This writes every reviewed record in the prepared migration to the destination CRM, exactly as previewed. It can run once.',token:'EXECUTE',buttonLabel:'Run migration'});if(!confirmed)return;const key=newIdempotencyKey();try{$('execute').disabled=true;$('mig-status').textContent='Rechecking the prepared migration…';const result=await api('/api/migration-plans/'+migrationState.plan.id+'/execute',{method:'POST',headers:{'idempotency-key':key},body:JSON.stringify({confirm:true})});await followExecution(result.execution.id)}catch(e){$('mig-status').textContent=e.code==='approval_invalidated'||e.code==='preview_drift'?e.message+' — prepare the migration again.':e.message}};
 
-    async function loadSavedPlans(){const result=await api('/api/migration-plans');migrationState.savedPlans=result.entries;$('saved-plan-count').textContent=result.entries.length;$('saved-plans').innerHTML=result.entries.length?result.entries.map(plan=>'<article class="plan-item" data-plan="'+plan.id+'"><div class="plan-name"><span>'+esc(plan.name)+'</span><span class="pill '+(plan.status==='completed'?'completed':plan.status==='failed'?'error':'queued')+'">'+esc(plan.status)+'</span></div><div class="plan-meta">'+esc(plan.source==='salesforce'?'Salesforce → HubSpot':'HubSpot → Salesforce')+' · '+plan.types.length+' objects · revision '+plan.revision+'</div><div class="plan-meta">'+esc(plan.canary?.verifiedAt?'One-record test passed':plan.canary?'Test record ready':'One-record test required')+'</div></article>').join(''):'<div class="empty">No saved plans yet. Configure the builder and your first draft will appear here.</div>';$('saved-plans').querySelectorAll('[data-plan]').forEach(item=>item.onclick=()=>loadPlan(item.dataset.plan))}
+    // Durable runs (R08) keep going if this page closes; this only reports progress, at a
+    // bounded rate that slows down for long runs.
+    // R13 resumable runs: a running execution can be paused or cancelled; a paused one resumed.
+    function renderExecutionControls(execution){const id=execution.id;const p=execution.progress||{};
+      $('run-banner').hidden=false;
+      $('run-banner-text').textContent='Migration run '+id.slice(0,8)+': '+execution.status+' · '+(p.succeeded||0)+' written/linked, '+(p.failed||0)+' failed, '+(p.queued||0)+' waiting'+(execution.pauseReason?' · '+execution.pauseReason:'');
+      const controls=
+      execution.status==='running'?[['pause','Pause'],['cancel','Cancel']]:
+      execution.status==='paused'?[['resume','Resume'],['resume-retry','Resume and retry failed'],['cancel','Cancel']]:[];
+      $('execution-controls').innerHTML=controls.map(([action,label])=>'<button class="'+(action==='cancel'?'danger':'secondary')+'" type="button" data-action="executionControl" data-arg="'+esc(id)+':'+action+'">'+label+'</button>').join(' ')}
+    async function executionControl(arg){const [id,action]=String(arg).split(':');
+      $('execution-controls').querySelectorAll('button').forEach(b=>b.disabled=true);
+      await api('/api/executions/'+encodeURIComponent(id)+'/'+(action==='resume-retry'?'resume':action),{method:'POST',body:JSON.stringify(action==='resume-retry'?{retryFailed:true}:{})});
+      await followExecution(id)}
+    window.executionControl=executionControl;
+    window.viewExecution=(id)=>followExecution(id);
+    async function followExecution(id){let delay=1500;while(true){const execution=await api('/api/executions/'+id),p=execution.progress||{};renderExecutionControls(execution);$('mig-status').textContent='Run '+id.slice(0,8)+' · '+execution.status+' · '+(p.succeeded||0)+' written/linked, '+(p.skipped||0)+' skipped, '+(p.failed||0)+' failed, '+(p.queued||0)+' queued'+(execution.pauseReason?' · '+execution.pauseReason:'');if(['succeeded','partial','failed','cancelled'].includes(execution.status)){$('summary-preview').textContent=execution.status==='succeeded'?'Migration complete':'Migration '+execution.status;await Promise.all([loadRuns(),loadMetrics(),loadSavedPlans()]);return execution}if(execution.status==='paused'){$('summary-preview').textContent='Paused';return execution}await new Promise(resolve=>setTimeout(resolve,delay));delay=Math.min(10000,Math.round(delay*1.3))}}
+    async function loadSavedPlans(){const result=await api('/api/migration-plans');migrationState.savedPlans=result.entries;$('saved-plan-count').textContent=result.entries.length;$('saved-plans').innerHTML=result.entries.length?result.entries.map(plan=>'<article class="plan-item" data-plan="'+plan.id+'"><div class="plan-name"><span>'+esc(plan.name)+'</span><span class="pill '+(plan.status==='completed'?'completed':plan.status==='failed'?'error':'queued')+'">'+esc(plan.status)+'</span></div><div class="plan-meta">'+esc(plan.source==='salesforce'?'Salesforce → HubSpot':'HubSpot → Salesforce')+' · '+plan.types.length+' objects · revision '+plan.revision+'</div><div class="plan-meta">'+esc(plan.canary?.verifiedAt?'One-record test passed':plan.canary?'Test record ready':'One-record test required')+'</div>'+(plan.activeExecutionId?'<div class="plan-meta"><button class="secondary" type="button" data-action="viewExecution" data-arg="'+esc(plan.activeExecutionId)+'">View run</button></div>':'')+'</article>').join(''):'<div class="empty">No saved plans yet. Configure the builder and your first draft will appear here.</div>';$('saved-plans').querySelectorAll('[data-plan]').forEach(item=>item.onclick=(event)=>{if(event.target.closest('[data-action]'))return;loadPlan(item.dataset.plan)})}
     async function loadPlan(id){const plan=await api('/api/migration-plans/'+id);selectMigrateTab('builder');migrationState.plan=plan;migrationState.dirty=false;migrationState.selected=new Set(plan.types);migrationState.preview=null;migrationState.canaryPreview=null;migrationState.canaryVerified=Boolean(plan.canary?.verifiedAt&&plan.canary.previewRevision===plan.revision);migrationState.preflight=null;resetCopilot();$('plan-name').value=plan.name;$('mig-from').value=plan.source;$('mig-limit').value=plan.limitPerType||20;updateDirectionPreview();setDraftStatus('Loaded revision '+plan.revision,'saved');await loadCatalog();$('summary-plan').textContent=plan.name+' · r'+plan.revision;$('summary-preflight').textContent=plan.status==='validated'||plan.status==='previewed'||plan.status==='completed'?'Passed':'Not run';$('summary-preview').textContent=migrationState.canaryVerified?'Passed':plan.canary?'Ready':'Required';$('full-migration').hidden=!migrationState.canaryVerified;$('test-record-result').hidden=true;
       const hasCurrentPreview=plan.previewRunId&&plan.previewRevision===plan.revision;if(hasCurrentPreview){const frozen=await api('/api/migrations/'+plan.previewRunId+'/items?limit=2000');migrationState.preview={runId:plan.previewRunId,plans:frozen.entries};renderPlans(frozen.entries);renderPreviewActions(frozen.entries);$('mig-status').textContent=plan.previewRunId.slice(0,8)+' · prepared migration loaded';$('execute').disabled=!frozen.entries.length||frozen.entries.some(item=>item.action==='ambiguous')}else{$('execute').disabled=true}updateMigrationSummary();updateMigrationStepper()}
     function updateMigrationSummary(){const rows=selectedCatalogRows(),direction=$('mig-from').value==='salesforce'?'Salesforce → HubSpot':'HubSpot → Salesforce';$('summary-direction').textContent=direction;$('summary-objects').textContent=migrationState.selected.size+' selected';const mapped=rows.reduce((n,row)=>n+row.mappedFields,0),total=rows.reduce((n,row)=>n+row.totalMappedFields,0);$('summary-coverage').textContent=total?Math.round(mapped/total*100)+'%':'—';if(!migrationState.plan)$('summary-plan').textContent='Unsaved draft'}
@@ -706,7 +745,7 @@ export function operationsHtml(): string {
           objects:{[type]:{...current,enabled:false,enrolledForSync:false}},
         })});
         await loadSyncSettings();
-      }catch(e){alert(e.message)}
+      }catch(e){showError(e.message,e.requestId)}
     }
     // Live-updates the poll sub-row's disabled/greyed state as soon as the master checkbox is
     // toggled, without waiting for a save + full re-render -- the whole point is that checking
@@ -1064,7 +1103,7 @@ export function operationsHtml(): string {
         const type=syncWizard.type;
         const result=await api('/api/object-mappings/'+type+'/native-objects',{method:'PUT',body:JSON.stringify({salesforceObject,hubspotObject})});
         resetSyncWizard();await loadSyncSettings();
-        alert('Objects updated. Field mappings and the matching key were reset'+(result.syncPaused?' and sync was paused for this object -- turn it back on once fields are remapped.':' -- map fields for the new objects, then re-check your natural key, before relying on sync.'));
+        showNotice('Objects updated. Field mappings and the matching key were reset'+(result.syncPaused?' and sync was paused for this object -- turn it back on once fields are remapped.':' -- map fields for the new objects, then re-check your natural key, before relying on sync.'));
         await goMapFields(type);
       }catch(e){$('sync-wizard-message').textContent=e.message}
       finally{button.disabled=false;button.textContent='Save object change'}
@@ -1114,8 +1153,8 @@ export function operationsHtml(): string {
     }
     function jobRowCells(j,selectable){const needsAttention=j.status==='dead_letter'||j.status==='manual_review'||j.status==='retry';
       const select='<td>'+(selectable&&needsAttention?'<input type="checkbox" class="row-select" value="'+j.id+'">':'')+'</td>';
-      const primary=j.status==='manual_review'&&j.event.changeType==='deleted'?'<button class="danger" onclick="approveDelete(\\''+j.id+'\\')">Approve delete</button>':needsAttention?'<button onclick="replay(\\''+j.id+'\\')">Replay</button>':'';
-      const dismiss=needsAttention?'<button class="danger" onclick="dismissJob(\\''+j.id+'\\')" title="Give up on this permanently -- it will not be retried">Delete</button>':'';
+      const primary=j.status==='manual_review'&&j.event.changeType==='deleted'?'<button class="danger" data-action="approveDelete" data-arg="'+j.id+'">Approve delete</button>':needsAttention?'<button data-action="replay" data-arg="'+j.id+'">Replay</button>':'';
+      const dismiss=needsAttention?'<button class="danger" data-action="dismissJob" data-arg="'+j.id+'" title="Give up on this permanently -- it will not be retried">Delete</button>':'';
       const actions=(primary||dismiss)?'<div class="row-actions">'+primary+dismiss+'</div>':'';
       return {select,actions}}
     async function loadConflicts(){const r=await api('/api/sync/jobs?limit=200');const entries=r.entries.filter(job=>job.status==='manual_review'||job.status==='dead_letter');
@@ -1146,7 +1185,7 @@ export function operationsHtml(): string {
       $(cfg.deleteBtn).onclick=async()=>{const ids=selectedJobIds(tbodyId);if(!ids.length)return;if(!confirm('Give up on '+ids.length+' job'+(ids.length===1?'':'s')+' permanently? '+(ids.length===1?'It':'They')+' will not be retried.'))return;await Promise.allSettled(ids.map(id=>api('/api/sync/jobs/'+id+'/dismiss',{method:'POST'})));await bulkRefresh()};
     });
     document.querySelectorAll('[data-activity-tab]').forEach(button=>button.onclick=()=>{document.querySelectorAll('[data-activity-tab]').forEach(item=>item.classList.toggle('active',item===button));document.querySelectorAll('.activity-panel').forEach(panel=>panel.classList.toggle('active',panel.id==='activity-'+button.dataset.activityTab))});
-    async function loadAudit(){const a=await api('/api/audit?limit=100');$('audit').innerHTML=a.entries.length?a.entries.map(x=>'<div class="audit-entry"><b>'+esc(x.action)+'</b><br><span class="muted">'+esc(x.detail.message||x.resourceType)+' · '+esc(new Date(x.createdAt).toLocaleString())+'</span></div>').join(''):'<div class="empty">No audit entries</div>'}
+    async function loadAudit(){let a;try{a=await api('/api/audit?limit=100')}catch(e){if(e.code==='insufficient_role'){$('audit').innerHTML='<div class="empty">The audit log is visible to admins.</div>';return}throw e}$('audit').innerHTML=a.entries.length?a.entries.map(x=>'<div class="audit-entry"><b>'+esc(x.action)+'</b><br><span class="muted">'+esc(x.detail.message||x.resourceType)+' · '+esc(new Date(x.createdAt).toLocaleString())+'</span></div>').join(''):'<div class="empty">No audit entries</div>'}
 
     // Live error surfacing: the Sync/Activity tabs otherwise only refresh on click, so a new
     // dead-letter or manual-review job could sit unnoticed until someone happens to hit
@@ -1205,7 +1244,34 @@ export function operationsHtml(): string {
     async function revokeApiKey(id){if(!confirm('Revoke this API key? Existing clients using it will lose access.'))return;await api('/api/admin/api-keys/'+id,{method:'DELETE'});renderApiKeys((await api('/api/admin/api-keys')).entries)}
     $('create-api-key').onclick=async()=>{const name=$('api-key-name').value.trim();if(!name)return;$('create-api-key').disabled=true;try{const result=await api('/api/admin/api-keys',{method:'POST',body:JSON.stringify({name,role:$('api-key-role').value})});$('created-api-key').innerHTML='<div class="key-created"><b>Copy this key now — it will not be shown again.</b><code>'+esc(result.key)+'</code></div>';$('api-key-name').value='';renderApiKeys((await api('/api/admin/api-keys')).entries)}catch(e){$('created-api-key').innerHTML='<div class="notice">'+esc(e.message)+'</div>'}finally{$('create-api-key').disabled=false}};
 
-    async function refreshAll(){await Promise.allSettled([loadRuns(),loadCatalog(),loadSavedPlans()]);const view=location.hash.slice(1)||'migration';if(view==='sync')await loadSyncWorkspace();if(view==='activity')await Promise.all([loadJobs(),loadAudit()]);if(view==='settings')await loadSettingsWorkspace()}window.refreshAll=refreshAll;refreshAll();
+    // R13: real readiness and workspace identity (nothing hardcoded).
+    const READINESS_LABEL={ok:'Ready',warning:'Needs attention',blocked:'Not ready'};
+    async function loadReadiness(){try{const r=await api('/api/readiness');
+      $('readiness-dot').className='status-dot'+(r.status==='ok'?'':r.status==='warning'?' warn':' off');
+      const issues=r.checks.filter(c=>c.status!=='ok');
+      $('readiness-label').textContent=READINESS_LABEL[r.status]+(issues.length?' ('+issues.length+')':'');
+      $('readiness-list').innerHTML=r.checks.map(c=>'<li class="readiness-'+c.status+'"><b>'+esc(c.label)+'</b> <span class="pill '+(c.status==='ok'?'completed':c.status==='warning'?'ambiguous':'error')+'">'+esc(c.status)+'</span><br><span class="muted">'+esc(c.detail)+'</span></li>').join('');
+    }catch(e){$('readiness-dot').className='status-dot off';$('readiness-label').textContent='Readiness unavailable'}}
+    async function loadIdentity(){try{const o=await api('/api/workspace-overview');$('workspace-name').textContent='Workspace · '+(o.name||o.slug||'unnamed')}catch(e){}}
+    $('readiness-label').addEventListener('click',()=>{const panel=$('readiness-panel');panel.hidden=!panel.hidden;$('readiness-label').setAttribute('aria-expanded',String(!panel.hidden))});
+    loadIdentity();
+    // Bounded polling: only while the tab is visible, and never more often than every 30s.
+    setInterval(()=>{if(!document.hidden)loadReadiness()},30000);
+    document.addEventListener('visibilitychange',()=>{if(!document.hidden)loadReadiness()});
+    // R10/R13 conflict review: inspect the automatic decision, deliberately keep the other side.
+    const SYSTEM_LABEL={salesforce:'Salesforce',hubspot:'HubSpot'};
+    async function loadConflicts(){const c=await api('/api/conflicts?limit=100');
+      $('conflict-review').innerHTML=c.entries.length?'<table><thead><tr><th>Record</th><th>Decision</th><th>Changed fields</th><th>Status</th><th></th></tr></thead><tbody>'+c.entries.map(x=>{
+        const fields=Object.keys({...x.source.fields,...x.target.fields}).filter(k=>JSON.stringify(x.source.fields[k])!==JSON.stringify(x.target.fields[k]));
+        const winner=x.decision&&x.decision.winner;const source=x.source.meta.source;const other=source==='salesforce'?'hubspot':'salesforce';
+        const diff=fields.slice(0,6).map(k=>'<div><b>'+esc(k)+'</b>: '+esc(SYSTEM_LABEL[source])+' '+esc(x.source.fields[k]??'—')+' · '+esc(SYSTEM_LABEL[other])+' '+esc(x.target.fields[k]??'—')+'</div>').join('')||'<span class="muted">No field differences recorded</span>';
+        const actions=['salesforce','hubspot'].map(sys=>'<button class="secondary" data-action="resolveConflict" data-arg="'+esc(x.id)+':'+sys+'"'+(winner===sys&&x.resolutionSource==='manual'?' disabled':'')+'>Keep '+SYSTEM_LABEL[sys]+'</button>').join(' ');
+        return '<tr data-conflict="'+esc(x.id)+'"><td>'+esc(x.type)+'<br><span class="muted">'+esc(new Date(x.createdAt).toLocaleString())+'</span></td><td>'+esc(x.strategy)+(winner?' → '+esc(SYSTEM_LABEL[winner]||winner):'')+'</td><td>'+diff+'</td><td><span class="pill '+(x.resolutionSource==='manual'?'completed':'ambiguous')+'">'+(x.resolutionSource==='manual'?'resolved by operator':'automatic')+'</span></td><td>'+actions+'</td></tr>'}).join('')+'</tbody></table>':'<div class="empty">No conflicts recorded</div>'}
+    async function resolveConflict(arg){const [id,winner]=String(arg).split(':');
+      const r=await api('/api/conflicts/'+encodeURIComponent(id)+'/resolve',{method:'POST',body:JSON.stringify({winner})});
+      showNotice('Kept '+SYSTEM_LABEL[winner]+' values for this '+r.type+'.');await loadConflicts()}
+    window.resolveConflict=resolveConflict;
+    async function refreshAll(){await Promise.allSettled([loadRuns(),loadCatalog(),loadSavedPlans(),loadReadiness()]);const view=location.hash.slice(1)||'migration';if(view==='sync')await loadSyncWorkspace();if(view==='activity')await Promise.all([loadJobs(),loadAudit(),loadConflicts()]);if(view==='settings')await loadSettingsWorkspace()}window.refreshAll=refreshAll;refreshAll();
   </script>
 </body></html>`;
 }

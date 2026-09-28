@@ -1,7 +1,8 @@
 # Application review remediation plan
 
 **Created:** 2026-09-23  
-**Status:** Planned; implementation has not started under this plan.  
+**Status:** In progress on branch `remediation-plan`; R01–R12 and R14 complete; R13 and R15
+core delivered (remaining items listed in each section).  
 **Objective:** Fix every finding from the application review, prove migration and sync
 correctness under failure, and establish explicit gates for pilots and public release.
 
@@ -53,7 +54,8 @@ through every phase rather than deferring them all to phase 5.
 
 ### R01 — isolate runtime configuration and demo state
 
-**Status:** [ ] Pending  
+**Status:** [x] Complete (2026-09-24)  
+**Evidence:** `test/configIsolation.test.ts` (13 tests). Instance-owned `ConfigContext` (`src/core/configContext.ts`) replaces all module-global mapping/registry/natural-key state; stores persist before publishing one immutable revision; each app (tenant, demo) owns its context and storage; mapping changes invalidate affected plan previews/canaries (`MigrationPlanStore.invalidateApprovals`) and approval fingerprints. `src/security/runtimeGuard.ts` rejects production (or a non-loopback URL) without authentication and never mounts demo routes in production; HTTP surface extracted to `buildHttpApp()` (`src/httpApp.ts`).  
 **Primary code:** `src/app.ts`, `src/core/mapping.ts`, `src/core/idMap.ts`,
 `src/core/objectRegistry.ts`, configuration stores, demo routes in `src/server.ts`.
 
@@ -73,7 +75,8 @@ does not mount demo routes and rejects disabled authentication.
 
 ### R02 — make migration execution match approved intent
 
-**Status:** [ ] Pending; depends on R01  
+**Status:** [x] Complete (2026-09-24)  
+**Evidence:** `test/approvedMigration.test.ts` (18 tests). Reconciler split into plan/apply with explicit sync and destination-only migration policies; previews freeze exact native payloads, target identity, conflict decision, fingerprints and an approval context (config fingerprint, conflict policy, accounts, schema hashes); execution re-verifies everything before any write and before each write, sends Salesforce updates conditionally (If-Unmodified-Since), and stops on the first uncertainty. `/api/migrate`, the workspace, canaries and the CLI all execute through `MigrationService`; `--confirm` requires `--preview <runId>`. Residual race: HubSpot has no conditional update, so a HubSpot edit landing between the final re-check and the write is not detected (documented in `HubSpotConnector.write`).  
 **Primary code:** `src/engine/reconciler.ts`, `src/engine/migrationEngine.ts`,
 `src/engine/migrationPlanStore.ts`, PostgreSQL migration stores, CLI and migration routes.
 
@@ -100,7 +103,8 @@ schemas invalidate approval. A `skip` produces zero writes; uncertainty stops ex
 
 ### R03 — enforce exclusive execution and immutable approval
 
-**Status:** [ ] Pending; depends on R02  
+**Status:** [x] Complete (2026-09-24)  
+**Evidence:** `test/exclusiveExecution.test.ts` (9 tests, isolated PostgreSQL, two independent pools). `migration_executions` (db/migrations/012) makes a preview executable at most once (unique per preview + idempotency key); the claim locks the plan row, checks eligibility, reserves quota under an advisory lock and records actor, approval, accounts and an immutable snapshot in one transaction; settlement is fenced on the active execution and charges only records written.  
 **Primary code:** `src/db/postgresMigrationPlanStore.ts`,
 `src/engine/migrationPlanStore.ts`, execution routes and operations repository.
 
@@ -119,7 +123,8 @@ request retries, and post-completion repeats cannot rerun the plan or charge twi
 
 ### R04 — verify canaries against expected results
 
-**Status:** [ ] Pending; depends on R02–R03  
+**Status:** [x] Complete (2026-09-24)  
+**Evidence:** `test/canaryVerification.test.ts` (11 tests). Single-record and batch tests freeze a preview first (`/test-batch/preview`), execute under a claim, read every destination back and compare expected/actual values with documented normalization (`valuesMatch`), store the evidence, and pass only with a representative write and no error, drift, mismatch or incomplete read-back. Verification is bound to the plan-scope configuration fingerprint and accounts, and every selected object must be tested before a full run.  
 **Primary code:** canary and test-batch routes in `src/server.ts`, migration services,
 `src/dashboard/operations.ts`.
 
@@ -140,7 +145,8 @@ expected/actual evidence. Changing tested configuration invalidates its verifica
 
 ### R05 — repair identity matching and content hashes
 
-**Status:** [ ] Pending; depends on R01  
+**Status:** [x] Complete (2026-09-24)  
+**Evidence:** `test/identityIntegrity.test.ts` (21 tests, file and PostgreSQL stores). Versioned typed SHA-256 content hashes (`v2:`) with legacy-hash recognition and read-only rebaselining; exact local verification of broad vendor candidates; truncated searches raise `IncompleteCandidateSetError`; natural-key ownership preserved with retirement (db/migrations/013); native ids unique per object type; collisions, weak keys and untrustworthy timestamps go to review (new `review` plan action); no relink on one component of a composite key.  
 **Primary code:** `src/core/idMap.ts`, `src/db/postgresIdMapStore.ts`, natural-key lookup
 in both connectors, `src/core/conflict.ts`.
 
@@ -164,7 +170,8 @@ composite-key collisions, overlapping native IDs, and legacy hashes are covered.
 
 ### R06 — persist write intents and serialize record linking
 
-**Status:** [ ] Pending; depends on R02, R05  
+**Status:** [x] Complete (2026-09-24)  
+**Evidence:** `test/recoverableWrites.test.ts` (10 tests, independent PostgreSQL clients, modeled search lag). `write_intents` (db/migrations/014) records every CRM mutation before the vendor call; linking is serialized with sorted per-identity advisory locks (source identity + natural key, session-scoped so a crashed holder releases them). Recovery adopts proven writes, abandons disproven ones after the search-visibility window, waits while search is inconsistent and sends inconclusive outcomes to review; migration items use deterministic operation ids so a later attempt never repeats an applied write. External-ID/vendor idempotency configuration remains a separately authorized CRM change (see decisions).  
 **Primary code:** reconciler, ID-map repositories, connectors, new database migrations.
 
 - Persist tenant-scoped logical write intents before CRM mutations, including a stable
@@ -185,7 +192,8 @@ model delayed vendor search visibility, not only an immediately consistent mock.
 
 ### R07 — bound connector requests and retries
 
-**Status:** [ ] Pending; depends on R06 for uncertain-write recovery  
+**Status:** [x] Complete (2026-09-24)  
+**Evidence:** `test/httpPolicy.test.ts` (12 tests, fake adapters and a fake connection store). One coalesced forced refresh per 401 with header replacement; timeouts and abortable requests; request-kind classification (POST search = read, POST create = unsafe); Retry-After, full-jitter backoff, attempt and time budgets; creates never blindly retried; circuit breaker with health state; per-tenant shared rate limiters; permanent vendor errors routed to review and Retry-After propagated to job retries.  
 **Primary code:** `src/core/httpPolicy.ts`, both connector/auth modules, sync error routing.
 
 - On `401`, invalidate the rejected cached token, coalesce forced refreshes, replace
@@ -204,7 +212,8 @@ from the live connection store.
 
 ### R08 — execute migrations as durable jobs
 
-**Status:** [ ] Pending; depends on R03, R06–R07  
+**Status:** [x] Complete (2026-09-24)  
+**Evidence:** `test/durableExecution.test.ts` (8 tests, in-memory and isolated PostgreSQL). Executions are persisted (db/migrations/015) as per-item work with leases, heartbeats and fenced completion; `MigrationWorker` claims items in bounded batches, survives process restarts, supports pause/resume/cancel and a failure threshold, and settles executions as succeeded, partial, failed or cancelled. HTTP execution returns 202 with an execution id; the dashboard follows progress. Load evidence (`npm run test:load`): 100,001 synthetic records in memory — preview 7.7 s, execute 19.1 s (3,740 records/s), each record created exactly once, peak heap 1.1 GB; 2,000 records on PostgreSQL — preview 4.5 s, execute 19.9 s (82 records/s), peak heap 50 MB, ~16.5 commits per record. Batching PostgreSQL writes is the known next optimization before very large tenant runs.  
 **Primary code:** migration engine/stores/routes, worker entry point, dashboard run views.
 
 - Have HTTP execution return a run ID promptly; a dedicated worker claims persisted
@@ -224,7 +233,8 @@ records in memory; record measured runtime, memory, and database load.
 
 ### R09 — make sync worker lifecycle reliable
 
-**Status:** [ ] Pending; depends on R06–R07  
+**Status:** [x] Complete (2026-09-24)  
+**Evidence:** `test/syncLifecycle.test.ts` (11 tests). Sync jobs carry lease tokens (db/migrations/017); completion, retry, defer and review are fenced so a stale worker cannot overwrite a takeover; long reconciles heartbeat; every worker recovers expired leases periodically; one job per record at a time. Paused objects defer (not discard) changes; claims are gated on readiness; `stop()` drains in-flight work on SIGTERM; a separate worker process (`npm run worker`, `RUN_WORKERS`) is supported. Pollers use an inclusive overlap window, and HubSpot search restarts from a timestamp cursor past the 10k result cap.  
 **Primary code:** sync engine/event store, poller, app composition and shutdown.
 
 - Gate claims on connector/configuration readiness; separate worker and web lifecycles.
@@ -242,7 +252,8 @@ connector. Polling and webhook overlap do not lose or duplicate logical changes.
 
 ### R10 — persist relationship, deletion, and conflict recovery
 
-**Status:** [ ] Pending; depends on R05–R09  
+**Status:** [x] Complete (2026-09-24)  
+**Evidence:** `test/relationshipsDeletions.test.ts` (10 tests). Relationships whose related record is not linked yet are persisted as pending (db/migrations/018) and written when either end is later synced, with no new edit needed; duplicate jobs defer and write once; labels are preserved (HubSpot resolves labels to portal association types, all pages are read); relationships the destination cannot represent are reported as unsupported. Approved deletes leave tombstones with provenance so replays and later edits never recreate the record; an audited restore lifts the tombstone and the next sync recreates and relinks it. Conflicts are stored with field-level decisions and can be resolved manually from the recorded snapshot (`/api/conflicts/:id/resolve`). Migration approval states `relationshipScope: records-only`, and the preview shows it.  
 **Primary code:** association engine/stores, governance stores, reconciler, connectors.
 
 - Persist deferred associations and retry when both records are linked. Paginate reads,
@@ -262,7 +273,8 @@ Labels, paging, duplicate association jobs, and unsupported relationships are te
 
 ### R11 — establish authenticated request-scoped tenancy
 
-**Status:** [ ] Pending; depends on R01 and tenant-aware stores/jobs  
+**Status:** [x] Complete (2026-09-24)  
+**Evidence:** `test/authSessions.test.ts` (19 tests) and `test/tenantIsolation.test.ts` (11 tests, PostgreSQL as a restricted runtime role that is not superuser, lacks BYPASSRLS and owns nothing; migrations run as a separate owner). Server-side revocable sessions (idle/absolute expiry, rotation on workspace switch), CSRF on every unsafe session request, login throttling per email+IP/email/IP, scrypt local passwords behind a pluggable identity provider (external IdP choice remains open), tenant-bound Bearer API keys (cookie keys removed). Multi-tenant mode composes one isolated App per workspace; requests, workers and connector calls run in their tenant scope and tenant stores fail closed outside it. OAuth requires an admin session, uses persisted single-use state bound to session/user/tenant/system/environment/redirect URI/PKCE, records the exact account id, stages a different-account replacement until confirmed, and invalidates approvals on replacement or disconnect. Every unsafe `/api` route declares a minimum role (enforced by test); role matrix and privilege model in [SECURITY_MODEL.md](SECURITY_MODEL.md). Schema: db/migrations/019.  
 **Primary code:** `src/security/`, server/app composition, tenant/API-key repositories,
 OAuth modules and new session/state persistence.
 
@@ -284,7 +296,8 @@ fail. Local development remains explicit and cannot silently become public produ
 
 ### R12 — validate and route webhook delivery securely
 
-**Status:** [ ] Pending; depends on R09, R11  
+**Status:** [x] Complete (2026-09-24)  
+**Evidence:** `test/webhookIngress.test.ts` (21 tests, in-memory and PostgreSQL). HubSpot v3 verification reproduces HubSpot's published example signature, decodes exactly the documented URI characters, signs against the configured public URI and enforces 5-minute freshness. Salesforce sender contract v2 adds timestamp, single-use nonce (recorded atomically with the delivery) and org id; existing legacy senders keep working in `compat` mode and are counted, `SF_WEBHOOK_SIGNATURE=v2` refuses them. Payloads are schema-validated with size and batch limits; deliveries route by verified account (`account_routes`, one account per workspace) and must match the connected account; each outcome has one deterministic status (400/401/403/413/503). Verified deliveries are persisted to a per-workspace inbox before acknowledgement, duplicates collapse, and type resolution runs on initialized workers (fixes events acknowledged-then-dropped on cold start, and Salesforce events without `occurredAt` being deduplicated forever). Per-workspace telemetry at `/api/webhooks/stats`. Burst acknowledgement, all deliveries concurrent, workers paused: in-memory 200x50 events p95 ~340-390 ms; PostgreSQL 100x20 events p95 ~165-200 ms. HubSpot's response deadline and maximum batch size could not be confirmed in current vendor docs and are recorded as unverified. Contract and deployment notes: [WEBHOOKS.md](WEBHOOKS.md). Schema: db/migrations/020.  
 **Primary code:** webhook routes, connector parsers, type resolver, event/cursor stores.
 
 - Enforce HubSpot timestamp freshness and signature verification against the correct
@@ -305,7 +318,9 @@ the verified vendor deadline. Public webhook deployment remains a separate relea
 
 ### R13 — strengthen operator UX and application structure
 
-**Status:** [ ] Pending; incremental extraction can accompany earlier packages  
+**Status:** [~] In progress — core delivered 2026-09-24; remaining items listed below  
+**Evidence:** `test/browser/operatorUx.browser.test.ts` (10 real-browser tests, `npm run test:browser`, system Chrome/Edge via playwright-core, desktop 1280px and phone 390px) plus the unit suite. Delivered: pages carry no inline scripts or handlers and run under `script-src 'self'` (scripts served as versioned same-origin assets, delegated `data-action` handlers); every `alert()` replaced by accessible inline messages, and every JSON error carries its correlation id (caller ids validated), shown as "Reference"; real readiness (`/api/readiness`: database, credentials, connected accounts, circuit breakers, queues, webhook backlog, workers) and real workspace identity replace the hardcoded "Control plane ready" / workspace name; `/api/status` reports the workspace's actual conflict policy; keyset cursor pagination for sync jobs and audit (db/migrations/021); visibility-bounded polling; conflict review UI (inspect the automatic decision, keep the other side); resumable runs (pause/resume/retry-failed/cancel, reopen a run after reload); keyboard sign-in, `aria-live`/`role=alert` messages, focus-visible styles, phone-width header. Route structure: `src/http/` (context, zod request validation, central error mapping, governance router); the role-matrix test walks mounted routers. Browser tests found and fixed three real defects: `Referrer-Policy: no-referrer` made browsers send `Origin: null` so sign-in and every dashboard POST failed the origin check; a duplicate element id; the page header overflowing phone screens.  
+**Remaining:** convert page scripts (now external JS) into typed TypeScript modules; extract the remaining route groups from `src/httpApp.ts` (~2,270 lines); browser-level tests for double execution and failed canaries (covered today at API level by `exclusiveExecution` and `canaryVerification` tests); richer approval explanations (matching reason, per-field impact) in the preview UI.  
 **Primary code:** `src/server.ts`, `src/dashboard/`, request schemas and application services.
 
 - Export a testable HTTP app; extract routes, validation, and services. Preserve the
@@ -326,7 +341,9 @@ the verified vendor deadline. Public webhook deployment remains a separate relea
 
 ### R14 — harden operations, secrets, and release infrastructure
 
-**Status:** [ ] Pending; depends on durable execution and tenant boundaries  
+**Status:** [x] Complete for the local/pre-deployment scope (2026-09-24); environment-specific items listed below  
+**Evidence:** `test/databaseOperations.test.ts` (8), `test/secretRotation.test.ts` (4), `test/notificationDelivery.test.ts` (4), `test/observability.test.ts` (7), `test/operationsRecovery.test.ts` (2). Database: TLS verifies certificates **and hostnames** against the configured host (fixed a gap where IP connections were checked against "localhost"), unverified TLS refused in production; pool/statement/lock/idle-in-transaction timeouts (demonstrated: 57014, 55P03, session terminated); release migrations serialized with an advisory lock (two concurrent runners apply each migration once); readiness reports unapplied migrations. Secrets: versioned keyring with decrypt-only previous keys and `npm run secrets:rotate` re-encrypting all seven encrypted columns per workspace under RLS (idempotent; old key retirable; the test fails if a new encrypted column lacks rotation coverage); `data/.encryption-key` is never rewritten. Notifications: deliveries persisted before sending, marked sent only on transport success, SMTP failures retried with backoff then abandoned visibly, "unconfigured" distinct from sent, no duplicate alerts after restart (db/migrations/022). Observability: request/workspace/job correlation on every log line; Prometheus `/metrics` (token-protected); `/health/live` and `/health/ready` (draining, database, pending migrations); operational alerts (database, stale sync, dead letters, review, CRM unavailable/reconnect, migrations paused/failed/partial incl. drift, webhook backlog) at `/api/alerts`, in metrics and in the email digest; example rules in `deploy/prometheus-alerts.yml`. Retention job (daily; evidence kept). Restore exercised: cold backup of encrypted state restored into a clean cluster and decrypted with the backed-up key in 5.8 s (development machine, small dataset). Packaging: `Dockerfile` + `.dockerignore` (no state or secrets in images), `npm run scan:secrets` (clean) and `npm run audit:deps` (1 moderate advisory in `qs`, below the high threshold). Runbooks: [OPERATIONS.md](OPERATIONS.md) (deployment roles, backup/restore with objectives, incident response, retention, support access, forward-fix/rollback).  
+**Remaining (explicit environment decisions, not local fixes):** managed hosting, KMS/secret manager, WAF and production alert destinations; point-in-time recovery restore measured on the chosen provider; a rolling-upgrade rehearsal on the target platform.  
 **Primary code/docs:** `src/db/`, runtime secrets, notification digester, observability,
 deployment configuration, [OPERATIONS.md](OPERATIONS.md).
 
@@ -351,7 +368,36 @@ deployment configuration, [OPERATIONS.md](OPERATIONS.md).
 
 ### R15 — consolidate tests, documentation, and release evidence
 
-**Status:** [ ] Pending; runs throughout all phases  
+**Status:** [~] Core delivered (2026-09-24); remaining items listed below  
+**Evidence:** Real lint (`eslint.config.js`, `npm run lint`) replaces the placeholder,
+including architectural layer boundaries (core has no app-specific dependencies; engines
+depend on core contracts only, never connector/database implementations; connectors
+implement core contracts only; HTTP routes never import connectors or the database
+directly) — enforced automatically, not just by convention. A typechecked test
+configuration (`tsconfig.test.json`, `npm run typecheck:test`) closed a real gap: vitest's
+esbuild-based runner never typechecked `test/`, and running `tsc` against it surfaced (and
+this pass fixed) invalid generic assertions on `expect().toMatchObject<T>()`, un-narrowed
+`unknown` from `fetch().json()` across several files, a genuine interface/implementation
+signature drift (`InMemorySyncEventStore.claim` silently dropped the `workerId` the
+interface and the Postgres store both require — now tracked for parity), and DOM globals
+referenced inside real-browser `page.evaluate()` callbacks. CI
+(`.github/workflows/ci.yml`) now runs secret scan, lint, both typechecks, the release
+migration step against a real PostgreSQL server, the full suite, the build, the real-browser
+suite, and the dependency audit on every push/PR. `npm run scan:secrets` (new) scans every
+tracked and new file for credential patterns without ever printing a match, and reports
+clean. README, AGENTS.md and HANDOFF.md were reconciled with the current code: the test
+count (23 → 314, plus 10 browser tests), the architecture map (added `src/http/`,
+`src/security/`, `src/webhooks/`, `src/observability/`), the resolved R05 natural-key gap
+(the old "known gap" entry was replaced with the still-current custom-object/records-only
+scope limitation), the PostgreSQL-primary state of secrets (superseding the pre-migration
+`data/*.json` description while keeping the legacy-file safety warnings), and the new
+commands (`lint`, `typecheck:test`, `scan:secrets`, `test:browser`, `worker`,
+`secrets:rotate`, `db:retention`). Consolidated load/timing evidence and reproduction
+commands: [RELEASE_EVIDENCE.md](RELEASE_EVIDENCE.md).  
+**Remaining:** promote further review probes into permanent regressions (property-based
+mapping/hash tests, broader crash injection, a multi-day soak suite); a literal per-package
+commit/PR changelog with upgrade and rollback notes (the evidence lines in this plan serve
+that purpose today, but are not a separate changelog document).  
 **Primary areas:** `test/`, CI/lint configuration, README, AGENTS, HANDOFF, architecture
 and operations documentation.
 

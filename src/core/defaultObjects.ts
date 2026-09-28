@@ -7,7 +7,8 @@ import type { FieldRule } from './mapping.js';
  *   - db/migrations/008_open_object_model.sql inserts this same shape for existing tenants
  *     (kept in sync by hand since SQL can't import TS — see that migration's comment).
  *   - db/tenantRepository.ts seeds a brand new tenant with it.
- *   - cli/demo.ts and test/ fixtures configure it directly for zero-Postgres runs.
+ *   - createDefaultConfigContext()/applyDefaultObjectsTo() (core/configContext.ts) seed one
+ *     app's own ConfigContext with it for zero-Postgres runs (demo, CLI demo, tests).
  */
 export interface DefaultObject {
   canonicalObject: string;
@@ -100,24 +101,3 @@ export const DEFAULT_OBJECTS: DefaultObject[] = [
     },
   },
 ];
-
-/** Applies the default objects to the in-process registry + mapping caches (no Postgres). */
-export async function applyDefaultObjects(): Promise<void> {
-  const { configureFieldRules } = await import('./mapping.js');
-  const { configureNaturalKeyFields } = await import('./idMap.js');
-  const { configureObjectMappings } = await import('./objectRegistry.js');
-
-  configureObjectMappings(
-    DEFAULT_OBJECTS.map((object) => ({
-      canonicalObject: object.canonicalObject,
-      label: object.label,
-      salesforceObject: object.salesforceObject,
-      hubspotObject: object.hubspotObject,
-    })),
-  );
-  for (const object of DEFAULT_OBJECTS) {
-    configureFieldRules('salesforce', object.canonicalObject, object.fieldRules.salesforce);
-    configureFieldRules('hubspot', object.canonicalObject, object.fieldRules.hubspot);
-    configureNaturalKeyFields(object.canonicalObject, object.naturalKeyFields);
-  }
-}

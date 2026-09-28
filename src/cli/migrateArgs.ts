@@ -8,13 +8,18 @@ export interface MigrationCliOptions {
   types: CanonicalType[] | undefined;
   limit?: number;
   dryRun: boolean;
+  /** The reviewed preview run to execute; required with --confirm. */
+  previewRunId?: string;
+  idempotencyKey?: string;
 }
 
 /**
  * Parse the migration CLI without performing any I/O.
  *
- * Preview is deliberately the default. A caller must pass --confirm to permit
- * CRM writes, mirroring the explicit confirmation required by the HTTP API.
+ * Preview is deliberately the default. Writing requires two explicit steps, matching the
+ * HTTP API: preview first (prints a run id), review it, then execute exactly that preview
+ * with `--confirm --preview <runId>`. `--confirm` alone is rejected -- the CLI never
+ * previews and writes in one unreviewed step.
  */
 export function parseMigrationArgs(argv: string[]): MigrationCliOptions {
   const get = (flag: string): string | undefined => {
@@ -44,14 +49,28 @@ export function parseMigrationArgs(argv: string[]): MigrationCliOptions {
     throw new Error('--limit must be a positive integer');
   }
 
-  if (argv.includes('--confirm') && argv.includes('--dry-run')) {
+  const confirm = argv.includes('--confirm');
+  if (confirm && argv.includes('--dry-run')) {
     throw new Error('--confirm and --dry-run cannot be used together');
   }
+  const previewRunId = get('--preview');
+  if (argv.includes('--preview') && (!previewRunId || previewRunId.startsWith('--'))) {
+    throw new Error('--preview requires a preview run id');
+  }
+  if (confirm && !previewRunId) {
+    throw new Error('--confirm requires --preview <runId>: preview first, review it, then execute that preview');
+  }
+  if (previewRunId && !confirm) {
+    throw new Error('--preview <runId> executes a reviewed preview and must be combined with --confirm');
+  }
+  const idempotencyKey = get('--idempotency-key');
 
   return {
     from,
     types,
     limit,
-    dryRun: !argv.includes('--confirm'),
+    dryRun: !confirm,
+    ...(previewRunId ? { previewRunId } : {}),
+    ...(idempotencyKey ? { idempotencyKey } : {}),
   };
 }

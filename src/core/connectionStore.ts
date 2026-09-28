@@ -1,6 +1,7 @@
 import type { SystemId } from './types.js';
 import type { PostgresDatabase } from '../db/postgres.js';
 import type { SecretCipher } from '../db/security.js';
+import { currentTenantScope, tenantScopeRequired } from './tenantScope.js';
 
 export type Environment = 'production' | 'sandbox';
 
@@ -10,6 +11,8 @@ export interface Connection {
   refreshToken: string;
   instanceUrl?: string;
   accountLabel?: string;
+  /** The exact connected account: Salesforce org id, HubSpot portal (hub) id. */
+  accountId?: string;
   accessToken?: string;
   expiresAt?: number;
   connectedAt: string;
@@ -39,11 +42,12 @@ export class PostgresConnectionStore implements ConnectionStore {
         access_token_ciphertext: string | null;
         instance_url: string | null;
         account_label: string | null;
+        account_id: string | null;
         expires_at: Date | null;
         connected_at: Date;
       }>(
         `SELECT system, environment, refresh_token_ciphertext, access_token_ciphertext,
-                instance_url, account_label, expires_at, connected_at
+                instance_url, account_label, account_id, expires_at, connected_at
          FROM crm_connections WHERE tenant_id = $1 AND system = $2`,
         [this.tenantId, system],
       );
@@ -64,6 +68,7 @@ export class PostgresConnectionStore implements ConnectionStore {
           : undefined,
         instanceUrl: row.instance_url ?? undefined,
         accountLabel: row.account_label ?? undefined,
+        accountId: row.account_id ?? undefined,
         expiresAt: row.expires_at?.getTime(),
         connectedAt: row.connected_at.toISOString(),
       };
@@ -75,8 +80,9 @@ export class PostgresConnectionStore implements ConnectionStore {
       await client.query(
         `INSERT INTO crm_connections(
            tenant_id, system, environment, refresh_token_ciphertext,
-           access_token_ciphertext, instance_url, account_label, expires_at, connected_at
-         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+           access_token_ciphertext, instance_url, account_label, expires_at, connected_at,
+           account_id
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
          ON CONFLICT (tenant_id, system) DO UPDATE SET
            environment = EXCLUDED.environment,
            refresh_token_ciphertext = EXCLUDED.refresh_token_ciphertext,
@@ -85,6 +91,7 @@ export class PostgresConnectionStore implements ConnectionStore {
            account_label = EXCLUDED.account_label,
            expires_at = EXCLUDED.expires_at,
            connected_at = EXCLUDED.connected_at,
+           account_id = EXCLUDED.account_id,
            updated_at = now()`,
         [
           this.tenantId,
@@ -104,6 +111,7 @@ export class PostgresConnectionStore implements ConnectionStore {
           conn.accountLabel ?? null,
           conn.expiresAt ? new Date(conn.expiresAt) : null,
           conn.connectedAt,
+          conn.accountId ?? null,
         ],
       );
     });
@@ -133,11 +141,15 @@ export class PostgresConnectionStore implements ConnectionStore {
 
 let active: ConnectionStore | undefined;
 
+/** Single-tenant default; multi-tenant processes use the request/worker tenant scope. */
 export function configureConnectionStore(store: ConnectionStore): void {
   active = store;
 }
 
 function store(): ConnectionStore {
+  const scoped = currentTenantScope()?.connections;
+  if (scoped) return scoped;
+  if (tenantScopeRequired()) throw new Error('connection store used outside a tenant scope');
   if (!active) throw new Error('connection store has not been configured');
   return active;
 }

@@ -7,7 +7,7 @@ import { MockConnector } from '../connectors/mock/mockConnector.js';
 import { FileIdMapStore } from '../core/idMap.js';
 import { Reconciler } from '../engine/reconciler.js';
 import { MigrationEngine } from '../engine/migrationEngine.js';
-import { applyDefaultObjects } from '../core/defaultObjects.js';
+import { createDefaultConfigContext } from '../core/configContext.js';
 
 /**
  * End-to-end demo with ZERO credentials. Two in-memory CRMs stand in for Salesforce and
@@ -24,16 +24,16 @@ const ok = (t: string) => console.log(`  \x1b[32m✓\x1b[0m ${t}`);
 const info = (t: string) => console.log(`  · ${t}`);
 
 async function main(): Promise<void> {
-  await applyDefaultObjects();
-  const sf = new MockConnector('salesforce');
-  const hs = new MockConnector('hubspot');
+  const config = createDefaultConfigContext('cli-demo');
+  const sf = new MockConnector('salesforce', config);
+  const hs = new MockConnector('hubspot', config);
   const connectors: Record<SystemId, CRMConnector> = { salesforce: sf, hubspot: hs };
 
   // Fresh id map in a temp file so runs are independent.
   const idMap = new FileIdMapStore(path.join(os.tmpdir(), `idmap-${crypto.randomUUID()}.json`));
   await idMap.init();
-  const reconciler = new Reconciler(connectors, idMap);
-  const migration = new MigrationEngine(connectors, reconciler);
+  const reconciler = new Reconciler(connectors, idMap, config);
+  const migration = new MigrationEngine(connectors, config, reconciler);
 
   // Capture every event each CRM emits, so we can replay them as "webhooks".
   const inbox: ChangeEvent[] = [];
@@ -49,7 +49,7 @@ async function main(): Promise<void> {
   // ---------------------------------------------------------------- 2. migrate
   h('2. Migrate Salesforce -> HubSpot');
   inbox.length = 0;
-  const report = await migration.run({ from: 'salesforce', types: ['contact'] });
+  const report = await migration.run({ from: 'salesforce', types: ['contact'], dryRun: false });
   ok(`Migrated ${report.perType.contact!.reconciled} contacts`);
   const adaInHs = (await hs.list('contact')).records.find((r) => r.fields.email === 'ada@analytical.co');
   info(`HubSpot now has Ada: ${adaInHs?.fields.firstName} ${adaInHs?.fields.lastName} <${adaInHs?.fields.email}>`);

@@ -1,4 +1,5 @@
 import { dashboardHeader, dashboardShellCss } from './shell.js';
+import { csrfFetchScript } from './csrf.js';
 
 /**
  * The demo dashboard — a single self-contained HTML page (inline CSS + JS, no external
@@ -145,7 +146,7 @@ ${dashboardHeader('demo')}
   </aside>
   </div>
 </main>
-<script>
+<script>${csrfFetchScript}
   const $=(id)=>document.getElementById(id);
   async function j(u,o){ const r=await fetch(u,o); return r.json(); }
   async function refresh(){
@@ -170,7 +171,7 @@ ${dashboardHeader('demo')}
   $('b-seed').onclick=(e)=>act('/api/demo/seed', e.target);
   $('b-migrate').onclick=(e)=>act('/api/demo/migrate', e.target);
   $('b-edit').onclick=(e)=>act('/api/demo/edit', e.target);
-  refresh(); setInterval(refresh, 1500);
+  refresh(); setInterval(()=>{ if(!document.hidden) refresh(); }, 1500);
 </script>
 </body>
 </html>`;

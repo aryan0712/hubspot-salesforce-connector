@@ -12,14 +12,21 @@ import { SyncEngine } from '../src/engine/syncEngine.js';
 import { SyncPoller } from '../src/engine/syncPoller.js';
 import { InMemoryReplayCursorStore } from '../src/connectors/salesforce/cdcWorker.js';
 import { defaultSyncConfig, InMemorySyncConfigStore } from '../src/core/syncConfig.js';
+import { createDefaultConfigContext } from '../src/core/configContext.js';
+
+// Each test gets its own configuration context, like each app does in production.
+let config = createDefaultConfigContext('syncPoller-test');
+beforeEach(() => {
+  config = createDefaultConfigContext('syncPoller-test');
+});
 
 async function setup() {
-  const sf = new MockConnector('salesforce');
-  const hs = new MockConnector('hubspot');
+  const sf = new MockConnector('salesforce', config);
+  const hs = new MockConnector('hubspot', config);
   const connectors: Record<SystemId, CRMConnector> = { salesforce: sf, hubspot: hs };
   const idMap = new FileIdMapStore(path.join(os.tmpdir(), `idmap-poller-${crypto.randomUUID()}.json`));
   await idMap.init();
-  const reconciler = new Reconciler(connectors, idMap);
+  const reconciler = new Reconciler(connectors, idMap, config);
   const syncConfig = new InMemorySyncConfigStore(
     defaultSyncConfig('last-write-wins', 'salesforce', ['contact']),
   );
@@ -27,7 +34,7 @@ async function setup() {
   const sync = new SyncEngine(connectors, reconciler, store);
   await sync.init();
   const cursors = new InMemoryReplayCursorStore();
-  const poller = new SyncPoller(connectors, syncConfig, cursors, sync);
+  const poller = new SyncPoller(connectors, syncConfig, cursors, sync, config);
   return { sf, hs, connectors, idMap, reconciler, syncConfig, sync, cursors, poller };
 }
 
@@ -86,7 +93,7 @@ describe('scheduled sync polling', () => {
 
   it('does not poll an object that is disabled in the sync policy', async () => {
     const config = ctx.syncConfig.get();
-    config.objects.contact.enabled = false;
+    config.objects.contact!.enabled = false;
     await ctx.syncConfig.update(config);
     ctx.sf.seed('contact', { firstName: 'Ada', email: 'ada@example.com' });
 
@@ -100,7 +107,7 @@ describe('scheduled sync polling', () => {
     const config = ctx.syncConfig.get();
     // A condition's `field` names the SOURCE system's own native field (e.g. Salesforce's
     // "Email", not the canonical "email") -- it's checked directly against the raw record.
-    config.objects.contact.conditions = { salesforce: [{ field: 'Email', operator: 'contains', value: '@keep.co' }] };
+    config.objects.contact!.conditions = { salesforce: [{ field: 'Email', operator: 'contains', value: '@keep.co' }] };
     await ctx.syncConfig.update(config);
     ctx.sf.seed('contact', { firstName: 'Ada', email: 'ada@keep.co' });
     ctx.sf.seed('contact', { firstName: 'Grace', email: 'grace@excluded.co' });
@@ -132,12 +139,12 @@ describe('scheduled sync polling -- independent per-object intervals', () => {
   it('polls each object on its own schedule ("scenario") rather than one shared interval', async () => {
     // Advancing fake timers still runs the resulting callback chains on the real CPU, so a
     // busy machine can need more than vitest's 5s default to work through this many ticks.
-    const sf = new MockConnector('salesforce');
-    const hs = new MockConnector('hubspot');
+    const sf = new MockConnector('salesforce', config);
+    const hs = new MockConnector('hubspot', config);
     const connectors: Record<SystemId, CRMConnector> = { salesforce: sf, hubspot: hs };
     const idMap = new FileIdMapStore(path.join(os.tmpdir(), `idmap-poller-multi-${crypto.randomUUID()}.json`));
     await idMap.init();
-    const reconciler = new Reconciler(connectors, idMap);
+    const reconciler = new Reconciler(connectors, idMap, config);
     const syncConfig = new InMemorySyncConfigStore(
       defaultSyncConfig('last-write-wins', 'salesforce', ['contact', 'company']),
     );
@@ -145,12 +152,12 @@ describe('scheduled sync polling -- independent per-object intervals', () => {
     const sync = new SyncEngine(connectors, reconciler, store);
     await sync.init();
     const cursors = new InMemoryReplayCursorStore();
-    const poller = new SyncPoller(connectors, syncConfig, cursors, sync);
+    const poller = new SyncPoller(connectors, syncConfig, cursors, sync, config);
 
-    const config = syncConfig.get();
-    config.polling.contact = { enabled: true, intervalMinutes: 1 };
-    config.polling.company = { enabled: true, intervalMinutes: 10 };
-    await syncConfig.update(config);
+    const policy = syncConfig.get();
+    policy.polling.contact = { enabled: true, intervalMinutes: 1 };
+    policy.polling.company = { enabled: true, intervalMinutes: 10 };
+    await syncConfig.update(policy);
 
     vi.useFakeTimers();
     poller.start();
@@ -176,23 +183,23 @@ describe('scheduled sync polling -- independent per-object intervals', () => {
   }, 15_000);
 
   it('supports a cron expression as an alternative to a plain interval', async () => {
-    const sf = new MockConnector('salesforce');
-    const hs = new MockConnector('hubspot');
+    const sf = new MockConnector('salesforce', config);
+    const hs = new MockConnector('hubspot', config);
     const connectors: Record<SystemId, CRMConnector> = { salesforce: sf, hubspot: hs };
     const idMap = new FileIdMapStore(path.join(os.tmpdir(), `idmap-poller-cron-${crypto.randomUUID()}.json`));
     await idMap.init();
-    const reconciler = new Reconciler(connectors, idMap);
+    const reconciler = new Reconciler(connectors, idMap, config);
     const syncConfig = new InMemorySyncConfigStore(defaultSyncConfig('last-write-wins', 'salesforce', ['company']));
     const store = new InMemorySyncEventStore();
     const sync = new SyncEngine(connectors, reconciler, store);
     await sync.init();
     const cursors = new InMemoryReplayCursorStore();
-    const poller = new SyncPoller(connectors, syncConfig, cursors, sync);
+    const poller = new SyncPoller(connectors, syncConfig, cursors, sync, config);
 
-    const config = syncConfig.get();
+    const policy = syncConfig.get();
     // intervalMinutes is present but irrelevant here -- a cron expression takes precedence.
-    config.polling.company = { enabled: true, intervalMinutes: 30, cron: '*/2 * * * *' };
-    await syncConfig.update(config);
+    policy.polling.company = { enabled: true, intervalMinutes: 30, cron: '*/2 * * * *' };
+    await syncConfig.update(policy);
 
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2024-01-01T00:00:00.000Z'));
