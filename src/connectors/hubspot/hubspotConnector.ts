@@ -1,6 +1,17 @@
 import axios, { type AxiosInstance } from 'axios';
-import crypto from 'node:crypto';
-import type { CRMConnector, ConnectorAssociation, QueryCondition } from '../../core/connector.js';
+import {
+  IncompleteCandidateSetError,
+  UnsupportedAssociationError,
+  type CRMConnector,
+  type ConnectorAssociation,
+  type NativeWebhookEvent,
+  type QueryCondition,
+  type WriteOptions,
+} from '../../core/connector.js';
+
+/** HubSpot search page size used for natural-key lookups (vendor maximum is 200). */
+const NATURAL_KEY_CANDIDATE_LIMIT = 100;
+import { connections } from '../../core/connectionStore.js';
 import type { SyncCondition } from '../../core/syncConfig.js';
 import type {
   CanonicalRecord,
@@ -8,29 +19,18 @@ import type {
   ChangeEvent,
   CRMObjectDescriptor,
   CRMObjectMetadata,
+  FieldValue,
   RecordPage,
   NaturalKeyQuery,
   SchemaField,
   UpsertResult,
 } from '../../core/types.js';
-import {
-  fromCanonicalFields,
-  nativeField,
-  nativeFields,
-  toCanonicalFields,
-} from '../../core/mapping.js';
-import {
-  canonicalObjectFor,
-  canonicalObjectsFor,
-  listCanonicalObjects,
-  nativeObjectName,
-  requireNativeObjectName,
-} from '../../core/objectRegistry.js';
-import { getAccessToken, getAppSecret } from './auth.js';
+import type { ConfigContext } from '../../core/configContext.js';
+import { getAccessToken, getAppSecret, refreshAfterRejection } from './auth.js';
 import { env } from '../../config/env.js';
 import { logger } from '../../logger.js';
 import { RateLimiter } from '../../core/rateLimiter.js';
-import { installHttpPolicy } from '../../core/httpPolicy.js';
+import { installHttpPolicy, type ConnectorHealth, type HttpPolicyControls } from '../../core/httpPolicy.js';
 
 const HUBSPOT_STANDARD_OBJECTS: CRMObjectDescriptor[] = [
   ['contacts', 'Contacts', 'Contact'],
@@ -70,8 +70,24 @@ export class HubSpotConnector implements CRMConnector {
     ['0-3', 'deals'],
   ]);
 
-  constructor(appSecret = '') {
+  private policy?: HttpPolicyControls;
+
+  constructor(
+    private readonly config: ConfigContext,
+    appSecret = '',
+    private readonly tenantKey = 'local',
+  ) {
     this.appSecret = appSecret;
+  }
+
+  /** Circuit/health state of this connector's vendor calls (R07). */
+  health(): ConnectorHealth | undefined {
+    return this.policy?.health();
+  }
+
+  /** Cancels in-flight vendor requests (graceful shutdown). */
+  abortRequests(): void {
+    this.policy?.abortAll();
   }
 
   async init(): Promise<void> {
@@ -81,17 +97,12 @@ export class HubSpotConnector implements CRMConnector {
       baseURL: 'https://api.hubapi.com',
       headers: { Authorization: `Bearer ${token}` },
     });
-    installHttpPolicy(this.http, {
+    this.policy = installHttpPolicy(this.http, {
       requestsPerSecond: env.HUBSPOT_REQUESTS_PER_SECOND,
       name: 'hubspot',
-    });
-    this.http.interceptors.response.use(undefined, async (error) => {
-      if (error.response?.status === 401) {
-        const t = await getAccessToken();
-        this.http.defaults.headers.Authorization = `Bearer ${t}`;
-        return this.http.request(error.config);
-      }
-      throw error;
+      limiterKey: `hubspot:${this.tenantKey}`,
+      // POST /search is a read and may be retried; POST /objects/<type> is a create.
+      refreshToken: (rejected) => refreshAfterRejection(rejected),
     });
     // Warms the objectTypeId cache so custom-object webhooks resolve from the first event.
     await this.listObjects();
@@ -104,14 +115,23 @@ export class HubSpotConnector implements CRMConnector {
     modifiedSince?: string,
     condition?: QueryCondition,
   ): Promise<RecordPage> {
-    const object = requireNativeObjectName('hubspot', type);
-    const properties = nativeFields('hubspot', type);
+    const object = this.config.requireNativeObjectName('hubspot', type);
+    const properties = this.config.nativeFields('hubspot', type);
     const conditionFilters = (condition?.conditions ?? []).map(compileConditionFilter);
     if (modifiedSince || conditionFilters.length) {
       await this.searchLimiter.acquire();
+      // HubSpot search cannot page past SEARCH_RESULT_CAP results. A "ts:<iso>" cursor
+      // restarts the search from the last seen modified time (inclusive; the overlap is
+      // deduplicated by event id), so large incremental polls are neither truncated nor fail.
+      let since = modifiedSince;
+      let after = cursor;
+      if (cursor?.startsWith('ts:')) {
+        since = cursor.slice(3);
+        after = undefined;
+      }
       const filters = [
-        ...(modifiedSince
-          ? [{ propertyName: 'hs_lastmodifieddate', operator: 'GT', value: Date.parse(modifiedSince) }]
+        ...(since
+          ? [{ propertyName: 'hs_lastmodifieddate', operator: 'GTE', value: Date.parse(since) }]
           : []),
         ...conditionFilters,
       ];
@@ -120,12 +140,12 @@ export class HubSpotConnector implements CRMConnector {
         sorts: [{ propertyName: 'hs_lastmodifieddate', direction: 'ASCENDING' }],
         properties,
         limit: 100,
-        after: cursor,
+        after,
       });
       const records: CanonicalRecord[] = (data.results as HsObject[]).map((r) =>
         this.canonicalize(type, r),
       );
-      return { records, nextCursor: data.paging?.next?.after };
+      return { records, nextCursor: searchNextCursor(data.paging?.next?.after, records, since) };
     }
     const { data } = await this.http.get(`/crm/v3/objects/${object}`, {
       params: { limit: 100, after: cursor, properties: properties.join(',') },
@@ -145,7 +165,7 @@ export class HubSpotConnector implements CRMConnector {
     type: CanonicalType,
     since: string,
   ): Promise<{ sourceId: string; occurredAt: string }[]> {
-    const object = requireNativeObjectName('hubspot', type);
+    const object = this.config.requireNativeObjectName('hubspot', type);
     const sinceMs = Date.parse(since);
     const out: { sourceId: string; occurredAt: string }[] = [];
     let after: string | undefined;
@@ -166,8 +186,8 @@ export class HubSpotConnector implements CRMConnector {
 
   async read(type: CanonicalType, sourceId: string): Promise<CanonicalRecord | null> {
     try {
-      const object = requireNativeObjectName('hubspot', type);
-      const properties = nativeFields('hubspot', type);
+      const object = this.config.requireNativeObjectName('hubspot', type);
+      const properties = this.config.nativeFields('hubspot', type);
       const { data } = await this.http.get(`/crm/v3/objects/${object}/${sourceId}`, {
         params: { properties: properties.join(',') },
       });
@@ -200,7 +220,7 @@ export class HubSpotConnector implements CRMConnector {
     query: NaturalKeyQuery,
   ): Promise<CanonicalRecord[]> {
     const filters = query.criteria.map((criterion) => ({
-      propertyName: nativeField('hubspot', type, criterion.field),
+      propertyName: this.config.nativeField('hubspot', type, criterion.field),
       operator: 'EQ',
       value: criterion.value,
     }));
@@ -208,8 +228,8 @@ export class HubSpotConnector implements CRMConnector {
       return [];
     }
     await this.searchLimiter.acquire();
-    const object = requireNativeObjectName('hubspot', type);
-    const properties = nativeFields('hubspot', type);
+    const object = this.config.requireNativeObjectName('hubspot', type);
+    const properties = this.config.nativeFields('hubspot', type);
     const { data } = await this.http.post(`/crm/v3/objects/${object}/search`, {
       filterGroups: [
         {
@@ -217,13 +237,22 @@ export class HubSpotConnector implements CRMConnector {
         },
       ],
       properties,
-      limit: 10,
+      limit: NATURAL_KEY_CANDIDATE_LIMIT,
     });
-    return (data.results as HsObject[]).map((record) => this.canonicalize(type, record));
+    const results = data.results as HsObject[];
+    // HubSpot reports the full match count; anything beyond one page is incomplete.
+    if (Number(data.total ?? results.length) > results.length || data.paging?.next?.after) {
+      throw new IncompleteCandidateSetError(
+        `${data.total} HubSpot ${type} candidates match ${query.key}; the search result is incomplete`,
+      );
+    }
+    return results
+      .map((record) => this.canonicalize(type, record))
+      .filter((record) => this.config.naturalKey(record) === query.key);
   }
 
   async describe(type: CanonicalType): Promise<SchemaField[]> {
-    return (await this.describeObject(requireNativeObjectName('hubspot', type))).fields;
+    return (await this.describeObject(this.config.requireNativeObjectName('hubspot', type))).fields;
   }
 
   async listObjects(): Promise<CRMObjectDescriptor[]> {
@@ -257,7 +286,7 @@ export class HubSpotConnector implements CRMConnector {
       );
     }
     return [...HUBSPOT_STANDARD_OBJECTS, ...custom]
-      .map((object) => ({ ...object, canonicalType: canonicalObjectFor('hubspot', object.id) }))
+      .map((object) => ({ ...object, canonicalType: this.config.canonicalObjectFor('hubspot', object.id) }))
       .sort((a, b) => Number(Boolean(b.canonicalType)) - Number(Boolean(a.canonicalType)) ||
         a.label.localeCompare(b.label));
   }
@@ -308,31 +337,36 @@ export class HubSpotConnector implements CRMConnector {
     type: CanonicalType,
     sourceId: string,
   ): Promise<ConnectorAssociation[]> {
-    const object = requireNativeObjectName('hubspot', type);
-    const targets = listCanonicalObjects()
+    const object = this.config.requireNativeObjectName('hubspot', type);
+    const targets = this.config.listCanonicalObjects()
       .map((entry) => entry.canonicalObject)
       .filter((candidate) => candidate !== type);
     const output: ConnectorAssociation[] = [];
     for (const toType of targets) {
-      const toObject = nativeObjectName('hubspot', toType);
+      const toObject = this.config.nativeObjectName('hubspot', toType);
       if (!toObject) continue;
       try {
-        const { data } = await this.http.get(
-          `/crm/v4/objects/${object}/${sourceId}/associations/${toObject}`,
-          { params: { limit: 500 } },
-        );
-        for (const item of data.results ?? []) {
-          const types = item.associationTypes as
-            | { label?: string | null; category?: string }[]
-            | undefined;
-          const custom = types?.find((candidate) => candidate.label);
-          output.push({
-            toType,
-            toId: String(item.toObjectId),
-            kind: toType,
-            label: custom?.label ?? undefined,
-          });
-        }
+        // Page through every association (not just the first 500).
+        let after: string | undefined;
+        do {
+          const { data } = await this.http.get(
+            `/crm/v4/objects/${object}/${sourceId}/associations/${toObject}`,
+            { params: { limit: 500, after } },
+          );
+          for (const item of data.results ?? []) {
+            const types = item.associationTypes as
+              | { label?: string | null; category?: string }[]
+              | undefined;
+            const custom = types?.find((candidate) => candidate.label);
+            output.push({
+              toType,
+              toId: String(item.toObjectId),
+              kind: toType,
+              label: custom?.label ?? undefined,
+            });
+          }
+          after = data.paging?.next?.after;
+        } while (after);
       } catch (err: unknown) {
         if (!axios.isAxiosError(err) || err.response?.status !== 404) throw err;
       }
@@ -345,105 +379,104 @@ export class HubSpotConnector implements CRMConnector {
     fromId: string,
     association: ConnectorAssociation,
   ): Promise<void> {
-    const fromObject = requireNativeObjectName('hubspot', fromType);
-    const toObject = requireNativeObjectName('hubspot', association.toType);
+    const fromObject = this.config.requireNativeObjectName('hubspot', fromType);
+    const toObject = this.config.requireNativeObjectName('hubspot', association.toType);
+    if (!association.label) {
+      await this.http.put(
+        `/crm/v4/objects/${fromObject}/${fromId}/associations/default/${toObject}/${association.toId}`,
+      );
+      return;
+    }
+    // Preserve the label: resolve it to this portal's association type id; a label the
+    // portal does not define cannot be represented and is reported, not silently dropped.
+    const { data } = await this.http.get(`/crm/v4/associations/${fromObject}/${toObject}/labels`);
+    const definition = (data.results as { label?: string; typeId: number; category: string }[] | undefined)
+      ?.find((candidate) => candidate.label?.toLowerCase() === association.label!.toLowerCase());
+    if (!definition) {
+      throw new UnsupportedAssociationError(
+        `HubSpot has no "${association.label}" association label between ${fromObject} and ${toObject}`,
+      );
+    }
     await this.http.put(
-      `/crm/v4/objects/${fromObject}/${fromId}/associations/default/${toObject}/${association.toId}`,
+      `/crm/v4/objects/${fromObject}/${fromId}/associations/${toObject}/${association.toId}`,
+      [{ associationCategory: definition.category, associationTypeId: definition.typeId }],
     );
   }
 
   async upsert(record: CanonicalRecord, targetId?: string): Promise<UpsertResult> {
-    const object = requireNativeObjectName('hubspot', record.type);
-    const properties = fromCanonicalFields('hubspot', record.type, record.fields);
+    const properties = this.config.fromCanonicalFields('hubspot', record.type, record.fields);
+    const { conditional: _conditional, ...result } = await this.write(record.type, properties, targetId);
+    return result;
+  }
+
+  /**
+   * Exact-payload write. HubSpot's CRM object API offers no conditional update
+   * (no If-Match/If-Unmodified-Since), so `conditional` is always false: callers re-read
+   * immediately before writing and treat the remaining window as a documented residual race.
+   */
+  async write(
+    type: CanonicalType,
+    payload: Record<string, FieldValue>,
+    targetId?: string,
+    _options: WriteOptions = {},
+  ): Promise<UpsertResult & { conditional: boolean }> {
+    const object = this.config.requireNativeObjectName('hubspot', type);
     if (targetId) {
-      await this.http.patch(`/crm/v3/objects/${object}/${targetId}`, { properties });
-      return { system: this.system, type: record.type, targetId, operation: 'updated' };
+      await this.http.patch(`/crm/v3/objects/${object}/${targetId}`, { properties: payload });
+      return { system: this.system, type, targetId, operation: 'updated', conditional: false };
     }
-    const { data } = await this.http.post(`/crm/v3/objects/${object}`, { properties });
-    return { system: this.system, type: record.type, targetId: data.id, operation: 'created' };
+    const { data } = await this.http.post(`/crm/v3/objects/${object}`, { properties: payload });
+    return { system: this.system, type, targetId: data.id, operation: 'created', conditional: false };
+  }
+
+  async accountIdentity(): Promise<string | undefined> {
+    const connection = await connections.get('hubspot');
+    if (!connection) return undefined;
+    return `hubspot:${connection.environment}:${connection.accountId ?? connection.accountLabel ?? 'unknown'}`;
   }
 
   async remove(type: CanonicalType, sourceId: string): Promise<UpsertResult> {
     // HubSpot DELETE archives the record.
-    const object = requireNativeObjectName('hubspot', type);
+    const object = this.config.requireNativeObjectName('hubspot', type);
     await this.http.delete(`/crm/v3/objects/${object}/${sourceId}`);
     return { system: this.system, type, targetId: sourceId, operation: 'deleted' };
   }
 
   /**
-   * HubSpot webhooks POST an array of events and sign with X-HubSpot-Signature-v3
-   * (HMAC-SHA256 over method + uri + body + timestamp, base64). We validate before trusting.
+   * R12: maps a verified webhook event (see src/webhooks/hubspot.ts) to a ChangeEvent. The
+   * native object name comes from the objectTypeId cache warmed in init()/listObjects()
+   * (portal-specific for custom objects), then the registry -- no hardcoded object list.
    */
-  async parseWebhook(
-    headers: Record<string, string | string[] | undefined>,
-    rawBody: Buffer,
-    resolveType?: (nativeObjectId: string, sourceId: string) => Promise<CanonicalType | undefined>,
-  ): Promise<ChangeEvent[]> {
-    const secret = this.appSecret || env.HUBSPOT_APP_SECRET;
-    if (!secret && !env.ALLOW_UNSIGNED_WEBHOOKS) {
-      throw new Error('HubSpot webhook secret unavailable');
-    }
-    if (secret) {
-      const signature = String(headers['x-hubspot-signature-v3'] ?? '');
-      const timestamp = String(headers['x-hubspot-request-timestamp'] ?? '');
-      const uri = `${env.PUBLIC_BASE_URL}/webhooks/hubspot`;
-      const base = `POST${uri}${rawBody.toString('utf8')}${timestamp}`;
-      const expected = crypto.createHmac('sha256', secret).update(base).digest('base64');
-      if (!safeEqual(signature, expected)) throw new Error('HubSpot webhook signature mismatch');
-    }
-    const rawEvents = JSON.parse(rawBody.toString('utf8')) as HsWebhookEvent[];
-    const events: ChangeEvent[] = [];
-    for (const e of rawEvents) {
-      const mapped = await this.mapEvent(e, resolveType);
-      if (mapped) events.push(mapped);
-    }
-    return events;
-  }
-
-  // ----------------- internals -----------------
-
-  private async mapEvent(
-    e: HsWebhookEvent,
+  async resolveWebhookEvent(
+    event: NativeWebhookEvent,
     resolveType?: (nativeObjectId: string, sourceId: string) => Promise<CanonicalType | undefined>,
   ): Promise<ChangeEvent | null> {
-    // Resolve the native object name from the numeric objectTypeId (portal-specific for custom
-    // objects, constant for standard ones) via the cache warmed in init()/listObjects(), then
-    // map that to a canonical object through the registry — no hardcoded object list here.
-    const objectName = this.objectTypeIds.get(e.objectTypeId ?? '');
+    const objectName = this.objectTypeIds.get(event.nativeObject);
     if (!objectName) return null;
-    const candidates = canonicalObjectsFor('hubspot', objectName);
+    const candidates = this.config.canonicalObjectsFor('hubspot', objectName);
     const type =
       candidates.length <= 1
         ? candidates[0]?.canonicalObject
-        : await resolveType?.(objectName, String(e.objectId));
+        : await resolveType?.(objectName, event.sourceId);
     if (!type) return null;
-    const changeType = e.subscriptionType?.endsWith('creation')
-      ? 'created'
-      : e.subscriptionType?.endsWith('deletion')
-        ? 'deleted'
-        : 'updated';
     return {
-      eventId: crypto
-        .createHash('sha256')
-        .update(
-          `${e.portalId ?? ''}:${e.subscriptionId ?? ''}:${e.eventId ?? ''}:` +
-            `${e.subscriptionType}:${e.objectId}:${e.occurredAt ?? ''}`,
-        )
-        .digest('hex'),
+      eventId: event.deliveryId,
       system: this.system,
       type,
-      sourceId: String(e.objectId),
-      changeType,
-      occurredAt: e.occurredAt ? new Date(e.occurredAt).toISOString() : new Date().toISOString(),
+      sourceId: event.sourceId,
+      changeType: event.changeType,
+      occurredAt: event.occurredAt,
     };
   }
+
+  // ----------------- internals -----------------
 
   private canonicalize(type: CanonicalType, native: HsObject): CanonicalRecord {
     const flat = { ...native.properties, id: native.id } as Record<string, unknown>;
     return {
       canonicalId: '',
       type,
-      fields: toCanonicalFields('hubspot', type, flat),
+      fields: this.config.toCanonicalFields('hubspot', type, flat),
       meta: {
         source: 'hubspot',
         sourceId: String(native.id),
@@ -457,16 +490,6 @@ interface HsObject {
   id: string;
   properties: Record<string, string>;
   updatedAt?: string;
-}
-
-interface HsWebhookEvent {
-  eventId?: number | string;
-  portalId?: number | string;
-  subscriptionId?: number | string;
-  objectId: number | string;
-  subscriptionType?: string; // e.g. "contact.propertyChange", "deal.creation"
-  objectTypeId?: string;
-  occurredAt?: number;
 }
 
 interface HsProperty {
@@ -488,6 +511,30 @@ interface HsSchema {
   objectTypeId?: string;
   fullyQualifiedName?: string;
   labels?: { singular?: string; plural?: string };
+}
+
+/** HubSpot search returns at most this many results for one query, however it is paged. */
+export const SEARCH_RESULT_CAP = 10_000;
+
+/**
+ * Next cursor for a modified-since search. Near the result cap the search is restarted from
+ * the last record's modified time instead of paging further (which HubSpot rejects).
+ */
+export function searchNextCursor(
+  after: string | undefined,
+  records: CanonicalRecord[],
+  since: string | undefined,
+): string | undefined {
+  if (!after) return undefined;
+  if (Number(after) + 100 < SEARCH_RESULT_CAP || !since) return after;
+  const last = records.at(-1)?.meta.modifiedAt;
+  if (!last) return undefined;
+  if (Date.parse(last) <= Date.parse(since)) {
+    throw new Error(
+      `more than ${SEARCH_RESULT_CAP} HubSpot records share modified time ${last}; narrow the sync condition`,
+    );
+  }
+  return `ts:${last}`;
 }
 
 /** One structured condition row -> a single HubSpot Search API filter. */
@@ -512,10 +559,4 @@ function compileConditionFilter(
     default:
       return { propertyName: condition.field, operator: 'HAS_PROPERTY' };
   }
-}
-
-function safeEqual(a: string, b: string): boolean {
-  const ab = Buffer.from(a);
-  const bb = Buffer.from(b);
-  return ab.length === bb.length && crypto.timingSafeEqual(ab, bb);
 }

@@ -1,8 +1,13 @@
 import pino from 'pino';
 import { env } from './config/env.js';
+import { logContext } from './observability/context.js';
 
 export const logger = pino({
   level: env.LOG_LEVEL,
+  // R14: request / workspace / job correlation on every line written inside a context.
+  mixin() {
+    return { ...logContext() };
+  },
   redact: {
     paths: [
       'accessToken',
@@ -13,6 +18,14 @@ export const logger = pino({
       '*.clientSecret',
       'authorization',
       '*.authorization',
+      'password',
+      '*.password',
+      'smtpPassword',
+      '*.smtpPassword',
+      'apiKey',
+      '*.apiKey',
+      'headers.cookie',
+      '*.headers.cookie',
     ],
     censor: '[Redacted]',
   },

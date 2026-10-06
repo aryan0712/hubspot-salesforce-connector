@@ -23,11 +23,13 @@ export interface MigrationRunSummary extends MigrationRunInput {
 
 export interface MigrationStore {
   begin(input: MigrationRunInput): Promise<string>;
+  /** Records one item. Preview items carry the full frozen plan; order is preserved. */
   recordPlan(runId: string, plan: ReconcilePlan): Promise<void>;
   complete(runId: string, report: MigrationReport): Promise<void>;
   fail(runId: string, error: string): Promise<void>;
+  get(runId: string): Promise<MigrationRunSummary | undefined>;
   list(limit?: number): Promise<MigrationRunSummary[]>;
-  plans(runId: string, limit?: number): Promise<ReconcilePlan[]>;
+  plans(runId: string, limit?: number, offset?: number): Promise<ReconcilePlan[]>;
 }
 
 export class InMemoryMigrationStore implements MigrationStore {
@@ -37,7 +39,7 @@ export class InMemoryMigrationStore implements MigrationStore {
   async begin(input: MigrationRunInput): Promise<string> {
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
-    this.runs.set(id, { ...input, id, status: 'running', createdAt: now, startedAt: now });
+    this.runs.set(id, { ...structuredClone(input), id, status: 'running', createdAt: now, startedAt: now });
     this.items.set(id, []);
     return id;
   }
@@ -56,11 +58,16 @@ export class InMemoryMigrationStore implements MigrationStore {
     if (run) Object.assign(run, { status: 'failed' as const, error, finishedAt: new Date().toISOString() });
   }
 
+  async get(runId: string): Promise<MigrationRunSummary | undefined> {
+    const run = this.runs.get(runId);
+    return run ? structuredClone(run) : undefined;
+  }
+
   async list(limit = 50): Promise<MigrationRunSummary[]> {
     return [...this.runs.values()].slice(-limit).reverse().map((run) => structuredClone(run));
   }
 
-  async plans(runId: string, limit = 500): Promise<ReconcilePlan[]> {
-    return (this.items.get(runId) ?? []).slice(0, limit).map((plan) => structuredClone(plan));
+  async plans(runId: string, limit = 500, offset = 0): Promise<ReconcilePlan[]> {
+    return (this.items.get(runId) ?? []).slice(offset, offset + limit).map((plan) => structuredClone(plan));
   }
 }

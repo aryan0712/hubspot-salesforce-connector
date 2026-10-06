@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
 import { MigrationCopilot, validateOpenAIKey } from '../src/ai/migrationCopilot.js';
-import { PublicError } from '../src/core/publicError.js';
 import type { MigrationCopilotContext } from '../src/ai/migrationCopilot.js';
 
 const context: MigrationCopilotContext = {
@@ -82,7 +81,7 @@ function responsePayload(overrides: Record<string, unknown> = {}): Record<string
 
 describe('MigrationCopilot', () => {
   it('sends metadata-only context and enforces read-only structured output', async () => {
-    const fetchImpl = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+    const fetchImpl = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) => {
       return new Response(JSON.stringify(responsePayload()), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -121,14 +120,14 @@ describe('MigrationCopilot', () => {
   it('fails closed when the API key is missing', async () => {
     const copilot = new MigrationCopilot();
 
-    await expect(copilot.analyzePreflight(context)).rejects.toMatchObject<Partial<PublicError>>({
+    await expect(copilot.analyzePreflight(context)).rejects.toMatchObject({
       code: 'copilot_not_configured',
       status: 503,
     });
   });
 
   it('can hot-reload a replacement key without a server restart', async () => {
-    const fetchImpl = vi.fn(async () =>
+    const fetchImpl = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) =>
       new Response(JSON.stringify(responsePayload()), { status: 200 }));
     const copilot = new MigrationCopilot({ fetchImpl });
     expect(copilot.configured).toBe(false);
@@ -146,7 +145,7 @@ describe('MigrationCopilot', () => {
   });
 
   it('validates a key with OpenAI without sending application data', async () => {
-    const fetchImpl = vi.fn(async () => new Response('{}', { status: 200 }));
+    const fetchImpl = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) => new Response('{}', { status: 200 }));
     await validateOpenAIKey('new-key', 'gpt-test', { fetchImpl });
 
     expect(fetchImpl).toHaveBeenCalledWith(
@@ -164,7 +163,7 @@ describe('MigrationCopilot', () => {
 
     await expect(
       validateOpenAIKey('bad-key', 'gpt-test', { fetchImpl }),
-    ).rejects.toMatchObject<Partial<PublicError>>({
+    ).rejects.toMatchObject({
       code: 'copilot_key_invalid',
       status: 422,
     });
@@ -177,7 +176,7 @@ describe('MigrationCopilot', () => {
       }));
     const copilot = new MigrationCopilot({ apiKey: 'test-api-key', fetchImpl });
 
-    await expect(copilot.analyzePreflight(context)).rejects.toMatchObject<Partial<PublicError>>({
+    await expect(copilot.analyzePreflight(context)).rejects.toMatchObject({
       code: 'copilot_rate_limited',
       status: 429,
       message: expect.not.stringContaining('sensitive provider detail'),
@@ -194,7 +193,7 @@ describe('MigrationCopilot', () => {
       })), { status: 200 }));
     const copilot = new MigrationCopilot({ apiKey: 'test-api-key', fetchImpl });
 
-    await expect(copilot.analyzePreflight(context)).rejects.toMatchObject<Partial<PublicError>>({
+    await expect(copilot.analyzePreflight(context)).rejects.toMatchObject({
       code: 'copilot_invalid_response',
       status: 503,
     });

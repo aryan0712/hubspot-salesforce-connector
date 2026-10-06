@@ -58,7 +58,8 @@ export class PostgresOperationsRepository {
     if (metric) await this.incrementUsage(metric, 1);
   }
 
-  async listAudit(limit = 100): Promise<AuditEntry[]> {
+  /** Newest first; `before` continues after the last entry of the previous page. */
+  async listAudit(limit = 100, before?: { createdAt: string; id: string }): Promise<AuditEntry[]> {
     return this.db.tenant(this.tenantId, async (client) => {
       const result = await client.query<{
         id: string;
@@ -73,8 +74,9 @@ export class PostgresOperationsRepository {
         `SELECT id::text, actor_id, action, resource_type, resource_id,
                 correlation_id, detail, created_at
          FROM audit_entries WHERE tenant_id = $1
-         ORDER BY created_at DESC LIMIT $2`,
-        [this.tenantId, limit],
+           AND ($3::timestamptz IS NULL OR (created_at, id) < ($3::timestamptz, $4::bigint))
+         ORDER BY created_at DESC, id DESC LIMIT $2`,
+        [this.tenantId, limit, before?.createdAt ?? null, before && /^\d+$/.test(before.id) ? before.id : null],
       );
       return result.rows.map((row) => ({
         id: row.id,
@@ -114,6 +116,8 @@ export class PostgresOperationsRepository {
   }
 
   async workspaceOverview(): Promise<{
+    name: string;
+    slug: string;
     plan: string;
     status: string;
     currentPeriodEnd?: string;
@@ -122,8 +126,8 @@ export class PostgresOperationsRepository {
   }> {
     return this.db.tenant(this.tenantId, async (client) => {
       const [tenant, subscription, team] = await Promise.all([
-        client.query<{ plan: string; status: string }>(
-          'SELECT plan, status FROM tenants WHERE id = $1',
+        client.query<{ plan: string; status: string; name: string; slug: string }>(
+          'SELECT plan, status, name, slug FROM tenants WHERE id = $1',
           [this.tenantId],
         ),
         client.query<{
@@ -142,9 +146,11 @@ export class PostgresOperationsRepository {
           [this.tenantId],
         ),
       ]);
-      const base = tenant.rows[0] ?? { plan: 'trial', status: 'active' };
+      const base = tenant.rows[0] ?? { plan: 'trial', status: 'active', name: 'Workspace', slug: '' };
       const billing = subscription.rows[0];
       return {
+        name: base.name,
+        slug: base.slug,
         plan: billing?.plan ?? base.plan,
         status: billing?.status ?? base.status,
         currentPeriodEnd: billing?.current_period_end?.toISOString(),
@@ -210,8 +216,10 @@ export class PostgresApiKeyRepository {
   ) {}
 
   async create(name: string, role: Exclude<Role, 'owner'>): Promise<ApiKeyInfo & { key: string }> {
-    const key = `crm_${crypto.randomBytes(32).toString('base64url')}`;
-    const prefix = key.slice(0, 12);
+    // The key names its workspace (R11), so verification runs inside exactly that tenant.
+    const secret = crypto.randomBytes(32).toString('base64url');
+    const key = `crm_${this.tenantId.replace(/-/g, '')}_${secret}`;
+    const prefix = `crm_${secret.slice(0, 8)}`;
     const hash = hashKey(key);
     return this.db.tenant(this.tenantId, async (client) => {
       const result = await client.query<{ id: string; created_at: Date }>(
@@ -277,6 +285,27 @@ export class PostgresApiKeyRepository {
         [this.tenantId, id],
       );
     });
+  }
+}
+
+/**
+ * Resolves an API key to its workspace. Keys created since R11 embed the tenant id; older
+ * keys belong to the process's default workspace and are only verified there.
+ */
+export class TenantApiKeyVerifier {
+  constructor(
+    private readonly db: PostgresDatabase,
+    private readonly defaultTenantId?: string,
+  ) {}
+
+  async verify(key: string): Promise<{ id: string; role: Exclude<Role, 'owner'>; tenantId: string } | undefined> {
+    const embedded = key.match(/^crm_([0-9a-f]{32})_[A-Za-z0-9_-]{20,}$/)?.[1];
+    const tenantId = embedded
+      ? `${embedded.slice(0, 8)}-${embedded.slice(8, 12)}-${embedded.slice(12, 16)}-${embedded.slice(16, 20)}-${embedded.slice(20)}`
+      : this.defaultTenantId;
+    if (!tenantId) return undefined;
+    const verified = await new PostgresApiKeyRepository(this.db, tenantId).verify(key);
+    return verified ? { ...verified, tenantId } : undefined;
   }
 }
 

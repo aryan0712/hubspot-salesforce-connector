@@ -1,5 +1,12 @@
 import crypto from 'node:crypto';
-import type { CRMConnector, ConnectorAssociation, QueryCondition } from '../../core/connector.js';
+import {
+  ConditionalWriteRejectedError,
+  type CRMConnector,
+  type ConnectorAssociation,
+  type NativeWebhookEvent,
+  type QueryCondition,
+  type WriteOptions,
+} from '../../core/connector.js';
 import type {
   CanonicalRecord,
   CanonicalType,
@@ -12,13 +19,7 @@ import type {
   SchemaField,
   SystemId,
 } from '../../core/types.js';
-import {
-  fieldRules,
-  fromCanonicalFields,
-  toCanonicalFields,
-} from '../../core/mapping.js';
-import { naturalKey } from '../../core/idMap.js';
-import { canonicalObjectsFor } from '../../core/objectRegistry.js';
+import type { ConfigContext } from '../../core/configContext.js';
 import { evaluateConditions } from '../../core/syncConfig.js';
 
 /**
@@ -30,7 +31,7 @@ import { evaluateConditions } from '../../core/syncConfig.js';
  * It also emits ChangeEvents whenever a record is written, so a test harness can simulate
  * webhooks. Emits are labeled so a test can distinguish user edits from sync-driven writes.
  */
-type NativeRecord = Record<string, FieldValue> & { __id: string; __modifiedAt: string };
+type NativeRecord = Record<string, FieldValue> & { __id: string; __modifiedAt: string; __createdAt?: string };
 
 export class MockConnector implements CRMConnector {
   readonly system: SystemId;
@@ -38,8 +39,49 @@ export class MockConnector implements CRMConnector {
   private listeners: ((e: ChangeEvent) => void)[] = [];
   private associations = new Map<string, ConnectorAssociation[]>();
   private deletions = new Map<CanonicalType, { sourceId: string; occurredAt: string }[]>();
+  private keyIndex = new Map<string, Set<string>>();
+  private keyOf = new Map<string, string>();
+  private indexedRevision = -1;
 
-  constructor(system: SystemId) {
+  private ensureKeyIndex(): void {
+    if (this.indexedRevision === this.config.revision) return;
+    this.keyIndex.clear();
+    this.keyOf.clear();
+    this.indexedRevision = this.config.revision;
+    for (const [type, bucket] of this.store) {
+      for (const id of bucket.keys()) this.reindex(type, id);
+    }
+  }
+
+  private reindex(type: CanonicalType, id: string): void {
+    if (this.indexedRevision !== this.config.revision) return; // rebuilt lazily on next search
+    const composite = `${type}:${id}`;
+    const previous = this.keyOf.get(composite);
+    if (previous) this.keyIndex.get(previous)?.delete(id);
+    this.keyOf.delete(composite);
+    const native = this.bucket(type).get(id);
+    if (!native) return;
+    const key = this.config.naturalKey(this.canonicalize(type, native));
+    if (!key) return;
+    const indexKey = `${type}|${key}`;
+    let ids = this.keyIndex.get(indexKey);
+    if (!ids) {
+      ids = new Set();
+      this.keyIndex.set(indexKey, ids);
+    }
+    ids.add(id);
+    this.keyOf.set(composite, indexKey);
+  }
+
+  /** Test knob: how long a newly created record stays invisible to findByNaturalKey. */
+  searchVisibilityMs = 0;
+  /** Distinguishes two mock accounts of the same system (e.g. the demo vs a test app). */
+  readonly accountId = crypto.randomUUID().slice(0, 8);
+
+  constructor(
+    system: SystemId,
+    private readonly config: ConfigContext,
+  ) {
     this.system = system;
   }
 
@@ -103,12 +145,22 @@ export class MockConnector implements CRMConnector {
     type: CanonicalType,
     query: NaturalKeyQuery,
   ): Promise<CanonicalRecord[]> {
-    const records = (await this.list(type)).records;
-    return records.filter((record) => naturalKey(record) === query.key);
+    // Models vendor search indexing lag: a just-created record is readable by id but not
+    // yet returned by search for `searchVisibilityMs`. Uses a natural-key index (like a
+    // vendor search index) so large synthetic runs stay linear.
+    this.ensureKeyIndex();
+    const visibleBefore = Date.now() - this.searchVisibilityMs;
+    const out: CanonicalRecord[] = [];
+    for (const id of this.keyIndex.get(`${type}|${query.key}`) ?? []) {
+      const native = this.bucket(type).get(id);
+      if (!native || Date.parse(native.__createdAt ?? '0') > visibleBefore) continue;
+      out.push(this.canonicalize(type, native));
+    }
+    return out;
   }
 
   async describe(type: CanonicalType): Promise<SchemaField[]> {
-    return fieldRules(this.system, type).map((rule) => ({
+    return this.config.fieldRules(this.system, type).map((rule) => ({
       name: rule.native,
       label: rule.native,
       type: 'string',
@@ -187,29 +239,73 @@ export class MockConnector implements CRMConnector {
   }
 
   async upsert(record: CanonicalRecord, targetId?: string) {
-    const native = fromCanonicalFields(this.system, record.type, record.fields);
-    const id = targetId ?? `${this.system}-${crypto.randomUUID().slice(0, 8)}`;
-    const existing = this.bucket(record.type).get(id);
+    const native = this.config.fromCanonicalFields(this.system, record.type, record.fields);
+    return this.writeNative(record.type, native, targetId, true);
+  }
+
+  async write(
+    type: CanonicalType,
+    payload: Record<string, FieldValue>,
+    targetId?: string,
+    options: WriteOptions = {},
+  ) {
+    const existing = targetId ? this.bucket(type).get(targetId) : undefined;
+    if (targetId && !existing) {
+      throw new Error(`mock ${this.system} ${type} ${targetId} not found`);
+    }
+    // Behaves like Salesforce's If-Unmodified-Since so tests can exercise conditional writes.
+    if (
+      existing &&
+      options.ifUnmodifiedSince &&
+      Date.parse(existing.__modifiedAt) > Date.parse(options.ifUnmodifiedSince)
+    ) {
+      throw new ConditionalWriteRejectedError();
+    }
+    this.writes.push({ type, targetId, payload: { ...payload } });
+    return { ...(await this.writeNative(type, payload, targetId, false)), conditional: true };
+  }
+
+  async accountIdentity(): Promise<string | undefined> {
+    return `mock:${this.system}:${this.accountId}`;
+  }
+
+  /** Test helper: every exact-payload write this connector received, in order. */
+  readonly writes: { type: CanonicalType; targetId?: string; payload: Record<string, FieldValue> }[] = [];
+
+  private async writeNative(
+    type: CanonicalType,
+    native: Record<string, FieldValue>,
+    targetId: string | undefined,
+    createIfMissing: boolean,
+  ) {
+    const id = targetId ?? `${this.system}-${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
+    if (targetId && !createIfMissing && !this.bucket(type).has(targetId)) {
+      throw new Error(`mock ${this.system} ${type} ${targetId} not found`);
+    }
+    const existing = this.bucket(type).get(id);
     const merged: NativeRecord = {
       ...(existing ?? {}),
       ...native,
       __id: id,
-      __modifiedAt: new Date().toISOString(),
+      __modifiedAt: nextTimestamp(existing?.__modifiedAt),
+      __createdAt: existing?.__createdAt ?? new Date().toISOString(),
     };
-    this.bucket(record.type).set(id, merged);
+    this.bucket(type).set(id, merged);
+    this.reindex(type, id);
     const operation = existing ? 'updated' : 'created';
     this.emit({
       system: this.system,
-      type: record.type,
+      type,
       sourceId: id,
       changeType: existing ? 'updated' : 'created',
       occurredAt: merged.__modifiedAt,
     });
-    return { system: this.system, type: record.type, targetId: id, operation } as const;
+    return { system: this.system, type, targetId: id, operation } as const;
   }
 
   async remove(type: CanonicalType, sourceId: string) {
     this.bucket(type).delete(sourceId);
+    this.reindex(type, sourceId);
     const occurredAt = new Date().toISOString();
     const log = this.deletions.get(type) ?? [];
     log.push({ sourceId, occurredAt });
@@ -218,8 +314,23 @@ export class MockConnector implements CRMConnector {
     return { system: this.system, type, targetId: sourceId, operation: 'deleted' as const };
   }
 
-  async parseWebhook(): Promise<ChangeEvent[]> {
-    return []; // the mock injects events via onChange instead of HTTP
+  /** The mock usually emits events via onChange; webhook events map through the registry. */
+  async resolveWebhookEvent(event: NativeWebhookEvent): Promise<ChangeEvent | null> {
+    // HubSpot deliveries name standard objects by type id.
+    const standard: Record<string, string> = { '0-1': 'contact', '0-2': 'company', '0-3': 'deal' };
+    const type =
+      (this.system === 'hubspot' ? standard[event.nativeObject] : undefined) ??
+      this.config.canonicalObjectsFor(this.system, event.nativeObject)[0]?.canonicalObject ??
+      (this.config.isRegisteredCanonicalObject(event.nativeObject) ? event.nativeObject : undefined);
+    if (!type) return null;
+    return {
+      eventId: event.deliveryId,
+      system: this.system,
+      type,
+      sourceId: event.sourceId,
+      changeType: event.changeType,
+      occurredAt: event.occurredAt,
+    };
   }
 
   /** Mirrors readNativeFields for canonical types sharing one native object -- see CRMConnector. */
@@ -228,7 +339,7 @@ export class MockConnector implements CRMConnector {
     sourceId: string,
     fields: string[],
   ): Promise<Record<string, unknown> | null> {
-    for (const candidate of canonicalObjectsFor(this.system, nativeObject)) {
+    for (const candidate of this.config.canonicalObjectsFor(this.system, nativeObject)) {
       const record = this.bucket(candidate.canonicalObject).get(sourceId);
       if (record) {
         return Object.fromEntries(fields.map((f) => [f, record[f] ?? null]));
@@ -240,9 +351,10 @@ export class MockConnector implements CRMConnector {
   /** Test helper: seed a native record directly (simulating data already in the CRM). */
   seed(type: CanonicalType, fields: Record<string, FieldValue>): string {
     const rec = { ...fields } as unknown as CanonicalRecord['fields'];
-    const native = fromCanonicalFields(this.system, type, rec);
-    const id = `${this.system}-${crypto.randomUUID().slice(0, 8)}`;
+    const native = this.config.fromCanonicalFields(this.system, type, rec);
+    const id = `${this.system}-${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
     this.bucket(type).set(id, { ...native, __id: id, __modifiedAt: new Date().toISOString() });
+    this.reindex(type, id);
     return id;
   }
 
@@ -284,8 +396,19 @@ export class MockConnector implements CRMConnector {
     return {
       canonicalId: '',
       type,
-      fields: toCanonicalFields(this.system, type, n),
+      fields: this.config.toCanonicalFields(this.system, type, n),
       meta: { source: this.system, sourceId: n.__id, modifiedAt: n.__modifiedAt },
     };
   }
+}
+
+/**
+ * A write always advances a record's modified time, even within the same millisecond, the
+ * way a real CRM's system timestamp does -- otherwise conditional-write tests could not tell
+ * "changed after review" from "unchanged".
+ */
+function nextTimestamp(previous?: string): string {
+  const now = Date.now();
+  const floor = previous ? Date.parse(previous) + 1 : now;
+  return new Date(Math.max(now, floor)).toISOString();
 }

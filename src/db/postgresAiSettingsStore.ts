@@ -1,6 +1,6 @@
-import crypto from 'node:crypto';
 import type { PostgresDatabase } from './postgres.js';
 import type { SecretCipher } from './security.js';
+import { keyFingerprint } from '../core/fingerprint.js';
 
 export interface AiProviderCredential {
   apiKey: string;
@@ -117,6 +117,3 @@ export class PostgresAiSettingsStore {
   }
 }
 
-export function keyFingerprint(apiKey: string): string {
-  return crypto.createHash('sha256').update(apiKey).digest('hex').slice(0, 12);
-}

@@ -15,22 +15,29 @@ import {
 import { InMemorySyncEventStore } from '../src/engine/syncEventStore.js';
 import { SyncEngine } from '../src/engine/syncEngine.js';
 import { InMemoryMigrationPlanStore } from '../src/engine/migrationPlanStore.js';
+import { createDefaultConfigContext } from '../src/core/configContext.js';
+
+// Each test gets its own configuration context, like each app does in production.
+let config = createDefaultConfigContext('productFeatures-test');
+beforeEach(() => {
+  config = createDefaultConfigContext('productFeatures-test');
+});
 
 async function setup() {
-  const sf = new MockConnector('salesforce');
-  const hs = new MockConnector('hubspot');
+  const sf = new MockConnector('salesforce', config);
+  const hs = new MockConnector('hubspot', config);
   const connectors: Record<SystemId, CRMConnector> = { salesforce: sf, hubspot: hs };
   const idMap = new FileIdMapStore(
     path.join(os.tmpdir(), `idmap-features-${crypto.randomUUID()}.json`),
   );
   await idMap.init();
-  const reconciler = new Reconciler(connectors, idMap);
+  const reconciler = new Reconciler(connectors, idMap, config);
   const associations = new AssociationEngine(
     connectors,
     idMap,
     new InMemoryAssociationStore(),
   );
-  const migration = new MigrationEngine(connectors, reconciler);
+  const migration = new MigrationEngine(connectors, config, reconciler);
   return { sf, hs, connectors, idMap, reconciler, associations, migration };
 }
 
@@ -50,7 +57,7 @@ describe('safe migration product features', () => {
       email: 'ada@example.com',
     });
 
-    await ctx.migration.run({ from: 'salesforce', types: ['contact'] });
+    await ctx.migration.run({ from: 'salesforce', types: ['contact'], dryRun: false });
 
     expect((await ctx.hs.list('contact')).records).toHaveLength(1);
     const link = await ctx.idMap.bySource('salesforce', sfId);
@@ -187,7 +194,18 @@ describe('migration plan drafts', () => {
       'source-contact-1',
       'canary-preview-1',
     );
-    await store.finishCanary(plan.id, plan.revision, 'canary-execute-1');
+    await store.finishCanary(plan.id, plan.revision, 'canary-preview-1', 'canary-execute-1', {
+      passed: true,
+      reasons: [],
+      checkedAt: new Date().toISOString(),
+      previewRunId: 'canary-preview-1',
+      executionRunId: 'canary-execute-1',
+      configFingerprint: 'fingerprint',
+      accounts: {},
+      testedTypes: ['contact'],
+      representativeWrite: true,
+      items: [],
+    });
     expect((await store.get(plan.id))?.canary).toMatchObject({
       type: 'contact',
       sourceId: 'source-contact-1',
@@ -237,7 +255,7 @@ describe('durable sync semantics', () => {
   it('routes delete events to manual review by default', async () => {
     const ctx = await setup();
     const sfId = ctx.sf.seed('contact', { email: 'delete@example.com' });
-    await ctx.migration.run({ from: 'salesforce', types: ['contact'] });
+    await ctx.migration.run({ from: 'salesforce', types: ['contact'], dryRun: false });
     const hsId = (await ctx.hs.list('contact')).records[0]!.meta.sourceId;
     const store = new InMemorySyncEventStore();
     const sync = new SyncEngine(ctx.connectors, ctx.reconciler, store, {

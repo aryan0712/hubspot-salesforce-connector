@@ -1,20 +1,17 @@
 import type { CanonicalType } from '../core/types.js';
-import {
-  configureValueMappings,
-  type ValueMapping,
-} from '../core/mapping.js';
+import type { ValueMapping } from '../core/mapping.js';
+import type { ConfigContext } from '../core/configContext.js';
 import type { PostgresDatabase } from './postgres.js';
 
 export class PostgresValueMappingStore {
-  private cache: ValueMapping[] = [];
-
   constructor(
     private readonly db: PostgresDatabase,
     private readonly tenantId: string,
+    private readonly config: ConfigContext,
   ) {}
 
   async init(): Promise<void> {
-    this.cache = await this.db.tenant(this.tenantId, async (client) => {
+    const mappings = await this.db.tenant(this.tenantId, async (client) => {
       const result = await client.query<{
         object_type: CanonicalType;
         canonical_field: string;
@@ -36,17 +33,11 @@ export class PostgresValueMappingStore {
         hubspotValue: row.hubspot_value ?? undefined,
       }));
     });
-    configureValueMappings(this.cache);
+    this.config.configureValueMappings(mappings);
   }
 
   list(type?: CanonicalType, field?: string): ValueMapping[] {
-    return this.cache
-      .filter(
-        (mapping) =>
-          (!type || mapping.type === type) &&
-          (!field || mapping.canonicalField === field),
-      )
-      .map((mapping) => ({ ...mapping }));
+    return this.config.valueMappings(type, field);
   }
 
   async replace(
@@ -77,6 +68,7 @@ export class PostgresValueMappingStore {
         );
       }
     });
+    // Re-read the committed rows and publish them as one revision.
     await this.init();
   }
 }

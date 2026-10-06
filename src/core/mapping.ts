@@ -4,11 +4,16 @@ import type { CanonicalType, FieldValue, SystemId } from './types.js';
  * FIELD MAPPING
  * -------------
  * The neutral vocabulary (left-hand canonical field names) is defined implicitly by the
- * union of all mappings below. To add a field: add a row to each system's table for the
- * same canonical key. To add a whole object type: add an entry under each system.
+ * union of all configured rules. To add a field: add a rule to each system's list for the
+ * same canonical key. To add a whole object type: register it and give it rules per system.
  *
- * A FieldMap row can optionally transform values in each direction (e.g. picklist value
+ * A FieldRule can optionally transform values in each direction (e.g. picklist value
  * normalization, phone formatting, currency scaling). Keep transforms pure & total.
+ *
+ * This module holds NO built-in object data and NO module state: every canonical object
+ * (including the built-in contact/company/deal) is configured at runtime on a per-app
+ * ConfigContext (core/configContext.ts), seeded from core/defaultObjects.ts. The functions
+ * here are the pure mechanism that context uses to validate, store and translate rules.
  */
 
 export type TransformId =
@@ -39,8 +44,6 @@ export interface FieldRule {
   sourceOfTruth?: SystemId;
 }
 
-type SystemMappings = Record<CanonicalType, FieldRule[]>;
-
 export interface ValueMapping {
   type: CanonicalType;
   canonicalField: string;
@@ -49,57 +52,58 @@ export interface ValueMapping {
   hubspotValue?: string;
 }
 
+export type FieldRuleTables = Record<SystemId, Record<CanonicalType, FieldRule[]>>;
+
+/** The parts of a configuration snapshot that translation reads. */
+export interface TranslationConfig {
+  readonly fieldRules: Readonly<Record<SystemId, Readonly<Record<CanonicalType, FieldRule[]>>>>;
+  readonly valueMappings: readonly ValueMapping[];
+}
+
 const identity = (v: FieldValue): FieldValue => v;
 
-/**
- * Field mapping tables hold NO built-in object data — every canonical object (including the
- * built-in contact/company/deal) is configured at runtime via configureFieldRules(), seeded
- * from core/defaultObjects.ts into Postgres per tenant. This keeps the mapping engine itself
- * generic: it only knows how to store and translate whatever rules it's given.
- */
-const TABLES: Record<SystemId, SystemMappings> = { salesforce: {}, hubspot: {} };
-let VALUE_MAPPINGS: ValueMapping[] = [];
-
-export function configureValueMappings(mappings: ValueMapping[]): void {
-  VALUE_MAPPINGS = mappings.map((mapping) => ({ ...mapping }));
-}
-
-export function fieldRules(system: SystemId, type: CanonicalType): FieldRule[] {
-  return (TABLES[system][type] ?? []).map((rule) => ({ ...rule }));
-}
-
-export function configureFieldRules(
-  system: SystemId,
-  type: CanonicalType,
-  rules: FieldRule[],
-): void {
+export function validateFieldRules(rules: FieldRule[]): void {
   const seen = new Set<string>();
   for (const rule of rules) {
-    if (!rule.canonical.trim() || !rule.native.trim()) {
+    if (!rule.canonical?.trim() || !rule.native?.trim()) {
       throw new Error('mapping canonical and native names are required');
     }
     if (seen.has(rule.canonical)) throw new Error(`duplicate canonical field: ${rule.canonical}`);
     seen.add(rule.canonical);
   }
-  TABLES[system][type] = rules.map((rule) => ({ ...rule }));
 }
 
-export function resetFieldRules(): void {
-  TABLES.salesforce = {};
-  TABLES.hubspot = {};
+export function applyFieldRules(
+  tables: FieldRuleTables,
+  system: SystemId,
+  type: CanonicalType,
+  rules: FieldRule[],
+): void {
+  validateFieldRules(rules);
+  tables[system][type] = rules.map((rule) => ({ ...rule }));
+}
+
+export function readFieldRules(
+  tables: TranslationConfig['fieldRules'],
+  system: SystemId,
+  type: CanonicalType,
+): FieldRule[] {
+  return (tables[system][type] ?? []).map((rule) => ({ ...rule }));
 }
 
 /** Translate a native record (as returned by the API) into canonical fields. */
-export function toCanonicalFields(
+export function translateToCanonical(
+  config: TranslationConfig,
   system: SystemId,
   type: CanonicalType,
   native: Record<string, unknown>,
 ): Record<string, FieldValue> {
   const out: Record<string, FieldValue> = {};
-  for (const rule of TABLES[system][type] ?? []) {
+  for (const rule of config.fieldRules[system][type] ?? []) {
     const raw = getPath(native, rule.native);
     const value = coerce(raw);
     out[rule.canonical] = toCanonicalValue(
+      config.valueMappings,
       system,
       type,
       rule.canonical,
@@ -110,49 +114,24 @@ export function toCanonicalFields(
 }
 
 /** Translate canonical fields into a writable native payload for the target system. */
-export function fromCanonicalFields(
+export function translateFromCanonical(
+  config: TranslationConfig,
   system: SystemId,
   type: CanonicalType,
   fields: Record<string, FieldValue>,
 ): Record<string, FieldValue> {
   const out: Record<string, FieldValue> = {};
-  for (const rule of TABLES[system][type] ?? []) {
+  for (const rule of config.fieldRules[system][type] ?? []) {
     if (rule.readOnly) continue;
     if (!(rule.canonical in fields)) continue;
     // Native field can be a dotted path on read; on write we only support flat props.
     if (rule.native.includes('.')) continue;
     out[rule.native] = transform(
       rule.fromCanonical,
-      fromCanonicalValue(system, type, rule.canonical, fields[rule.canonical] ?? null),
+      fromCanonicalValue(config.valueMappings, system, type, rule.canonical, fields[rule.canonical] ?? null),
     );
   }
   return out;
-}
-
-/**
- * The set of native field names to request from an API for a given type (read projection).
- * Deduplicated case-insensitively: two different canonical fields can legitimately map to
- * the same native field (e.g. an alias), but a query's field-selection list can only name
- * that native field once (Salesforce rejects "duplicate field selected" otherwise).
- */
-export function nativeFields(system: SystemId, type: CanonicalType): string[] {
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const rule of TABLES[system][type] ?? []) {
-    const key = rule.native.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(rule.native);
-  }
-  return out;
-}
-
-export function nativeField(
-  system: SystemId,
-  type: CanonicalType,
-  canonical: string,
-): string | undefined {
-  return (TABLES[system][type] ?? []).find((rule) => rule.canonical === canonical)?.native;
 }
 
 // ----------------- helpers / transforms -----------------
@@ -246,13 +225,14 @@ function transform(id: TransformId | undefined, value: FieldValue): FieldValue {
 }
 
 function toCanonicalValue(
+  mappings: readonly ValueMapping[],
   system: SystemId,
   type: CanonicalType,
   field: string,
   value: FieldValue,
 ): FieldValue {
   if (typeof value !== 'string') return value;
-  const row = VALUE_MAPPINGS.find(
+  const row = mappings.find(
     (mapping) =>
       mapping.type === type &&
       mapping.canonicalField === field &&
@@ -262,13 +242,14 @@ function toCanonicalValue(
 }
 
 function fromCanonicalValue(
+  mappings: readonly ValueMapping[],
   system: SystemId,
   type: CanonicalType,
   field: string,
   value: FieldValue,
 ): FieldValue {
   if (typeof value !== 'string') return value;
-  const row = VALUE_MAPPINGS.find(
+  const row = mappings.find(
     (mapping) =>
       mapping.type === type &&
       mapping.canonicalField === field &&

@@ -69,7 +69,15 @@ describe('operations dashboard', () => {
     expect(html).toContain("token:'EXECUTE'");
     expect(html).toContain('requestTypedConfirmation');
     expect(html).not.toContain("prompt('");
-    expect(html).toContain('Pass the one-record test before preparing the full migration.');
+    expect(html).toContain('Pass a verified test before preparing the full migration.');
+    // R04: a batch is previewed and reviewed before it is written, results are read back,
+    // and every confirmed write carries an idempotency key (R03).
+    expect(html).toContain("'/test-batch/preview'");
+    expect(html).toContain('previewRunId:preview.runId');
+    expect(html).toContain("'idempotency-key'");
+    expect(html).toContain('Not verified: ');
+    expect(html).toContain('still untested');
+    expect(html).not.toContain("body:JSON.stringify({type,count,confirm:true})");
     expect(html).not.toContain('Generate dry run');
     expect(html).not.toContain('Preview every proposed write');
   });

@@ -9,7 +9,7 @@ import {
   type SyncConfig,
   type SyncConfigStore,
 } from '../core/syncConfig.js';
-import { canonicalObjectsFor, requireNativeObjectName } from '../core/objectRegistry.js';
+import type { ConfigContext } from '../core/configContext.js';
 import type { IdMapStore } from '../core/idMap.js';
 import type { ActivityLog } from '../observability/activity.js';
 import type { SyncEngine } from './syncEngine.js';
@@ -20,6 +20,8 @@ const POLL_STREAM_PREFIX = 'poll:';
 // Bounded first-run lookback so an initial poll can't trigger an unbounded backfill, unless
 // the object's own polling config sets a longer lookbackDays.
 const DEFAULT_LOOKBACK_DAYS = 1;
+// Overlap re-read on every incremental poll (see pollOne).
+const POLL_OVERLAP_MS = 2 * 60_000;
 // How often the scheduler checks which objects are due -- independent of any object's own
 // interval, which can be as short as MIN_POLLING_INTERVAL_MINUTES (1 minute).
 const BASE_TICK_MS = 30_000;
@@ -65,8 +67,10 @@ export class SyncPoller {
     private readonly syncConfig: SyncConfigStore,
     private readonly cursors: ReplayCursorStore,
     private readonly sync: SyncEngine,
+    private readonly config: ConfigContext,
     private readonly activity?: ActivityLog,
     private readonly idMap?: IdMapStore,
+    private readonly opts: { overlapMs?: number } = {},
   ) {}
 
   lastRun(type: CanonicalType): SyncPollerSummary | undefined {
@@ -196,9 +200,15 @@ export class SyncPoller {
     const connector = this.connectors[system];
     const stream = POLL_STREAM_PREFIX + type;
     const lookbackDays = config.polling[type]?.lookbackDays ?? DEFAULT_LOOKBACK_DAYS;
-    const since =
-      (await this.cursors.get(system, stream)) ??
-      new Date(Date.now() - lookbackDays * 24 * 60 * 60 * 1000).toISOString();
+    // Re-read an overlap window before the committed cursor: vendors can make a change
+    // visible to queries some time after its modified timestamp (replication/indexing lag),
+    // and a strict "since the last poll" window would miss it forever. Re-seen records yield
+    // the same deterministic event id and are deduplicated by the durable queue; a re-seen
+    // record whose content is unchanged is an echo and produces no write.
+    const cursor0 = await this.cursors.get(system, stream);
+    const since = cursor0
+      ? new Date(Date.parse(cursor0) - (this.opts.overlapMs ?? POLL_OVERLAP_MS)).toISOString()
+      : new Date(Date.now() - lookbackDays * 24 * 60 * 60 * 1000).toISOString();
     // Captured before paging starts so a record changed mid-poll isn't skipped next cycle.
     const pollStartedAt = new Date().toISOString();
 
@@ -231,8 +241,8 @@ export class SyncPoller {
     // field values) -- when this native object also backs other canonical objects, only keep
     // a deletion that the id map actually links to THIS type, since only whichever poll cycle
     // matched the record's condition while it existed could ever have linked it.
-    const nativeObject = requireNativeObjectName(system, type);
-    const sharedNativeObject = canonicalObjectsFor(system, nativeObject).length > 1;
+    const nativeObject = this.config.requireNativeObjectName(system, type);
+    const sharedNativeObject = this.config.canonicalObjectsFor(system, nativeObject).length > 1;
     const rawDeletions = await connector.listDeletedSince(type, since);
     const deletions = sharedNativeObject
       ? (

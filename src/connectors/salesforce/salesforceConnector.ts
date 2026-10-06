@@ -1,31 +1,37 @@
 import axios, { type AxiosInstance } from 'axios';
-import crypto from 'node:crypto';
-import type { CRMConnector, ConnectorAssociation, QueryCondition } from '../../core/connector.js';
+import {
+  ConditionalWriteRejectedError,
+  IncompleteCandidateSetError,
+  UnsupportedAssociationError,
+  type CRMConnector,
+  type ConnectorAssociation,
+  type NativeWebhookEvent,
+  type QueryCondition,
+  type WriteOptions,
+} from '../../core/connector.js';
+import { connections } from '../../core/connectionStore.js';
 import type {
   CanonicalRecord,
   CanonicalType,
   ChangeEvent,
   CRMObjectDescriptor,
   CRMObjectMetadata,
+  FieldValue,
   RecordPage,
   NaturalKeyQuery,
   SchemaField,
   UpsertResult,
 } from '../../core/types.js';
-import {
-  fromCanonicalFields,
-  nativeField,
-  nativeFields,
-  toCanonicalFields,
-} from '../../core/mapping.js';
-import { canonicalObjectFor, canonicalObjectsFor, requireNativeObjectName } from '../../core/objectRegistry.js';
-import { getAccessToken } from './auth.js';
+import type { ConfigContext } from '../../core/configContext.js';
+import { getAccessToken, refreshAfterRejection } from './auth.js';
 import { env } from '../../config/env.js';
 import { logger } from '../../logger.js';
-import { installHttpPolicy } from '../../core/httpPolicy.js';
+import { installHttpPolicy, type ConnectorHealth, type HttpPolicyControls } from '../../core/httpPolicy.js';
 import type { SyncCondition } from '../../core/syncConfig.js';
  
 const API_VERSION = 'v61.0';
+/** Broad natural-key searches beyond this many candidates are treated as incomplete. */
+const NATURAL_KEY_CANDIDATE_LIMIT = 50;
 
 // Every query already selects these explicitly; if a field mapping's native name happens to
 // collide with one of them (e.g. a rule mapped to "Id"), Salesforce rejects the query with
@@ -39,6 +45,22 @@ function excludeAlwaysQueriedFields(fields: string[]): string[] {
 export class SalesforceConnector implements CRMConnector {
   readonly system = 'salesforce' as const;
   private http!: AxiosInstance;
+  private policy?: HttpPolicyControls;
+
+  constructor(
+    private readonly config: ConfigContext,
+    private readonly tenantKey = 'local',
+  ) {}
+
+  /** Circuit/health state of this connector's vendor calls (R07). */
+  health(): ConnectorHealth | undefined {
+    return this.policy?.health();
+  }
+
+  /** Cancels in-flight vendor requests (graceful shutdown). */
+  abortRequests(): void {
+    this.policy?.abortAll();
+  }
 
   async init(): Promise<void> {
     const session = await getAccessToken();
@@ -46,19 +68,16 @@ export class SalesforceConnector implements CRMConnector {
       baseURL: `${session.instanceUrl}/services/data/${API_VERSION}`,
       headers: { Authorization: `Bearer ${session.accessToken}` },
     });
-    installHttpPolicy(this.http, {
+    this.policy = installHttpPolicy(this.http, {
       requestsPerSecond: env.SALESFORCE_REQUESTS_PER_SECOND,
       name: 'salesforce',
-    });
-    // Refresh the bearer on 401 once.
-    this.http.interceptors.response.use(undefined, async (error) => {
-      if (error.response?.status === 401) {
-        const s = await getAccessToken();
-        this.http.defaults.headers.Authorization = `Bearer ${s.accessToken}`;
-        this.http.defaults.baseURL = `${s.instanceUrl}/services/data/${API_VERSION}`;
-        return this.http.request(error.config);
-      }
-      throw error;
+      limiterKey: `salesforce:${this.tenantKey}`,
+      // SOQL is sent as GET /query; creates are POST /sobjects/<type>.
+      refreshToken: async (rejected) => {
+        const fresh = await refreshAfterRejection(rejected);
+        this.http.defaults.baseURL = `${fresh.instanceUrl}/services/data/${API_VERSION}`;
+        return fresh.accessToken;
+      },
     });
     logger.info('Salesforce connector ready');
   }
@@ -93,7 +112,7 @@ export class SalesforceConnector implements CRMConnector {
     type: CanonicalType,
     since: string,
   ): Promise<{ sourceId: string; occurredAt: string }[]> {
-    const sobject = requireNativeObjectName('salesforce', type);
+    const sobject = this.config.requireNativeObjectName('salesforce', type);
     const { data } = await this.http.get(`/sobjects/${sobject}/deleted`, {
       params: { start: since, end: new Date().toISOString() },
     });
@@ -121,8 +140,8 @@ export class SalesforceConnector implements CRMConnector {
 
   async read(type: CanonicalType, sourceId: string): Promise<CanonicalRecord | null> {
     try {
-      const sobject = requireNativeObjectName('salesforce', type);
-      const fields = excludeAlwaysQueriedFields(nativeFields('salesforce', type).filter((f) => !f.includes('.')));
+      const sobject = this.config.requireNativeObjectName('salesforce', type);
+      const fields = excludeAlwaysQueriedFields(this.config.nativeFields('salesforce', type).filter((f) => !f.includes('.')));
       const { data } = await this.http.get(
         `/sobjects/${sobject}/${sourceId}?fields=${['Id', 'LastModifiedDate', ...fields].join(',')}`,
       );
@@ -138,7 +157,7 @@ export class SalesforceConnector implements CRMConnector {
     query: NaturalKeyQuery,
   ): Promise<CanonicalRecord[]> {
     const predicates = query.criteria.map((criterion) => {
-      const field = nativeField('salesforce', type, criterion.field);
+      const field = this.config.nativeField('salesforce', type, criterion.field);
       if (!field || field.includes('.')) return undefined;
       const escaped = escapeSoql(criterion.value);
       return criterion.field === 'domain'
@@ -147,18 +166,27 @@ export class SalesforceConnector implements CRMConnector {
     });
     if (predicates.some((predicate) => !predicate)) return [];
     const predicate = predicates.join(' AND ');
-    const fields = excludeAlwaysQueriedFields(nativeFields('salesforce', type));
-    const sobject = requireNativeObjectName('salesforce', type);
+    const fields = excludeAlwaysQueriedFields(this.config.nativeFields('salesforce', type));
+    const sobject = this.config.requireNativeObjectName('salesforce', type);
+    // LIKE on Website is only a broad candidate search (the column holds full URLs); every
+    // candidate is then verified against the exact normalised key, so example.com never
+    // matches notexample.com. Hitting the limit means the set may be incomplete.
     const soql = `SELECT Id, LastModifiedDate, ${fields.join(', ')}
-      FROM ${sobject} WHERE ${predicate} LIMIT 10`;
+      FROM ${sobject} WHERE ${predicate} LIMIT ${NATURAL_KEY_CANDIDATE_LIMIT + 1}`;
     const { data } = await this.http.get(`/query?q=${encodeURIComponent(soql)}`);
-    return (data.records as Record<string, unknown>[]).map((record) =>
-      this.canonicalize(type, record),
-    );
+    const records = data.records as Record<string, unknown>[];
+    if (records.length > NATURAL_KEY_CANDIDATE_LIMIT || data.done === false) {
+      throw new IncompleteCandidateSetError(
+        `more than ${NATURAL_KEY_CANDIDATE_LIMIT} Salesforce ${type} candidates match ${query.key}`,
+      );
+    }
+    return records
+      .map((record) => this.canonicalize(type, record))
+      .filter((record) => this.config.naturalKey(record) === query.key);
   }
 
   async describe(type: CanonicalType): Promise<SchemaField[]> {
-    return (await this.describeObject(requireNativeObjectName('salesforce', type))).fields;
+    return (await this.describeObject(this.config.requireNativeObjectName('salesforce', type))).fields;
   }
 
   async listObjects(): Promise<CRMObjectDescriptor[]> {
@@ -174,7 +202,7 @@ export class SalesforceConnector implements CRMConnector {
         createable: object.createable,
         updateable: object.updateable,
         deletable: object.deletable,
-        canonicalType: canonicalObjectFor('salesforce', object.name),
+        canonicalType: this.config.canonicalObjectFor('salesforce', object.name),
       }))
       .sort((a, b) => Number(Boolean(b.canonicalType)) - Number(Boolean(a.canonicalType)) ||
         a.label.localeCompare(b.label));
@@ -191,7 +219,7 @@ export class SalesforceConnector implements CRMConnector {
       createable: Boolean(data.createable),
       updateable: Boolean(data.updateable),
       deletable: Boolean(data.deletable),
-      canonicalType: canonicalObjectFor('salesforce', objectId),
+      canonicalType: this.config.canonicalObjectFor('salesforce', objectId),
     };
     const fields = data.fields as SfField[];
     // Parent lookups come from this object's own reference-type fields (e.g. Contact.AccountId
@@ -246,11 +274,11 @@ export class SalesforceConnector implements CRMConnector {
     type: CanonicalType,
     sourceId: string,
   ): Promise<ConnectorAssociation[]> {
-    const sobject = requireNativeObjectName('salesforce', type);
+    const sobject = this.config.requireNativeObjectName('salesforce', type);
     const metadata = await this.describeObject(sobject);
     const parentLookups = metadata.relationships.filter(
       (relationship) =>
-        relationship.kind === 'parent' && canonicalObjectFor('salesforce', relationship.targetObjectId),
+        relationship.kind === 'parent' && this.config.canonicalObjectFor('salesforce', relationship.targetObjectId),
     );
     if (!parentLookups.length) return [];
     const fieldNames = parentLookups.map((lookup) => lookup.name);
@@ -258,7 +286,7 @@ export class SalesforceConnector implements CRMConnector {
     const output: ConnectorAssociation[] = [];
     for (const lookup of parentLookups) {
       const value = data[lookup.name];
-      const toType = canonicalObjectFor('salesforce', lookup.targetObjectId);
+      const toType = this.config.canonicalObjectFor('salesforce', lookup.targetObjectId);
       if (!value || !toType) continue;
       output.push({ toType, toId: String(value), kind: lookup.label ?? lookup.name });
     }
@@ -270,78 +298,96 @@ export class SalesforceConnector implements CRMConnector {
     fromId: string,
     association: ConnectorAssociation,
   ): Promise<void> {
-    const sobject = requireNativeObjectName('salesforce', fromType);
+    const sobject = this.config.requireNativeObjectName('salesforce', fromType);
     const metadata = await this.describeObject(sobject);
     const lookup = metadata.relationships.find(
       (relationship) =>
         relationship.kind === 'parent' &&
-        canonicalObjectFor('salesforce', relationship.targetObjectId) === association.toType,
+        this.config.canonicalObjectFor('salesforce', relationship.targetObjectId) === association.toType,
     );
-    if (!lookup) return; // no direct lookup field; junction-object associations aren't handled here
+    if (!lookup) {
+      // Junction-object relationships (e.g. OpportunityContactRole) have no direct lookup.
+      throw new UnsupportedAssociationError(
+        `Salesforce ${sobject} has no lookup field to ${association.toType}; the relationship needs a junction object`,
+      );
+    }
+    // A parent lookup is single-valued: the destination's current parent is replaced.
     await this.http.patch(`/sobjects/${sobject}/${fromId}`, { [lookup.name]: association.toId });
   }
 
   async upsert(record: CanonicalRecord, targetId?: string): Promise<UpsertResult> {
-    const sobject = requireNativeObjectName('salesforce', record.type);
-    const body = fromCanonicalFields('salesforce', record.type, record.fields);
+    const body = this.config.fromCanonicalFields('salesforce', record.type, record.fields);
+    const { conditional: _conditional, ...result } = await this.write(record.type, body, targetId);
+    return result;
+  }
+
+  /**
+   * Exact-payload write. Updates can be conditional: Salesforce answers 412 when the row's
+   * LastModifiedDate is later than If-Unmodified-Since, which we surface as
+   * ConditionalWriteRejectedError so the approved write is stopped rather than applied to
+   * a record that changed after review. Creates cannot be conditional.
+   */
+  async write(
+    type: CanonicalType,
+    payload: Record<string, FieldValue>,
+    targetId?: string,
+    options: WriteOptions = {},
+  ): Promise<UpsertResult & { conditional: boolean }> {
+    const sobject = this.config.requireNativeObjectName('salesforce', type);
     if (targetId) {
-      await this.http.patch(`/sobjects/${sobject}/${targetId}`, body);
-      return { system: this.system, type: record.type, targetId, operation: 'updated' };
+      const conditional = Boolean(options.ifUnmodifiedSince);
+      try {
+        await this.http.patch(`/sobjects/${sobject}/${targetId}`, payload, {
+          headers: conditional
+            ? { 'If-Unmodified-Since': new Date(options.ifUnmodifiedSince!).toUTCString() }
+            : undefined,
+        });
+      } catch (err) {
+        if (axios.isAxiosError(err) && err.response?.status === 412) {
+          throw new ConditionalWriteRejectedError();
+        }
+        throw err;
+      }
+      return { system: this.system, type, targetId, operation: 'updated', conditional };
     }
-    const { data } = await this.http.post(`/sobjects/${sobject}`, body);
-    return { system: this.system, type: record.type, targetId: data.id, operation: 'created' };
+    const { data } = await this.http.post(`/sobjects/${sobject}`, payload);
+    return { system: this.system, type, targetId: data.id, operation: 'created', conditional: false };
+  }
+
+  async accountIdentity(): Promise<string | undefined> {
+    const connection = await connections.get('salesforce');
+    if (!connection) return undefined;
+    return `salesforce:${connection.environment}:${connection.accountId ?? connection.instanceUrl ?? connection.accountLabel ?? 'unknown'}`;
   }
 
   async remove(type: CanonicalType, sourceId: string): Promise<UpsertResult> {
-    const sobject = requireNativeObjectName('salesforce', type);
+    const sobject = this.config.requireNativeObjectName('salesforce', type);
     await this.http.delete(`/sobjects/${sobject}/${sourceId}`);
     return { system: this.system, type, targetId: sourceId, operation: 'deleted' };
   }
 
   /**
-   * Salesforce has no built-in outbound webhook to arbitrary URLs. The common pattern is
-   * an Apex trigger (or Change Data Capture / Platform Event subscriber) that POSTs to us
-   * with an HMAC signature over the raw body using a shared secret (SF_WEBHOOK_SECRET).
-   * Expected JSON: { events: [{ sobject, recordId, changeType, occurredAt }] }
+   * R12: maps a verified webhook event (sender contract and verification in
+   * src/webhooks/salesforce.ts) to a ChangeEvent through the object registry.
    */
-  async parseWebhook(
-    headers: Record<string, string | string[] | undefined>,
-    rawBody: Buffer,
+  async resolveWebhookEvent(
+    event: NativeWebhookEvent,
     resolveType?: (nativeObjectId: string, sourceId: string) => Promise<CanonicalType | undefined>,
-  ): Promise<ChangeEvent[]> {
-    const secret = env.SF_WEBHOOK_SECRET;
-    if (!secret && !env.ALLOW_UNSIGNED_WEBHOOKS) {
-      throw new Error('Salesforce webhook secret unavailable');
-    }
-    if (secret) {
-      const provided = String(headers['x-signature'] ?? '');
-      const expected = crypto.createHmac('sha256', secret).update(rawBody).digest('hex');
-      if (!safeEqual(provided, expected)) throw new Error('Salesforce webhook signature mismatch');
-    }
-    const payload = JSON.parse(rawBody.toString('utf8')) as {
-      events?: { sobject: string; recordId: string; changeType: string; occurredAt?: string }[];
+  ): Promise<ChangeEvent | null> {
+    const candidates = this.config.canonicalObjectsFor('salesforce', event.nativeObject);
+    const type =
+      candidates.length <= 1
+        ? candidates[0]?.canonicalObject
+        : await resolveType?.(event.nativeObject, event.sourceId);
+    if (!type) return null;
+    return {
+      eventId: event.deliveryId,
+      system: this.system,
+      type,
+      sourceId: event.sourceId,
+      changeType: event.changeType,
+      occurredAt: event.occurredAt,
     };
-    const events: ChangeEvent[] = [];
-    for (const e of payload.events ?? []) {
-      const candidates = canonicalObjectsFor('salesforce', e.sobject);
-      const type =
-        candidates.length <= 1
-          ? candidates[0]?.canonicalObject
-          : await resolveType?.(e.sobject, e.recordId);
-      if (!type) continue;
-      events.push({
-        eventId: crypto
-          .createHash('sha256')
-          .update(`${e.sobject}:${e.recordId}:${e.changeType}:${e.occurredAt ?? ''}`)
-          .digest('hex'),
-        system: this.system,
-        type,
-        sourceId: e.recordId,
-        changeType: (e.changeType as ChangeEvent['changeType']) ?? 'updated',
-        occurredAt: e.occurredAt ?? new Date().toISOString(),
-      });
-    }
-    return events;
   }
 
   // ----------------- internals -----------------
@@ -351,10 +397,12 @@ export class SalesforceConnector implements CRMConnector {
     modifiedSince?: string,
     condition?: QueryCondition,
   ): string {
-    const fields = excludeAlwaysQueriedFields(nativeFields('salesforce', type));
-    const sobject = requireNativeObjectName('salesforce', type);
+    const fields = excludeAlwaysQueriedFields(this.config.nativeFields('salesforce', type));
+    const sobject = this.config.requireNativeObjectName('salesforce', type);
     const clauses = [
-      modifiedSince ? `LastModifiedDate > ${modifiedSince}` : undefined,
+      // Inclusive: a record modified exactly at the boundary is not skipped (re-reads are
+      // deduplicated by event id).
+      modifiedSince ? `LastModifiedDate >= ${modifiedSince}` : undefined,
       ...(condition?.conditions ?? []).map(compileConditionSoql),
       condition?.rawCondition ? `(${condition.rawCondition})` : undefined,
     ].filter((clause): clause is string => Boolean(clause));
@@ -366,7 +414,7 @@ export class SalesforceConnector implements CRMConnector {
     return {
       canonicalId: '', // assigned by the engine via the id map
       type,
-      fields: toCanonicalFields('salesforce', type, native),
+      fields: this.config.toCanonicalFields('salesforce', type, native),
       meta: {
         source: 'salesforce',
         sourceId: String(native.Id ?? ''),
@@ -453,10 +501,4 @@ function compileConditionSoql(condition: SyncCondition): string {
 
 function escapeSoql(value: string): string {
   return value.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
-}
-
-function safeEqual(a: string, b: string): boolean {
-  const ab = Buffer.from(a);
-  const bb = Buffer.from(b);
-  return ab.length === bb.length && crypto.timingSafeEqual(ab, bb);
 }

@@ -7,6 +7,7 @@ export type DashboardSection =
   | 'demo';
 
 export const dashboardShellCss = `
+[hidden]{display:none!important}
   :root{
     --canvas:#f5f8fa;--card:#fff;--border:#dfe3eb;--border-strong:#cbd6e2;
     --text:#2e3f50;--text-2:#516f90;--muted:#7c98b6;--nav:#2e3f50;
@@ -35,6 +36,8 @@ export const dashboardShellCss = `
   .header-actions{display:flex;align-items:center;gap:14px;white-space:nowrap}
   .header-actions .quiet{color:#b6c2ce;font-size:13px}
   .header-actions .quiet:hover{color:#fff;text-decoration:none}
+  .signout{margin:0}.signout-btn{background:none;border:0;padding:6px 4px;color:#b6c2ce;font:inherit;font-size:13px;cursor:pointer}
+  .signout-btn:hover{color:#fff}
   .header-actions .demo-cta{display:inline-flex;background:var(--orange);color:#fff;font-size:13px;font-weight:500;
     padding:9px 15px;border-radius:6px}
   .header-actions .demo-cta:hover{background:var(--orange-hover);color:#fff;text-decoration:none}
@@ -100,8 +103,10 @@ export const dashboardShellCss = `
     .metric-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
   }
   @media(max-width:680px){
-    .app-header{height:auto}.header-inner{min-height:60px;flex-wrap:wrap;padding-top:10px;padding-bottom:10px;gap:10px}
-    .app-nav{order:3;flex-basis:100%}.header-actions{margin-left:auto}.header-actions .demo-cta{display:none}
+    .app-header{height:auto}
+    /* Phone: brand + actions on one row, the nav on its own row scrolling inside itself. */
+    .header-inner{min-height:60px;display:grid;grid-template-columns:minmax(0,1fr) auto;padding-top:10px;padding-bottom:10px;gap:10px}
+    .app-nav{grid-column:1 / -1;grid-row:2;min-width:0}.header-actions{grid-column:2;grid-row:1}.header-actions .demo-cta{display:none}
     .page-heading{align-items:flex-start;flex-direction:column}.status-pill{white-space:normal}
     .metric-grid{grid-template-columns:1fr}
   }
@@ -122,7 +127,7 @@ export function dashboardHeader(active: DashboardSection): string {
       ${item('settings', '/ops#settings', 'Settings')}
     </nav>
     <div class="header-actions">
-      <a class="quiet" href="/auth/api-key">Sign in</a>
+      <form method="post" action="/auth/logout" class="signout"><button class="signout-btn" type="submit">Sign out</button></form>
       <a class="demo-cta" href="/demo">Open interactive demo</a>
     </div>
   </div>

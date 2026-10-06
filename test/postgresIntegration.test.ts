@@ -1,12 +1,9 @@
-import { createServer } from 'node:net';
-import { promises as fs } from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
 import crypto from 'node:crypto';
-import EmbeddedPostgres from 'embedded-postgres';
+import { promises as fs } from 'node:fs';
+import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { PostgresDatabase, runMigrations } from '../src/db/postgres.js';
-import { TenantRepository } from '../src/db/tenantRepository.js';
+import type { PostgresDatabase } from '../src/db/postgres.js';
+import { startIsolatedPostgres, type IsolatedPostgres } from './helpers/postgres.js';
 import { SecretCipher } from '../src/db/security.js';
 import { PostgresSettingsStore } from '../src/core/settingsStore.js';
 import { PostgresConnectionStore } from '../src/core/connectionStore.js';
@@ -16,84 +13,34 @@ import { PostgresMigrationPlanStore } from '../src/db/postgresMigrationPlanStore
 import { PostgresMigrationStore } from '../src/db/postgresMigrationStore.js';
 import { PostgresAiSettingsStore } from '../src/db/postgresAiSettingsStore.js';
 import { PostgresMappingStore } from '../src/db/postgresMappingStore.js';
-import { configureFieldRules, resetFieldRules } from '../src/core/mapping.js';
+import { createDefaultConfigContext } from '../src/core/configContext.js';
 
 describe('PostgreSQL repositories', () => {
-  let cluster: EmbeddedPostgres;
+  let pg: IsolatedPostgres;
   let database: PostgresDatabase;
-  let tempDir: string;
   let tenantA: string;
   let tenantB: string;
 
   beforeAll(async () => {
-    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'crm-sync-postgres-test-'));
-    const port = await availablePort();
-    const adminUser = 'crm_sync_test_admin';
-    const user = 'crm_sync_test_app';
-    const password = crypto.randomBytes(24).toString('base64url');
-    const databaseName = 'crm_sync_test';
-    cluster = new EmbeddedPostgres({
-      databaseDir: path.join(tempDir, 'cluster'),
-      user: adminUser,
-      password,
-      port,
-      persistent: false,
-      authMethod: 'scram-sha-256',
-      onLog: () => undefined,
-      onError: () => undefined,
-    });
-    await cluster.initialise();
-    await cluster.start();
-    await cluster.createDatabase(databaseName);
-    const admin = cluster.getPgClient('postgres');
-    await admin.connect();
-    try {
-      await admin.query(
-        `CREATE ROLE ${admin.escapeIdentifier(user)}
-         LOGIN PASSWORD '${password}' NOSUPERUSER NOCREATEDB NOCREATEROLE`,
-      );
-      await admin.query(
-        `ALTER DATABASE ${admin.escapeIdentifier(databaseName)}
-         OWNER TO ${admin.escapeIdentifier(user)}`,
-      );
-    } finally {
-      await admin.end();
-    }
-
-    database = new PostgresDatabase({
-      connectionString:
-        `postgresql://${encodeURIComponent(user)}:${encodeURIComponent(password)}` +
-        `@localhost:${port}/${databaseName}`,
-      max: 4,
-    });
-    await runMigrations(database);
-    const tenants = new TenantRepository(database);
-    tenantA = (await tenants.ensure('integration-a')).id;
-    tenantB = (await tenants.ensure('integration-b')).id;
-  }, 60_000);
+    pg = await startIsolatedPostgres();
+    database = pg.database;
+    tenantA = await pg.ensureTenant('integration-a');
+    tenantB = await pg.ensureTenant('integration-b');
+  }, 180_000);
 
   afterAll(async () => {
-    await database?.close();
-    await cluster?.stop();
-    if (tempDir) await fs.rm(tempDir, { recursive: true, force: true });
+    await pg?.stop();
   }, 30_000);
 
   it('applies every migration and forces tenant row-level security', async () => {
     const migrations = await database.pool.query<{ version: string }>(
       'SELECT version FROM schema_migrations ORDER BY version',
     );
-    expect(migrations.rows.map((row) => row.version)).toEqual([
-      '001_initial.sql',
-      '002_metadata_and_governance.sql',
-      '003_delete_approvals.sql',
-      '004_migration_plans.sql',
-      '005_ai_provider_credentials.sql',
-      '006_field_mapping_sets.sql',
-      '007_migration_canary.sql',
-      '008_open_object_model.sql',
-      '009_notification_settings.sql',
-      '010_dismissed_sync_status.sql',
-    ]);
+    const files = (await fs.readdir(path.resolve('db/migrations')))
+      .filter((name) => name.endsWith('.sql'))
+      .sort();
+    expect(files.length).toBeGreaterThanOrEqual(10);
+    expect(migrations.rows.map((row) => row.version)).toEqual(files);
 
     const rls = await database.pool.query<{
       relname: string;
@@ -249,7 +196,18 @@ describe('PostgreSQL repositories', () => {
       mode: 'execute',
       options: { canary: true },
     });
-    await plans.finishCanary(created.id, created.revision, canaryExecutionRunId);
+    await plans.finishCanary(created.id, created.revision, previewRunId, canaryExecutionRunId, {
+      passed: true,
+      reasons: [],
+      checkedAt: new Date().toISOString(),
+      previewRunId,
+      executionRunId: canaryExecutionRunId,
+      configFingerprint: 'fingerprint',
+      accounts: {},
+      testedTypes: ['contact'],
+      representativeWrite: true,
+      items: [],
+    });
     expect((await plans.get(created.id))?.canary).toMatchObject({
       type: 'contact',
       sourceId: '003-integration',
@@ -272,45 +230,25 @@ describe('PostgreSQL repositories', () => {
   });
 
   it('persists an intentionally empty mapping set across initialization', async () => {
-    const mappings = new PostgresMappingStore(database, tenantA);
-    try {
-      await mappings.set('salesforce', 'contact', []);
-      resetFieldRules();
-      // No hardcoded defaults exist anymore to distinguish "reset" from "loaded empty from DB";
-      // seed a placeholder so the pre-init/post-init states are still distinguishable.
-      configureFieldRules('salesforce', 'contact', [{ canonical: 'placeholder', native: 'Placeholder' }]);
-      expect(mappings.get('salesforce', 'contact')).not.toEqual([]);
+    const writerConfig = createDefaultConfigContext('postgres-writer');
+    const mappings = new PostgresMappingStore(database, tenantA, writerConfig);
+    await mappings.set('salesforce', 'contact', []);
+    // A separate app instance whose context still holds non-empty rules must load the
+    // tenant's intentionally empty set rather than keep its own defaults.
+    const readerConfig = createDefaultConfigContext('postgres-reader');
+    const reader = new PostgresMappingStore(database, tenantA, readerConfig);
+    expect(reader.get('salesforce', 'contact')).not.toEqual([]);
 
-      await mappings.init();
+    await reader.init();
 
-      expect(mappings.get('salesforce', 'contact')).toEqual([]);
-      const marker = await database.tenant(tenantA, (client) =>
-        client.query(
-          `SELECT 1 FROM field_mapping_sets
-           WHERE tenant_id = $1 AND system = 'salesforce' AND object_type = 'contact'`,
-          [tenantA],
-        ),
-      );
-      expect(marker.rowCount).toBe(1);
-    } finally {
-      resetFieldRules();
-    }
+    expect(reader.get('salesforce', 'contact')).toEqual([]);
+    const marker = await database.tenant(tenantA, (client) =>
+      client.query(
+        `SELECT 1 FROM field_mapping_sets
+         WHERE tenant_id = $1 AND system = 'salesforce' AND object_type = 'contact'`,
+        [tenantA],
+      ),
+    );
+    expect(marker.rowCount).toBe(1);
   });
 });
-
-async function availablePort(): Promise<number> {
-  const server = createServer();
-  await new Promise<void>((resolve, reject) => {
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', resolve);
-  });
-  const address = server.address();
-  if (!address || typeof address === 'string') {
-    server.close();
-    throw new Error('unable to allocate PostgreSQL test port');
-  }
-  await new Promise<void>((resolve, reject) =>
-    server.close((error) => (error ? reject(error) : resolve())),
-  );
-  return address.port;
-}

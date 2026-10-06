@@ -137,6 +137,30 @@ export function syncAllows(
 }
 
 /**
+ * R09 pause-versus-discard semantics for one incoming change:
+ *  - object enrolled for sync but currently disabled (paused, e.g. by a mapping change) →
+ *    defer: the change is kept and processed once sync is re-enabled;
+ *  - object never enrolled for sync, or this system is not a source for the object's
+ *    direction → discard: out of scope by design;
+ *  - otherwise process.
+ */
+export function syncRoute(
+  config: SyncConfig,
+  type: CanonicalType,
+  source: SystemId,
+): { action: 'process' } | { action: 'defer' | 'discard'; reason: string } {
+  const object = config.objects[type];
+  if (!object || object.enrolledForSync === false) {
+    return { action: 'discard', reason: `${type} is not enrolled for sync` };
+  }
+  if (!object.enabled) return { action: 'defer', reason: `sync is paused for ${type}` };
+  if (!syncAllows(config, type, source)) {
+    return { action: 'discard', reason: `${source} is not a sync source for ${type} (${object.direction})` };
+  }
+  return { action: 'process' };
+}
+
+/**
  * Evaluates a set of AND-combined structured conditions against one native record's fields.
  * Pure and side-effect-free so it can be reused both server-side (to decide, on an ambiguous
  * webhook, which of several canonical objects sharing one native object a record belongs to)

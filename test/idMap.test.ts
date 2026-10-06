@@ -3,15 +3,17 @@ import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
 import {
-  configureNaturalKeyFields,
   contentHash,
-  naturalKey,
   FileIdMapStore,
   isAllowedNaturalKeyField,
   newCanonicalId,
   type Link,
 } from '../src/core/idMap.js';
 import type { CanonicalRecord } from '../src/core/types.js';
+import { createDefaultConfigContext } from '../src/core/configContext.js';
+
+const config = createDefaultConfigContext('idmap-test');
+const naturalKey = (record: CanonicalRecord) => config.naturalKey(record);
 
 const rec = (over: Partial<CanonicalRecord> = {}): CanonicalRecord => ({
   canonicalId: '',
@@ -76,13 +78,13 @@ describe('FileIdMapStore', () => {
     expect(await store.bySource('hubspot', 'nope')).toBeUndefined();
   });
 
-  it('resolves a link by natural key once indexed', async () => {
+  it('resolves a link by its current natural key', async () => {
     const store = new FileIdMapStore(tmp());
     await store.init();
     const cid = newCanonicalId();
-    store.indexNaturalKey('contact', 'email:ada@x.co', cid);
     await store.upsertLink({
-      canonicalId: cid, type: 'contact', ids: { salesforce: 'sf-1' }, hashes: {}, modifiedAt: {}, updatedAt: '',
+      canonicalId: cid, type: 'contact', ids: { salesforce: 'sf-1' }, hashes: {}, modifiedAt: {},
+      naturalKeys: ['email:ada@x.co'], updatedAt: '',
     });
     expect((await store.byNaturalKey('contact', 'email:ada@x.co'))?.canonicalId).toBe(cid);
   });
@@ -117,9 +119,9 @@ describe('natural-key safety', () => {
     expect(isAllowedNaturalKeyField('company', 'Description')).toBe(false);
     expect(isAllowedNaturalKeyField('company', 'Type')).toBe(false);
     expect(isAllowedNaturalKeyField('company', 'AnnualRevenue')).toBe(false);
-    expect(() => configureNaturalKeyFields('company', ['LastModifiedDate'])).toThrow(
+    expect(() => config.configureNaturalKeyFields('company', ['LastModifiedDate'])).toThrow(
       'unsafe natural-key field',
     );
-    configureNaturalKeyFields('company', ['domain']);
+    config.configureNaturalKeyFields('company', ['domain']);
   });
 });

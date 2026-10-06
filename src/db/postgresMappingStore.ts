@@ -1,11 +1,11 @@
 import type { CanonicalType, SystemId } from '../core/types.js';
 import {
-  configureFieldRules,
-  fieldRules,
+  applyFieldRules,
+  validateFieldRules,
   type FieldRule,
   type TransformId,
 } from '../core/mapping.js';
-import { listCanonicalObjects } from '../core/objectRegistry.js';
+import type { ConfigContext } from '../core/configContext.js';
 import type { MappingStore } from '../core/mappingStore.js';
 import type { PostgresDatabase } from './postgres.js';
 
@@ -22,26 +22,32 @@ export class PostgresMappingStore implements MappingStore {
   constructor(
     private readonly db: PostgresDatabase,
     private readonly tenantId: string,
+    private readonly config: ConfigContext,
   ) {}
 
   async init(): Promise<void> {
-    // objectMappings.init() (app.ts) runs before this, so the tenant's full registry —
-    // not just the built-in 3 — is already populated by the time we loop here.
-    const types = listCanonicalObjects().map((object) => object.canonicalObject);
+    // objectMappings.init() (app.ts) runs before this, so the tenant's full registry --
+    // not just the built-in 3 -- is already on this context by the time we loop here.
+    const types = this.config.listCanonicalObjects().map((object) => object.canonicalObject);
+    const loaded: { system: SystemId; type: CanonicalType; rules: FieldRule[] }[] = [];
     for (const system of ['salesforce', 'hubspot'] as const) {
       for (const type of types) {
         const mapping = await this.load(system, type);
-        if (mapping.configured) configureFieldRules(system, type, mapping.rules);
+        if (mapping.configured) loaded.push({ system, type, rules: mapping.rules });
       }
     }
+    // One publish for the whole tenant: readers never see a partially hydrated mapping.
+    this.config.publish((draft) => {
+      for (const entry of loaded) applyFieldRules(draft.fieldRules, entry.system, entry.type, entry.rules);
+    }, types);
   }
 
   get(system: SystemId, type: CanonicalType): FieldRule[] {
-    return fieldRules(system, type);
+    return this.config.fieldRules(system, type);
   }
 
   async set(system: SystemId, type: CanonicalType, rules: FieldRule[]): Promise<void> {
-    configureFieldRules(system, type, rules);
+    validateFieldRules(rules);
     await this.db.tenant(this.tenantId, async (client) => {
       await client.query(
         `INSERT INTO field_mapping_sets(tenant_id, system, object_type)
@@ -76,6 +82,8 @@ export class PostgresMappingStore implements MappingStore {
         );
       }
     });
+    // Publish after the transaction commits so a failed write never goes live.
+    this.config.configureFieldRules(system, type, rules);
   }
 
   private async load(

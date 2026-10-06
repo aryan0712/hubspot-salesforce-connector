@@ -1,4 +1,5 @@
 import { dashboardHeader, dashboardShellCss } from './shell.js';
+import { csrfFetchScript } from './csrf.js';
 
 /**
  * The onboarding / connections page — the app's entry point. Styled to HubSpot's Canvas
@@ -150,6 +151,15 @@ ${dashboardHeader('connections')}
     </div>
   </section>
 
+  <div class="banner warn" id="replace-confirm" role="alertdialog" aria-labelledby="replace-title" hidden>
+    <div class="ico">!</div>
+    <div class="msg"><div class="t" id="replace-title">Replace the connected account?</div>
+      <div class="cstate" id="replace-detail"></div>
+      <div class="cstate">Confirming replaces the connection, and every prepared or approved migration must be previewed and approved again.</div></div>
+    <button class="button" id="replace-yes" type="button">Replace account</button>
+    <button class="button quiet" id="replace-no" type="button">Keep current account</button>
+  </div>
+
   <div class="banner" id="banner">
     <div class="ico" id="banner-ico">○</div>
     <div class="msg"><div class="t" id="banner-title">Connect both CRMs to unlock migration and sync</div>
@@ -159,7 +169,7 @@ ${dashboardHeader('connections')}
   </div>
   </div>
 </main>
-<script>
+<script>${csrfFetchScript}
   const $=(id)=>document.getElementById(id);
   async function j(u,o){ const r=await fetch(u,o); return r.json(); }
 
@@ -214,13 +224,13 @@ ${dashboardHeader('connections')}
       '</details>'+
       '<label>Redirect / Callback URL — add this to your app</label>'+
       '<div class="copyrow"><div class="callout" id="cb-'+sys+'">'+cb+'</div>'+
-        '<button class="copybtn" onclick="copyCb(\\''+sys+'\\',this)">Copy</button></div>'+
+        '<button class="copybtn" data-action="copyCb" data-arg="'+sys+'">Copy</button></div>'+
       '<label>Client ID</label>'+
       '<input class="inp" id="cid-'+sys+'" value="'+esc(set.clientId||'')+'" placeholder="'+(sys==='salesforce'?'Consumer Key':'Client ID')+'" />'+
       '<label style="margin-top:12px">Client Secret</label>'+
       '<input class="inp" id="csecret-'+sys+'" type="password" placeholder="'+(set.hasSecret?'•••••• (leave blank to keep)':(sys==='salesforce'?'Consumer Secret':'Client Secret'))+'" />'+
-      '<button style="margin-top:16px" onclick="saveCreds(\\''+sys+'\\')">Save credentials</button>'+
-      (configured ? '<div style="margin-top:12px"><button class="linkbtn" onclick="cancelEdit(\\''+sys+'\\')">Cancel</button></div>' : '');
+      '<button style="margin-top:16px" data-action="saveCreds" data-arg="'+sys+'">Save credentials</button>'+
+      (configured ? '<div style="margin-top:12px"><button class="linkbtn" data-action="cancelEdit" data-arg="'+sys+'">Cancel</button></div>' : '');
   }
 
   function renderConn(sys, s){
@@ -242,7 +252,7 @@ ${dashboardHeader('connections')}
         '<div class="connected"><span class="check">✓</span> Connected</div>'+
         '<div class="kv"><b>'+esc(conn.accountLabel||'account')+'</b></div>'+
         '<div class="kv">Environment: <span class="envbadge '+(conn.environment==='sandbox'?'sandbox':'')+'">'+conn.environment+'</span></div>'+
-        '<button class="danger" style="margin-top:14px" onclick="disconnect(\\''+sys+'\\')">Disconnect</button>';
+        '<button class="danger" style="margin-top:14px" data-action="disconnect" data-arg="'+sys+'">Disconnect</button>';
       return;
     }
     if(configured && !editing[sys]){
@@ -251,8 +261,8 @@ ${dashboardHeader('connections')}
         '<label>Environment</label>'+
         '<select id="env-'+sys+'"><option value="production">Production</option>'+
         '<option value="sandbox">Sandbox</option></select>'+
-        '<button onclick="connect(\\''+sys+'\\')">Connect '+(sys==='salesforce'?'Salesforce':'HubSpot')+'</button>'+
-        '<div style="margin-top:12px"><button class="linkbtn" onclick="edit(\\''+sys+'\\')">Edit app credentials</button></div>';
+        '<button data-action="connect" data-arg="'+sys+'">Connect '+(sys==='salesforce'?'Salesforce':'HubSpot')+'</button>'+
+        '<div style="margin-top:12px"><button class="linkbtn" data-action="edit" data-arg="'+sys+'">Edit app credentials</button></div>';
       return;
     }
     st.textContent = configured ? 'Editing credentials' : 'Setup required';
@@ -267,7 +277,7 @@ ${dashboardHeader('connections')}
     if(!clientId){ $('cid-'+sys).focus(); return; }
     const r=await j('/api/settings/'+sys,{method:'POST',headers:{'content-type':'application/json'},
       body:JSON.stringify({clientId,clientSecret})});
-    if(r.error){ alert('Could not save: '+r.error); return; }
+    if(r.error){ showError('Could not save: '+r.error, r.requestId); return; }
     editing[sys]=false; refresh();
   }
   function copyCb(sys, btn){
@@ -300,6 +310,29 @@ ${dashboardHeader('connections')}
         $('page-status').textContent=connected?'1 of 2 connected':'Setup required'; }
     }catch(e){}
   }
+
+  // R11: a reconnect to a DIFFERENT account is staged until an admin confirms it.
+  (async function pendingReplacement(){
+    const params=new URLSearchParams(location.search);
+    const sys=params.get('confirm'), id=params.get('pending');
+    if(!sys||!id) return;
+    const r=await fetch('/api/connections/'+encodeURIComponent(sys)+'/pending/'+encodeURIComponent(id));
+    if(!r.ok) return;
+    const p=await r.json();
+    const label=(a)=>a?esc(a.accountLabel||a.instanceUrl||a.accountId||'unknown')+(a.accountId?' ('+esc(a.accountId)+')':''):'none';
+    $('replace-detail').innerHTML=(sys==='salesforce'?'Salesforce':'HubSpot')+': currently <b>'+label(p.current)+'</b>; you just authorized <b>'+label(p.next)+'</b>.';
+    $('replace-confirm').hidden=false;
+    $('replace-yes').focus();
+    const decide=async(decision)=>{
+      const res=await fetch('/api/connections/'+encodeURIComponent(sys)+'/pending/'+encodeURIComponent(id)+'/'+decision,{method:'POST'});
+      $('replace-detail').textContent=res.ok?(decision==='confirm'?'Account replaced.':'Kept the current account.'):'This confirmation expired; connect again.';
+      $('replace-yes').hidden=$('replace-no').hidden=true;
+      history.replaceState(null,'','/');
+      refresh();
+    };
+    $('replace-yes').onclick=()=>decide('confirm');
+    $('replace-no').onclick=()=>decide('cancel');
+  })();
 
   // Poll only while the tab is visible — this page used to hit four endpoints every two
   // seconds in background tabs for the lifetime of the session.

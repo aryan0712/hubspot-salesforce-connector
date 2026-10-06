@@ -53,11 +53,12 @@ export class ActivityLog {
     else if (entry.kind === 'conflict') this.stats.conflicts += 1;
   }
 
+  /**
+   * Dashboard counter only. Billable usage is charged exactly once, when a claimed
+   * execution settles (engine/executionStore.ts), never from this fire-and-forget path.
+   */
   incMigrated(n: number): void {
     this.stats.migrated += n;
-    void this.sink?.incrementUsage?.('records_migrated', n).catch(() => {
-      // Usage telemetry is recoverable from migration runs.
-    });
   }
 
   recent(n = 50): ActivityEntry[] {

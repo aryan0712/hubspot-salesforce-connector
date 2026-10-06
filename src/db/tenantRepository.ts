@@ -87,6 +87,20 @@ export class TenantRepository {
     });
   }
 
+  /** Every workspace, whatever its status (maintenance jobs such as key rotation). */
+  async listAll(): Promise<Tenant[]> {
+    const result = await this.db.pool.query<Tenant>('SELECT id, slug, name, status, plan FROM tenants ORDER BY created_at');
+    return result.rows;
+  }
+
+  /** Workspaces whose workers should run (trial or active). */
+  async listActive(): Promise<Tenant[]> {
+    const result = await this.db.pool.query<Tenant>(
+      `SELECT id, slug, name, status, plan FROM tenants WHERE status IN ('trial', 'active') ORDER BY created_at`,
+    );
+    return result.rows;
+  }
+
   async bySlug(slug: string): Promise<Tenant | undefined> {
     const result = await this.db.pool.query<Tenant>(
       'SELECT id, slug, name, status, plan FROM tenants WHERE slug = $1',

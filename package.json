@@ -19,7 +19,19 @@
     "demo": "tsx src/cli/demo.ts",
     "test": "vitest run",
     "test:watch": "vitest",
-    "lint": "echo \"(add eslint)\" && exit 0"
+    "test:coverage": "vitest run --coverage",
+    "lint": "eslint src scripts test",
+    "lint:fix": "eslint src scripts test --fix",
+    "typecheck:test": "tsc -p tsconfig.test.json --noEmit",
+    "test:load": "node --expose-gc --import tsx test/load/migrationLoad.ts",
+    "worker": "tsx src/worker.ts",
+    "start:worker": "node dist/worker.js",
+    "test:load:webhooks": "vitest run --config vitest.load.config.ts",
+    "test:browser": "vitest run --config vitest.browser.config.ts",
+    "secrets:rotate": "tsx src/db/rotateSecretsCli.ts",
+    "scan:secrets": "node scripts/scanSecrets.mjs",
+    "audit:deps": "npm audit --omit=dev --audit-level=high",
+    "db:retention": "tsx src/db/retentionCli.ts"
   },
   "dependencies": {
     "axios": "^1.7.7",
@@ -33,13 +45,19 @@
     "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.5",
     "@types/express": "^5.0.0",
     "@types/node": "^22.9.0",
     "@types/nodemailer": "^8.0.1",
     "@types/pg": "^8.20.0",
+    "@vitest/coverage-v8": "^4.1.10",
     "embedded-postgres": "^18.4.0-beta.17",
+    "eslint": "^9.39.5",
+    "globals": "^17.12.0",
+    "playwright-core": "^1.63.0",
     "tsx": "^4.19.2",
     "typescript": "^5.6.3",
+    "typescript-eslint": "^8.70.1",
     "vitest": "^4.1.10"
   }
 }

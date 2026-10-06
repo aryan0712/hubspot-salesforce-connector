@@ -1,13 +1,6 @@
-import { beforeEach } from 'vitest';
-import { applyDefaultObjects } from '../src/core/defaultObjects.js';
-
 /**
- * The built-in contact/company/deal objects are no longer hardcoded into core/mapping.ts —
- * they're seed data (src/core/defaultObjects.ts) applied at runtime. Tests that construct
- * MockConnector/Reconciler/etc. directly (without going through createApp's Postgres path)
- * need that same seed data applied before each test, mirroring what createApp does via
- * PostgresObjectMappingStore/PostgresMappingStore or FileMappingStore in the real app.
+ * No global configuration is applied here on purpose: each test builds its own
+ * ConfigContext (createDefaultConfigContext) the same way each app instance does, so a
+ * test that mutates mappings cannot leak into another -- the isolation R01 requires.
  */
-beforeEach(async () => {
-  await applyDefaultObjects();
-});
+export {};

@@ -1,7 +1,8 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { env } from '../config/env.js';
-import { resolveDatabaseUrl, resolveEncryptionKey } from '../config/runtimeSecrets.js';
+import { createCipher, resolveDatabaseUrl } from '../config/runtimeSecrets.js';
+import { databaseOptions } from '../config/database.js';
 import { logger } from '../logger.js';
 import type { Connection } from '../core/connectionStore.js';
 import type { AppCredentials } from '../core/settingsStore.js';
@@ -10,11 +11,11 @@ import type { FieldRule } from '../core/mapping.js';
 import type { CanonicalType, SystemId } from '../core/types.js';
 import { PostgresDatabase, runMigrations } from './postgres.js';
 import { TenantRepository } from './tenantRepository.js';
-import { SecretCipher } from './security.js';
 import { PostgresConnectionStore } from '../core/connectionStore.js';
 import { PostgresSettingsStore } from '../core/settingsStore.js';
 import { PostgresIdMapStore } from './postgresIdMapStore.js';
 import { PostgresMappingStore } from './postgresMappingStore.js';
+import { ConfigContext } from '../core/configContext.js';
 
 async function readJson<T>(file: string): Promise<T | undefined> {
   try {
@@ -30,19 +31,15 @@ async function main(): Promise<void> {
     throw new Error('Refusing import without --confirm (source files are read-only and retained)');
   }
   const databaseUrl = resolveDatabaseUrl(env);
-  const encryptionKey = resolveEncryptionKey(env);
-  const db = new PostgresDatabase({
-    connectionString: databaseUrl,
-    ssl: env.DATABASE_SSL,
-  });
+  const db = new PostgresDatabase(databaseOptions(env, databaseUrl));
   try {
     await runMigrations(db);
     const tenant = await new TenantRepository(db).ensure(env.DEFAULT_TENANT_SLUG);
-    const cipher = new SecretCipher(encryptionKey);
+    const cipher = createCipher(env);
     const connectionStore = new PostgresConnectionStore(db, cipher, tenant.id);
     const settingsStore = new PostgresSettingsStore(db, cipher, tenant.id);
     const idMap = new PostgresIdMapStore(db, tenant.id);
-    const mappingStore = new PostgresMappingStore(db, tenant.id);
+    const mappingStore = new PostgresMappingStore(db, tenant.id, new ConfigContext('legacy-import'));
 
     const legacySettings = await readJson<Record<SystemId, AppCredentials>>(
       path.resolve('data/settings.json'),
