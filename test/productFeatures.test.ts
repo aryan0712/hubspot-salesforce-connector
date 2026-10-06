@@ -260,4 +260,53 @@ describe('durable sync semantics', () => {
     expect(await ctx.hs.read('contact', hsId)).toBeNull();
     expect((await sync.stats()).completed).toBe(1);
   });
+
+  it('permanently dismisses a job without retrying it', async () => {
+    const ctx = await setup();
+    const store = new InMemorySyncEventStore();
+    const sync = new SyncEngine(ctx.connectors, ctx.reconciler, store, { maxAttempts: 1 });
+    await sync.init();
+    const [jobId] = await sync.enqueue([
+      {
+        eventId: 'missing-1',
+        system: 'salesforce',
+        type: 'contact',
+        sourceId: 'does-not-exist',
+        changeType: 'updated',
+        occurredAt: new Date().toISOString(),
+      },
+    ]);
+    await sync.drain();
+    expect((await sync.stats()).deadLetter).toBe(1);
+
+    await sync.dismiss(jobId!);
+    const stats = await sync.stats();
+    expect(stats.deadLetter).toBe(0);
+    expect(stats.dismissed).toBe(1);
+
+    // Dismissed jobs are terminal -- draining again doesn't resurrect or reprocess them.
+    await sync.drain();
+    expect((await sync.stats()).dismissed).toBe(1);
+  });
+
+  it('refuses to dismiss a job that already completed successfully', async () => {
+    const ctx = await setup();
+    const sfId = ctx.sf.seed('contact', { email: 'ok@example.com' });
+    const store = new InMemorySyncEventStore();
+    const sync = new SyncEngine(ctx.connectors, ctx.reconciler, store);
+    await sync.init();
+    const [jobId] = await sync.enqueue([
+      {
+        eventId: 'ok-1',
+        system: 'salesforce',
+        type: 'contact',
+        sourceId: sfId,
+        changeType: 'updated',
+        occurredAt: new Date().toISOString(),
+      },
+    ]);
+    await sync.drain();
+    expect((await sync.stats()).completed).toBe(1);
+    await expect(sync.dismiss(jobId!)).rejects.toThrow();
+  });
 });

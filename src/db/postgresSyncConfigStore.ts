@@ -42,14 +42,34 @@ export class PostgresSyncConfigStore implements SyncConfigStore {
   }
 }
 
+// Fallback for an object with no polling entry yet in either defaults or saved settings
+// (e.g. registered at runtime, after this store's `defaults` snapshot was built at boot).
+// Opt-in, matching defaultSyncConfig()'s own default -- not specific to any object.
+const FALLBACK_POLLING = { enabled: false, intervalMinutes: 30 };
+
 function mergeConfig(defaults: SyncConfig, saved: Partial<SyncConfig>): SyncConfig {
+  const types = new Set([...Object.keys(defaults.objects), ...Object.keys(saved.objects ?? {})]);
+  const objects: SyncConfig['objects'] = {};
+  const polling: SyncConfig['polling'] = {};
+  for (const type of types) {
+    const merged = { ...defaults.objects[type], ...saved.objects?.[type] };
+    if (merged.enabled !== undefined && merged.direction !== undefined) {
+      // Settings saved before enrolledForSync existed have enabled/direction but no such key.
+      // Treat that as "already enrolled" so previously-configured objects don't silently drop
+      // out of the Sync tab on upgrade -- only genuinely new registrations (which always set
+      // this explicitly, see POST /api/object-mappings) default to unenrolled.
+      objects[type] = { enrolledForSync: true, ...merged } as SyncConfig['objects'][string];
+    }
+    polling[type] = {
+      ...FALLBACK_POLLING,
+      ...defaults.polling?.[type],
+      ...saved.polling?.[type],
+    };
+  }
   return {
     conflictStrategy: saved.conflictStrategy ?? defaults.conflictStrategy,
     sourceOfTruth: saved.sourceOfTruth ?? defaults.sourceOfTruth,
-    objects: {
-      contact: { ...defaults.objects.contact, ...saved.objects?.contact },
-      company: { ...defaults.objects.company, ...saved.objects?.company },
-      deal: { ...defaults.objects.deal, ...saved.objects?.deal },
-    },
+    objects,
+    polling,
   };
 }

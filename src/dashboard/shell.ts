@@ -15,6 +15,7 @@ export const dashboardShellCss = `
     --amber:#e8a33d;--red:#c9451f;--shadow:0 1px 2px rgba(46,63,80,.06);
   }
   *{box-sizing:border-box}
+  [hidden]{display:none!important}
   html{background:var(--canvas)}
   body{margin:0;background:var(--canvas);color:var(--text);
     font:400 14px/1.5 "Lexend Deca","Helvetica Neue",Arial,sans-serif;
@@ -78,6 +79,7 @@ export const dashboardShellCss = `
   .pill.retry,.pill.ambiguous,.pill.manual_review,.tag.conflict{background:#fff6e0;color:#8c6a12}
   .pill.dead_letter,.pill.error{background:#fdede8;color:var(--red)}
   .pill.queued,.tag.info{background:#f0f3f7;color:var(--text-2)}
+  .pill.dismissed{background:#f0f3f7;color:var(--muted)}
   .tag.echo-suppressed{background:#f0edfb;color:var(--purple)}
   .empty{padding:28px;text-align:center;color:var(--muted)}
   .muted{color:var(--muted)}

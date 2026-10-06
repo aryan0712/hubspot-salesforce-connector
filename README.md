@@ -121,3 +121,7 @@ credentials, Docker, and the developer database are not required.
 
 See [architecture](docs/ARCHITECTURE.md), [operations](docs/OPERATIONS.md), and
 [Migration Copilot](docs/AI_COPILOT.md).
+
+The [application review remediation plan](docs/REMEDIATION_PLAN.md) tracks prioritized
+fixes and acceptance tests. The broader [production-readiness backlog](docs/PRODUCTION_READINESS.md)
+defines public-launch requirements.

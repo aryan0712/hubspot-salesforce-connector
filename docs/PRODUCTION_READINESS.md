@@ -12,6 +12,11 @@ implemented.
 `HANDOFF.md` remains the source of truth for the current runtime, credentials, safety
 constraints, and verified implementation state.
 
+**2026-09-23 review follow-up:** [REMEDIATION_PLAN.md](REMEDIATION_PLAN.md) adds the
+current implementation order, reproduced correctness findings, work packages, and
+acceptance tests. Use its delivery order for remediation; retain this document as the
+comprehensive public-launch checklist. Adding that plan does not complete any item here.
+
 ## What is already strong
 
 - Migration and live sync share the same canonical reconciliation core.

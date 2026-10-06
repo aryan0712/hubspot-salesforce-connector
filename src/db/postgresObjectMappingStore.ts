@@ -1,16 +1,35 @@
-import { configureNaturalKeyFields, isAllowedNaturalKeyField } from '../core/idMap.js';
+import { clearNaturalKeyFields, configureNaturalKeyFields, isAllowedNaturalKeyField, naturalKeyFields } from '../core/idMap.js';
+import {
+  listCanonicalObjects,
+  registerObjectMapping,
+  type ObjectRegistration,
+} from '../core/objectRegistry.js';
 import type { CanonicalType } from '../core/types.js';
 import type { PostgresDatabase } from './postgres.js';
 
-const DEFAULTS: Record<CanonicalType, string[]> = {
-  contact: ['email'],
-  company: ['domain'],
-  deal: ['name', 'closeDate'],
-};
+interface ObjectMappingRow {
+  canonical_object: string;
+  label: string;
+  salesforce_object: string | null;
+  hubspot_object: string | null;
+  natural_key_fields: string[];
+}
 
+export interface NewObjectMapping {
+  canonicalObject: string;
+  label: string;
+  salesforceObject?: string;
+  hubspotObject?: string;
+  naturalKeyFields?: string[];
+}
+
+/**
+ * The tenant's object registry: which canonical objects exist, and their native name in each
+ * CRM. Backed by object_mappings, which already stores salesforce_object/hubspot_object per
+ * row — this class persists whatever native names a caller actually selected, rather than
+ * re-deriving them from a fixed contact/company/deal ternary.
+ */
 export class PostgresObjectMappingStore {
-  private keys = structuredClone(DEFAULTS);
-
   constructor(
     private readonly db: PostgresDatabase,
     private readonly tenantId: string,
@@ -18,51 +37,117 @@ export class PostgresObjectMappingStore {
 
   async init(): Promise<void> {
     const rows = await this.db.tenant(this.tenantId, async (client) =>
-      client.query<{ canonical_object: CanonicalType; natural_key_fields: string[] }>(
-        `SELECT canonical_object, natural_key_fields FROM object_mappings
+      client.query<ObjectMappingRow>(
+        `SELECT canonical_object, label, salesforce_object, hubspot_object, natural_key_fields
+         FROM object_mappings
          WHERE tenant_id = $1 AND enabled = true`,
         [this.tenantId],
       ),
     );
     for (const row of rows.rows) {
+      registerObjectMapping({
+        canonicalObject: row.canonical_object,
+        label: row.label,
+        salesforceObject: row.salesforce_object ?? undefined,
+        hubspotObject: row.hubspot_object ?? undefined,
+      });
       if (
-        row.canonical_object in this.keys &&
         row.natural_key_fields.length &&
         row.natural_key_fields.length <= 3 &&
         row.natural_key_fields.every((field) =>
           isAllowedNaturalKeyField(row.canonical_object, field))
       ) {
-        this.keys[row.canonical_object] = row.natural_key_fields;
+        configureNaturalKeyFields(row.canonical_object, row.natural_key_fields);
       }
     }
-    for (const [type, fields] of Object.entries(this.keys)) {
-      configureNaturalKeyFields(type as CanonicalType, fields);
-    }
   }
 
-  get(type: CanonicalType): string[] {
-    return [...this.keys[type]];
+  list(): ObjectRegistration[] {
+    return listCanonicalObjects();
   }
 
-  async set(type: CanonicalType, fields: string[]): Promise<void> {
-    configureNaturalKeyFields(type, fields);
+  getNaturalKeyFields(type: CanonicalType): string[] {
+    return naturalKeyFields(type);
+  }
+
+  /** Registers a brand-new canonical object with the native names the operator picked. */
+  async create(input: NewObjectMapping): Promise<ObjectRegistration> {
     await this.db.tenant(this.tenantId, async (client) => {
       await client.query(
         `INSERT INTO object_mappings(
-           tenant_id, canonical_object, salesforce_object, hubspot_object,
+           tenant_id, canonical_object, label, salesforce_object, hubspot_object,
            natural_key_fields
-         ) VALUES ($1,$2,$3,$4,$5)
-         ON CONFLICT (tenant_id, canonical_object) DO UPDATE SET
-           natural_key_fields = EXCLUDED.natural_key_fields, updated_at = now()`,
+         ) VALUES ($1,$2,$3,$4,$5,$6)`,
         [
           this.tenantId,
-          type,
-          type === 'contact' ? 'Contact' : type === 'company' ? 'Account' : 'Opportunity',
-          type === 'contact' ? 'contacts' : type === 'company' ? 'companies' : 'deals',
-          fields,
+          input.canonicalObject,
+          input.label,
+          input.salesforceObject ?? null,
+          input.hubspotObject ?? null,
+          input.naturalKeyFields ?? [],
         ],
       );
     });
-    this.keys[type] = [...fields];
+    const registration: ObjectRegistration = {
+      canonicalObject: input.canonicalObject,
+      label: input.label,
+      salesforceObject: input.salesforceObject,
+      hubspotObject: input.hubspotObject,
+    };
+    registerObjectMapping(registration);
+    if (input.naturalKeyFields?.length) {
+      configureNaturalKeyFields(input.canonicalObject, input.naturalKeyFields);
+    }
+    return registration;
+  }
+
+  /** Updates natural-key fields for an already-registered object; native names are untouched. */
+  async setNaturalKeyFields(type: CanonicalType, fields: string[]): Promise<void> {
+    configureNaturalKeyFields(type, fields);
+    const result = await this.db.tenant(this.tenantId, async (client) =>
+      client.query(
+        `UPDATE object_mappings SET natural_key_fields = $3, updated_at = now()
+         WHERE tenant_id = $1 AND canonical_object = $2`,
+        [this.tenantId, type, fields],
+      ),
+    );
+    if (result.rowCount === 0) {
+      throw new Error(`object "${type}" is not registered; create it before setting natural keys`);
+    }
+  }
+
+  /**
+   * Re-points an already-registered canonical object at a different native object on either
+   * (or both) sides -- e.g. fixing "Account -> Contact" to "Account -> Company" without
+   * deleting and recreating the whole registration (which would also lose polling config and
+   * history). Field mappings and the natural key are the caller's responsibility to reset --
+   * they describe the OLD native object's fields and rarely make sense on the new one.
+   */
+  async setNativeObjects(
+    type: CanonicalType,
+    input: { salesforceObject?: string; hubspotObject?: string },
+  ): Promise<ObjectRegistration> {
+    const result = await this.db.tenant(this.tenantId, async (client) =>
+      client.query<{ label: string }>(
+        `UPDATE object_mappings SET salesforce_object = $3, hubspot_object = $4,
+                natural_key_fields = '{}', updated_at = now()
+         WHERE tenant_id = $1 AND canonical_object = $2
+         RETURNING label`,
+        [this.tenantId, type, input.salesforceObject ?? null, input.hubspotObject ?? null],
+      ),
+    );
+    const row = result.rows[0];
+    if (!row) {
+      throw new Error(`object "${type}" is not registered; create it before changing its native objects`);
+    }
+    clearNaturalKeyFields(type);
+    const registration: ObjectRegistration = {
+      canonicalObject: type,
+      label: row.label,
+      salesforceObject: input.salesforceObject,
+      hubspotObject: input.hubspotObject,
+    };
+    registerObjectMapping(registration);
+    return registration;
   }
 }

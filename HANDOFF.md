@@ -1,10 +1,29 @@
 # crm-sync — Project Handoff & Status
 
-**Last updated:** 2026-07-29
+**Last updated:** 2026-09-23 (review plan added; prior live verification remains 2026-07-29)
 **Status:** PostgreSQL product upgrade is installed and running locally. Schema migrations
 and the legacy-state import completed successfully, and the live app was verified healthy.
 
 This is the single source of truth after a restart.
+
+## Review remediation plan — 2026-09-23
+
+The application review and implementation plan are tracked in
+[docs/REMEDIATION_PLAN.md](docs/REMEDIATION_PLAN.md). Implementation under that plan has
+not started. It covers migration preview/source-write correctness, demo configuration
+isolation, concurrent linking and execution, canary verification, retries, durable
+workers, authentication/tenancy, webhooks, and operational/product verification.
+
+Typecheck, build, all 116 tests, and the mock demo passed during the review; isolated
+probes still reproduced correctness gaps. Existing feature descriptions below describe
+implemented mechanisms, not proof that the newly identified safety gaps are resolved.
+No live CRM writes or connection changes were performed during the review. Follow the
+new plan's delivery order alongside the broader production-readiness checklist.
+
+The plan also includes a **deferred next-phase feature roadmap** for assessment,
+explainable plans, a migration control center, relationship migration, reconciliation,
+data health, team workflows, AI assistance, and recovery. The user explicitly deferred
+this feature work on 2026-09-23; do not start it automatically after remediation.
 
 ## 1. Current state
 

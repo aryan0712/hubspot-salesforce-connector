@@ -6,6 +6,7 @@ import {
   fieldRules,
   type FieldRule,
 } from './mapping.js';
+import { applyDefaultObjects } from './defaultObjects.js';
 
 type MappingDocument = Partial<
   Record<SystemId, Partial<Record<CanonicalType, FieldRule[]>>>
@@ -27,14 +28,16 @@ export class FileMappingStore {
   constructor(private readonly file = path.resolve('data/mappings.json')) {}
 
   async init(): Promise<void> {
+    // The defaults live in core/defaultObjects.ts; this file stores only overrides, so a
+    // newly added default field is not hidden by an empty overrides file.
+    await applyDefaultObjects();
     try {
       this.overrides = JSON.parse(await fs.readFile(this.file, 'utf8')) as MappingDocument;
     } catch (err: unknown) {
       if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
     }
-    for (const system of ['salesforce', 'hubspot'] as const) {
-      for (const type of ['contact', 'company', 'deal'] as const) {
-        const rules = this.overrides[system]?.[type];
+    for (const [system, byType] of Object.entries(this.overrides) as [SystemId, Partial<Record<CanonicalType, FieldRule[]>>][]) {
+      for (const [type, rules] of Object.entries(byType) as [CanonicalType, FieldRule[]][]) {
         if (rules) configureFieldRules(system, type, rules);
       }
     }

@@ -24,7 +24,7 @@ const recommendationAreas = [
 
 const findingSchema = z.object({
   issueCode: z.string().min(1).max(120),
-  objectType: z.enum(['contact', 'company', 'deal']),
+  objectType: z.string().min(1).max(160),
   field: z.string().max(160).nullable(),
   severity: z.enum(['error', 'warning', 'info']),
   title: z.string().min(1).max(160),
@@ -98,7 +98,7 @@ const outputJsonSchema = {
         type: 'object',
         properties: {
           issueCode: { type: 'string' },
-          objectType: { type: 'string', enum: ['contact', 'company', 'deal'] },
+          objectType: { type: 'string' },
           field: { type: ['string', 'null'] },
           severity: { type: 'string', enum: ['error', 'warning', 'info'] },
           title: { type: 'string' },

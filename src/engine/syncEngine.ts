@@ -11,6 +11,7 @@ import type {
 import type { ActivityLog } from '../observability/activity.js';
 import type { AssociationEngine } from './associationEngine.js';
 import type { GovernanceStore } from './governanceStore.js';
+import { friendlyErrorMessage } from '../core/vendorError.js';
 
 export interface SyncEngineOptions {
   concurrency?: number;
@@ -61,6 +62,20 @@ export class SyncEngine {
     await this.reconciler.propagateDelete(job.event);
     await this.store.complete(id);
     await this.opts.governance?.completeDeletion(id, actorId);
+  }
+
+  /** Gives up on a job permanently (e.g. a genuinely invalid record) -- replaying it would
+   *  never succeed, so it's removed from the "needs attention" queue without retrying. */
+  async dismiss(id: string): Promise<void> {
+    const job = await this.store.get(id);
+    if (!job || !['dead_letter', 'manual_review', 'retry'].includes(job.status)) {
+      throw new Error('job is not in a dismissable state');
+    }
+    await this.store.dismiss(id);
+    this.opts.activity?.record({
+      kind: 'info',
+      message: `${job.event.system} ${job.event.type} sync dismissed: ${job.lastError ?? 'no error detail'}`,
+    });
   }
 
   async list(limit?: number, status?: SyncJobStatus): Promise<SyncJob[]> {
@@ -154,7 +169,8 @@ export class SyncEngine {
       await this.opts.associations?.syncRecord(record);
       await this.store.complete(job.id);
     } catch (err) {
-      const message = errorMessage(err);
+      const targetSystem = job.event.system === 'salesforce' ? 'HubSpot' : 'Salesforce';
+      const message = errorMessage(err, targetSystem);
       if (err instanceof AmbiguousNaturalKeyError) {
         await this.store.manualReview(job.id, message);
         return;
@@ -171,6 +187,6 @@ export class SyncEngine {
   }
 }
 
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message.slice(0, 2000) : String(err).slice(0, 2000);
+function errorMessage(err: unknown, targetSystemLabel?: string): string {
+  return friendlyErrorMessage(err, targetSystemLabel).slice(0, 2000);
 }

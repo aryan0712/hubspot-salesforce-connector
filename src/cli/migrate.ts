@@ -1,6 +1,7 @@
 import { createApp } from '../app.js';
 import { logger } from '../logger.js';
 import { parseMigrationArgs } from './migrateArgs.js';
+import { listCanonicalObjects } from '../core/objectRegistry.js';
 
 /**
  * Bulk migration CLI.
@@ -21,9 +22,15 @@ async function main(): Promise<void> {
   const args = parseMigrationArgs(process.argv.slice(2));
   logger.info({ args }, 'starting migration');
   const app = await createApp();
+  // --types omitted means "every registered object" -- resolved now that the registry
+  // (populated during createApp) is available, instead of a hardcoded default list.
+  const types = args.types ?? listCanonicalObjects().map((object) => object.canonicalObject);
+  if (!types.length) {
+    throw new Error('no canonical objects are registered; configure one before migrating');
+  }
   const report = await app.migration.run({
     from: args.from,
-    types: args.types,
+    types,
     limitPerType: args.limit,
     dryRun: args.dryRun,
   });

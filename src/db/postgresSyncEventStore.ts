@@ -114,6 +114,19 @@ export class PostgresSyncEventStore implements SyncEventStore {
     });
   }
 
+  async dismiss(id: string): Promise<void> {
+    // Unlike the other terminal states, this leaves last_error as-is -- it's the record of
+    // *why* an operator decided this one wasn't worth retrying.
+    await this.db.tenant(this.tenantId, async (client) => {
+      await client.query(
+        `UPDATE sync_events SET status = 'dismissed',
+                locked_at = NULL, locked_by = NULL, updated_at = now()
+         WHERE tenant_id = $1 AND id = $2`,
+        [this.tenantId, id],
+      );
+    });
+  }
+
   async get(id: string): Promise<SyncJob | undefined> {
     return this.db.tenant(this.tenantId, async (client) => {
       const result = await client.query<JobRow>(
