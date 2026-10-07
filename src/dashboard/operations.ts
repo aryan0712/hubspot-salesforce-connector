@@ -998,7 +998,7 @@ export function operationsHtml(): string {
       $('sync-wizard-label-row').hidden=true;$('sync-wizard-conditions-panel').hidden=true;
       $('sync-wizard-step2-continue').hidden=false;$('sync-wizard-step2-continue').disabled=true;$('sync-wizard-save-conditions').hidden=true;
       $('sync-wizard-edit-objects').hidden=true;$('sync-wizard-save-native-objects').hidden=true;
-      $('mig-from').value='salesforce';await loadCatalog();renderSyncWizardObjectOptions();
+      $('mig-from').value='salesforce';await Promise.all([loadCatalog(),syncConfigState?Promise.resolve():loadSyncSettings()]);renderSyncWizardObjectOptions();
     };
     $('sync-wizard-step2-back').onclick=()=>{$('sync-wizard-step-2').hidden=true;$('sync-wizard-step-1').hidden=false};
     // row.supported only means "an auto-match by name already exists" (Migration's
@@ -1011,7 +1011,10 @@ export function operationsHtml(): string {
     // "Note").
     function renderSyncWizardObjectOptions(){
       const rows=migrationState.catalog.slice().sort((a,b)=>a.source.label.localeCompare(b.source.label));
-      $('sync-wizard-sf-object').innerHTML='<option value="">Choose an object…</option>'+rows.map(row=>'<option value="'+esc(row.source.id)+'">'+esc(row.source.label)+' ('+esc(row.source.id)+')'+(row.canonicalType?' — already mapped to '+esc(row.target?.label||row.canonicalType):'')+'</option>').join('');
+      $('sync-wizard-sf-object').innerHTML='<option value="">Choose an object…</option>'+rows.map(row=>{
+        const isMapped=Boolean(row.canonicalType&&syncConfigState?.objects?.[row.canonicalType]?.enrolledForSync);
+        return '<option value="'+esc(row.source.id)+'">'+esc(row.source.label)+' ('+esc(row.source.id)+')'+(isMapped?' — already mapped to '+esc(row.target?.label||row.canonicalType):'')+'</option>';
+      }).join('');
       $('sync-wizard-hs-object').innerHTML='<option value="">Choose an object…</option>'+(migrationState.targets||[]).slice().sort((a,b)=>a.label.localeCompare(b.label)).map(t=>'<option value="'+esc(t.id)+'">'+esc(t.label)+' ('+esc(t.id)+')'+'</option>').join('');
     }
     // Picking objects for a brand-new pairing and re-pointing an already-enrolled object's
@@ -1047,7 +1050,7 @@ export function operationsHtml(): string {
       const exactRow=findExactCatalogRow(sfId,hsId);
       $('sync-wizard-label-row').hidden=Boolean(exactRow?.canonicalType);
       if(!exactRow?.canonicalType){
-        const alreadyMappedElsewhere=migrationState.catalog.some(r=>r.source.id===sfId&&r.canonicalType);
+        const alreadyMappedElsewhere=migrationState.catalog.some(r=>r.source.id===sfId&&r.canonicalType&&syncConfigState?.objects?.[r.canonicalType]?.enrolledForSync);
         $('sync-wizard-label').value=alreadyMappedElsewhere?sfLabel+' ('+hsLabel+')':sfLabel;
       }
       syncWizardObjectReady();

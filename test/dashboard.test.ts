@@ -377,4 +377,12 @@ describe('operations dashboard', () => {
     expect(html).toContain('sorted-asc');
     expect(html).toContain('sorted-desc');
   });
+
+  it('only marks objects as already mapped in the sync wizard when enrolled in sync', () => {
+    const html = operationsHtml();
+    expect(html).toContain('syncConfigState?.objects?.[row.canonicalType]?.enrolledForSync');
+    expect(html).toContain('syncConfigState?.objects?.[r.canonicalType]?.enrolledForSync');
+    expect(html).toContain('already mapped to');
+  });
 });
+
