@@ -378,10 +378,11 @@ describe('operations dashboard', () => {
     expect(html).toContain('sorted-desc');
   });
 
-  it('only marks objects as already mapped in the sync wizard when enrolled in sync', () => {
+  it('smartly groups sync wizard objects by mapping status (unmapped, custom, or multiple)', () => {
     const html = operationsHtml();
-    expect(html).toContain('syncConfigState?.objects?.[row.canonicalType]?.enrolledForSync');
-    expect(html).toContain('syncConfigState?.objects?.[r.canonicalType]?.enrolledForSync');
+    expect(html).toContain('isRowMappingDone');
+    expect(html).toContain('isStandardTarget');
+    expect(html).toContain('data-target-id');
     expect(html).toContain('already mapped to');
   });
 });
