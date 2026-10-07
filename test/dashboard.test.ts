@@ -380,7 +380,7 @@ describe('operations dashboard', () => {
 
   it('smartly groups sync wizard objects by mapping status (unmapped, custom, or multiple)', () => {
     const html = operationsHtml();
-    expect(html).toContain('isRowMappingDone');
+    expect(html).toContain('isRowEnrolledInSync');
     expect(html).toContain('isStandardTarget');
     expect(html).toContain('data-target-id');
     expect(html).toContain('already mapped to');

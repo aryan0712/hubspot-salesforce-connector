@@ -1014,11 +1014,8 @@ export function operationsHtml(): string {
       const norm = v => String(v||'').toLowerCase().replace(/[^a-z0-9]/g, '').replace(/s$/, '');
       return norm(target.id) === norm(source.id) || norm(target.label) === norm(source.label);
     }
-    function isRowMappingDone(row){
-      if(!row.canonicalType) return false;
-      const isEnrolled = Boolean(syncConfigState?.objects?.[row.canonicalType]?.enrolledForSync);
-      const hasFields = Boolean(row.mappedFields && row.mappedFields > 0);
-      return isEnrolled || hasFields;
+    function isRowEnrolledInSync(row){
+      return Boolean(row.canonicalType && syncConfigState?.objects?.[row.canonicalType]?.enrolledForSync);
     }
     function renderSyncWizardObjectOptions(){
       const bySource=new Map();
@@ -1034,21 +1031,18 @@ export function operationsHtml(): string {
       const displayOptions=[];
       for(const sfId of sortedSourceIds){
         const rows=bySource.get(sfId);
-        const doneRows=rows.filter(isRowMappingDone);
-        if(!doneRows.length){
-          // If no mapping is done, show one option
-          const first=rows[0];
-          displayOptions.push({value:first.source.id,label:first.source.label,targetId:first.target?.id||'',tag:''});
-        }else if(doneRows.length===1){
-          // If one mapping is done (whether standard or other than standard), show that one
-          const r=doneRows[0];
+        const enrolledRows=rows.filter(isRowEnrolledInSync);
+        if(!enrolledRows.length){
+          // If no mapping is done in Sync, show ONE option without any "already mapped" tag
+          const preferredRow=rows.find(r=>r.mappedFields&&r.mappedFields>0)||rows.find(r=>!isStandardTarget(r.source,r.target))||rows[0];
+          displayOptions.push({value:preferredRow.source.id,label:preferredRow.source.label,targetId:preferredRow.target?.id||'',tag:''});
+        }else if(enrolledRows.length===1){
+          // If exactly one mapping is enrolled in Sync, show that one
+          const r=enrolledRows[0];
           displayOptions.push({value:r.source.id,label:r.source.label,targetId:r.target?.id||'',tag:' — already mapped to '+esc(r.target?.label||r.canonicalType)});
         }else{
-          // If multiple mappings are done, check if non-standard vs standard
-          const nonStandard=doneRows.filter(r=>!isStandardTarget(r.source,r.target));
-          const standard=doneRows.filter(r=>isStandardTarget(r.source,r.target));
-          const chosen=(nonStandard.length&&!standard.length)?nonStandard:doneRows;
-          for(const r of chosen){
+          // If multiple mappings are enrolled in Sync, show all of them
+          for(const r of enrolledRows){
             displayOptions.push({value:r.source.id,label:r.source.label,targetId:r.target?.id||'',tag:' — already mapped to '+esc(r.target?.label||r.canonicalType)});
           }
         }
