@@ -365,4 +365,16 @@ describe('operations dashboard', () => {
     expect(html).toContain('Conflicts queue refreshed.');
     expect(html).toContain('Refreshed ✓');
   });
+
+  it('provides clickable ascending/descending sorting for Source, Canonical, and Target columns', () => {
+    const html = operationsHtml();
+    expect(html).toContain('data-sort="source"');
+    expect(html).toContain('data-sort="canonical"');
+    expect(html).toContain('data-sort="target"');
+    expect(html).not.toContain('data-sort="transform"');
+    expect(html).toContain('sortFieldMappings');
+    expect(html).toContain('updateFieldSortHeaders');
+    expect(html).toContain('sorted-asc');
+    expect(html).toContain('sorted-desc');
+  });
 });

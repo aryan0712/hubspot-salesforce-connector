@@ -444,12 +444,86 @@ export function operationsHtml(): string {
         const sourceByCanonical=new Map(sourceMap.rules.map(rule=>[rule.canonical,rule])),targetByCanonical=new Map(targetMap.rules.map(rule=>[rule.canonical,rule]));const canonicals=[...new Set([...sourceByCanonical.keys(),...targetByCanonical.keys()])];
         migrationState.mapping={type,from,to,sourceMeta,targetMeta,sourceMap,targetMap,canonicals,removed:[],dirty:false};
         renderFieldMappings();updateFieldObjectPosition();renderFieldObjectQueue()}catch(e){if(loadToken===migrationState.fieldLoadToken)$('field-map-rows').innerHTML='<tr><td colspan="5" class="empty">'+esc(e.message)+'</td></tr>'}}
+    let fieldSortCol=null,fieldSortAsc=true;
+    function updateFieldSortHeaders(){
+      document.querySelectorAll('.mapping-table th[data-sort]').forEach(th=>{
+        const col=th.dataset.sort,icon=th.querySelector('.sort-icon');
+        if(fieldSortCol===col){
+          th.classList.toggle('sorted-asc',fieldSortAsc);
+          th.classList.toggle('sorted-desc',!fieldSortAsc);
+          th.setAttribute('aria-sort',fieldSortAsc?'ascending':'descending');
+          if(icon)icon.textContent=fieldSortAsc?'▲':'▼';
+        }else{
+          th.classList.remove('sorted-asc','sorted-desc');
+          th.setAttribute('aria-sort','none');
+          if(icon)icon.textContent='↕';
+        }
+      });
+    }
+    function sortFieldMappings(col){
+      if(fieldSortCol===col){fieldSortAsc=!fieldSortAsc}
+      else{fieldSortCol=col;fieldSortAsc=true}
+      updateFieldSortHeaders();
+      const tbody=$('field-map-rows');if(!tbody)return;
+      const rows=[...tbody.querySelectorAll('tr[data-canonical]')];
+      if(!rows.length)return;
+      rows.sort((a,b)=>{
+        let valA='',valB='';
+        if(col==='source'){
+          valA=(a.querySelector('.source-native')?.value||'').trim().toLowerCase();
+          valB=(b.querySelector('.source-native')?.value||'').trim().toLowerCase();
+        }else if(col==='canonical'){
+          valA=(a.querySelector('.canonical')?.value||a.dataset.canonical||'').trim().toLowerCase();
+          valB=(b.querySelector('.canonical')?.value||b.dataset.canonical||'').trim().toLowerCase();
+        }else if(col==='target'){
+          valA=(a.querySelector('.target-native')?.value||'').trim().toLowerCase();
+          valB=(b.querySelector('.target-native')?.value||'').trim().toLowerCase();
+        }
+        if(!valA&&valB)return 1;
+        if(valA&&!valB)return -1;
+        if(!valA&&!valB)return 0;
+        const cmp=valA.localeCompare(valB,undefined,{numeric:true,sensitivity:'base'});
+        return fieldSortAsc?cmp:-cmp;
+      });
+      rows.forEach(tr=>tbody.appendChild(tr));
+      if(migrationState.mapping?.canonicals){
+        const order=new Map(rows.map((r,i)=>[r.dataset.canonical,i]));
+        migrationState.mapping.canonicals.sort((x,y)=>(order.get(x)??9999)-(order.get(y)??9999));
+      }
+    }
+    document.querySelectorAll('.mapping-table th[data-sort]').forEach(th=>{
+      th.tabIndex=0;
+      th.onclick=()=>sortFieldMappings(th.dataset.sort);
+      th.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();sortFieldMappings(th.dataset.sort)}};
+    });
+
     function renderFieldMappings(){const state=migrationState.mapping;if(!state)return;const sourceBy=new Map(state.sourceMap.rules.map(r=>[r.canonical,r])),targetBy=new Map(state.targetMap.rules.map(r=>[r.canonical,r]));
       $('source-native-datalist').innerHTML=datalistOptions(state.sourceMeta.fields);$('target-native-datalist').innerHTML=datalistOptions(state.targetMeta.fields);
-      const removed=new Set(state.removed),visible=state.canonicals.filter(canonical=>!removed.has(canonical));$('field-map-rows').innerHTML=visible.map(canonical=>{const s=sourceBy.get(canonical)||{},t=targetBy.get(canonical)||{};
+      const removed=new Set(state.removed),visible=state.canonicals.filter(canonical=>!removed.has(canonical));
+      if(fieldSortCol){
+        visible.sort((a,b)=>{
+          let valA='',valB='';
+          if(fieldSortCol==='source'){
+            valA=(sourceBy.get(a)?.native||'').trim().toLowerCase();
+            valB=(sourceBy.get(b)?.native||'').trim().toLowerCase();
+          }else if(fieldSortCol==='canonical'){
+            valA=a.trim().toLowerCase();
+            valB=b.trim().toLowerCase();
+          }else if(fieldSortCol==='target'){
+            valA=(targetBy.get(a)?.native||'').trim().toLowerCase();
+            valB=(targetBy.get(b)?.native||'').trim().toLowerCase();
+          }
+          if(!valA&&valB)return 1;
+          if(valA&&!valB)return -1;
+          if(!valA&&!valB)return 0;
+          const cmp=valA.localeCompare(valB,undefined,{numeric:true,sensitivity:'base'});
+          return fieldSortAsc?cmp:-cmp;
+        });
+      }
+      $('field-map-rows').innerHTML=visible.map(canonical=>{const s=sourceBy.get(canonical)||{},t=targetBy.get(canonical)||{};
         const transforms=[s.toCanonical||'identity',s.fromCanonical||'identity',t.toCanonical||'identity',t.fromCanonical||'identity'];
         return '<tr data-canonical="'+esc(canonical)+'"><td class="mapping-action"><button class="mapping-remove" data-remove-canonical="'+esc(canonical)+'" aria-label="Remove '+esc(canonical)+' mapping" title="Remove this mapping">Remove</button></td><td><input class="source-native" list="source-native-datalist" value="'+esc(s.native||'')+'" placeholder="— Not mapped —"></td><td><input class="canonical" value="'+esc(canonical)+'"></td><td>'+transformHidden('source-to',transforms[0])+transformHidden('source-from',transforms[1])+transformHidden('target-to',transforms[2])+transformHidden('target-from',transforms[3])+'<button class="mapping-transform" data-transform-canonical="'+esc(canonical)+'">'+esc(transformSummary([transforms[0],transforms[3]]))+'<small>Configure</small></button></td><td><input class="target-native" list="target-native-datalist" value="'+esc(t.native||'')+'" placeholder="— Not mapped —"></td></tr>'}).join('')||'<tr><td colspan="5" class="empty">No mappings remain. Save to persist this empty mapping set, or undo the removal.</td></tr>';
-      refreshMappingCoverage();$('field-map-notice').hidden=!state.removed.length;$('field-map-notice-text').textContent=state.removed.length+' mapping'+(state.removed.length===1?'':'s')+' marked for removal. Save mappings to apply.';document.querySelectorAll('[data-remove-canonical]').forEach(button=>button.onclick=()=>{state.removed.push(button.dataset.removeCanonical);state.dirty=true;closeTransformLab();renderFieldMappings()});document.querySelectorAll('[data-transform-canonical]').forEach(button=>button.onclick=()=>openTransformLab(button));document.querySelectorAll('#field-map-rows tr[data-canonical] input').forEach(control=>{control.oninput=control.onchange=()=>{state.dirty=true;refreshMappingCoverage();applyMappingFilters();setDraftStatus('Mapping changes not saved')}});applyMappingFilters()}
+      refreshMappingCoverage();updateFieldSortHeaders();$('field-map-notice').hidden=!state.removed.length;$('field-map-notice-text').textContent=state.removed.length+' mapping'+(state.removed.length===1?'':'s')+' marked for removal. Save mappings to apply.';document.querySelectorAll('[data-remove-canonical]').forEach(button=>button.onclick=()=>{state.removed.push(button.dataset.removeCanonical);state.dirty=true;closeTransformLab();renderFieldMappings()});document.querySelectorAll('[data-transform-canonical]').forEach(button=>button.onclick=()=>openTransformLab(button));document.querySelectorAll('#field-map-rows tr[data-canonical] input').forEach(control=>{control.oninput=control.onchange=()=>{state.dirty=true;refreshMappingCoverage();applyMappingFilters();setDraftStatus('Mapping changes not saved')}});applyMappingFilters()}
     function refreshMappingCoverage(){const state=migrationState.mapping;if(!state)return;const rows=[...$('field-map-rows').querySelectorAll('tr[data-canonical]')],ready=rows.filter(tr=>tr.querySelector('.source-native').value&&tr.querySelector('.target-native').value).length,total=rows.length,pct=total?Math.round(ready/total*100):0;$('coverage-number').textContent=pct+'%';$('coverage-list').innerHTML='<div><span>Mapped</span><b>'+ready+'</b></div><div><span>Needs review</span><b>'+(total-ready)+'</b></div><div><span>Removed</span><b>'+state.removed.length+'</b></div><div><span>Source fields</span><b>'+state.sourceMeta.fields.length+'</b></div><div><span>Target fields</span><b>'+state.targetMeta.fields.length+'</b></div>';$('summary-coverage').textContent=pct+'%'}
     function applyMappingFilters(){const query=$('field-search').value.trim().toLowerCase(),filter=$('field-filter').value;document.querySelectorAll('#field-map-rows tr[data-canonical]').forEach(tr=>{const source=tr.querySelector('.source-native').value||'',target=tr.querySelector('.target-native').value||'',canonical=tr.querySelector('.canonical').value,text=(source+' '+target+' '+canonical).toLowerCase(),ready=tr.querySelector('.source-native').value&&tr.querySelector('.target-native').value,transformed=['source-to','target-from'].some(cls=>tr.querySelector('.'+cls).value!=='identity');tr.hidden=Boolean((query&&!text.includes(query))||(filter==='review'&&ready)||(filter==='transformed'&&!transformed))})}
     $('field-search').oninput=applyMappingFilters;$('field-filter').onchange=applyMappingFilters;
