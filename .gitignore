@@ -9,3 +9,5 @@ data/.encryption-key
 data/postgres/
 !data/.gitkeep
 coverage/
+.sf/
+hubspot-salesforce-connector/

@@ -98,16 +98,20 @@ export function operationsHtml(): string {
     .readiness-list{list-style:none;margin:0;padding:0;display:grid;gap:10px}.readiness-list li{line-height:1.5}
     .status-dot.warn{background:#f5b642}.linkbtn{background:none;border:0;color:inherit;font:inherit;font-weight:700;cursor:pointer;padding:0}
     .linkbtn:focus-visible,button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid #53a6ff;outline-offset:2px}
+    .refresh-progress{position:fixed;top:0;left:0;right:0;height:3px;background:linear-gradient(90deg,var(--orange),var(--blue),var(--teal));background-size:200% 100%;animation:refresh-slide 1s linear infinite;z-index:9999}
+    @keyframes refresh-slide{0%{background-position:200% 0}100%{background-position:-200% 0}}
+    .btn-refreshed{border-color:var(--teal)!important;color:var(--teal)!important}
   </style>
 </head>
 <body>
+  <div class="refresh-progress" id="refresh-progress" hidden></div>
   ${dashboardHeader('migration')}
   <main class="page">
     <div class="page-heading"><div><div class="eyebrow" id="workspace-name">Workspace</div><h1 id="page-title">Migration</h1>
       <p class="subcopy" id="page-subtitle">Test one real record, verify it, then run the full migration safely.</p></div>
       <div class="status-pill"><span class="status-dot off" id="readiness-dot"></span>
         <button class="linkbtn" type="button" id="readiness-label" aria-expanded="false" aria-controls="readiness-panel">Checking readiness…</button>
-        <button class="secondary" data-action="refreshAll">Refresh</button></div></div>
+        <button class="secondary" data-action="refreshAll" id="header-refresh-btn">Refresh</button></div></div>
     <section class="card" id="readiness-panel" hidden aria-label="Readiness checks"><div class="card-body"><ul class="readiness-list" id="readiness-list"></ul></div></section>
     <div class="notice" id="live-error-banner" hidden style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
       <span id="live-error-banner-text"></span>
@@ -241,6 +245,8 @@ export function operationsHtml(): string {
   </main>
   <script>${csrfFetchScript}
     const $=id=>document.getElementById(id), esc=v=>String(v??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+    function showProgressBar(){const b=$('refresh-progress');if(b)b.hidden=false}
+    function hideProgressBar(){const b=$('refresh-progress');if(b)b.hidden=true}
     async function api(url,opts){opts=opts||{};const r=await fetch(url,{...opts,headers:{'content-type':'application/json',...(opts.headers||{})}});const j=await r.json().catch(()=>({}));if(!r.ok){const e=new Error(j.detail||(r.status===403&&j.error==='insufficient_role'?'Your role cannot do this (requires '+j.required+').':j.error)||r.statusText);e.code=j.error;e.system=j.system;e.actionUrl=j.actionUrl;e.requestId=j.requestId||r.headers.get('x-request-id');throw e}return j}
     const viewMeta={
       migration:['Migrate','Build, validate, preview, and run a controlled CRM migration.'],
@@ -663,11 +669,17 @@ export function operationsHtml(): string {
     function renderMigrationRuns(){const query=$('run-search').value.trim().toLowerCase(),status=$('run-status-filter').value,mode=$('run-mode-filter').value;const entries=migrationState.runs.filter(run=>(!query||(run.id+' '+run.source).toLowerCase().includes(query))&&(!status||run.status===status)&&(!mode||run.mode===mode));$('runs').innerHTML=entries.length?'<table><thead><tr><th>Run</th><th>Mode</th><th>Source</th><th>Status</th><th>Started</th></tr></thead><tbody>'+
       entries.map(x=>'<tr><td><button class="run-link" data-run-id="'+esc(x.id)+'">'+esc(x.id.slice(0,8))+'</button></td><td>'+esc(x.mode)+'</td><td>'+esc(x.source)+'</td><td><span class="pill '+esc(x.status)+'">'+esc(x.status)+'</span></td><td>'+esc(new Date(x.createdAt).toLocaleString())+'</td></tr>').join('')+'</tbody></table><div class="run-detail" id="run-detail"></div>':'<div class="empty history-empty">No migration runs match these filters.</div>';$('runs').querySelectorAll('[data-run-id]').forEach(button=>button.onclick=()=>loadRunDetail(button.dataset.runId))}
     async function loadRunDetail(id){const r=await api('/api/migrations/'+id+'/items?limit=200');$('run-detail').innerHTML='<div class="card-head"><h2>Run '+esc(id.slice(0,8))+'</h2><span class="section-note">'+r.entries.length+' reviewed records</span></div><div class="scroll"><table><thead><tr><th>Action</th><th>Object</th><th>Natural key</th><th>Target</th></tr></thead><tbody>'+r.entries.map(item=>'<tr><td><span class="pill '+esc(item.action)+'">'+esc(item.action)+'</span></td><td>'+esc(item.type)+'</td><td>'+esc(item.naturalKey||'—')+'</td><td>'+esc(item.targetId||'New record')+'</td></tr>').join('')+'</tbody></table></div>'}
-    $('run-search').oninput=renderMigrationRuns;$('run-status-filter').onchange=renderMigrationRuns;$('run-mode-filter').onchange=renderMigrationRuns;$('refresh-runs').onclick=loadRuns;
+    $('run-search').oninput=renderMigrationRuns;$('run-status-filter').onchange=renderMigrationRuns;$('run-mode-filter').onchange=renderMigrationRuns;
+    $('refresh-runs').onclick=async()=>{
+      const btn=$('refresh-runs');if(!btn||btn.disabled)return;
+      const orig=btn.textContent||'Refresh';btn.disabled=true;btn.textContent='Refreshing…';showProgressBar();
+      try{await loadRuns();btn.textContent='Refreshed ✓';btn.classList.add('btn-refreshed');showNotice('Migration run history refreshed.');setTimeout(()=>{btn.textContent=orig;btn.classList.remove('btn-refreshed');btn.disabled=false},1500)}
+      catch(e){showError('Failed to refresh migration runs: '+(e.message||e));btn.textContent=orig;btn.disabled=false}
+      finally{hideProgressBar()}};
 
     let syncConfigState;
     let syncObjectCatalog=[];
-    async function loadSyncWorkspace(){await Promise.all([loadMetrics(),loadSyncSettings(),loadConflicts()])}
+    async function loadSyncWorkspace(){await Promise.all([loadMetrics(),loadSyncSettings(),loadSyncConflicts()])}
     async function loadSyncSettings(){
       const [config,objectMappings]=await Promise.all([api('/api/sync/settings'),api('/api/object-mappings')]);
       syncConfigState=config;syncObjectCatalog=objectMappings.entries;
@@ -1157,17 +1169,22 @@ export function operationsHtml(): string {
       const dismiss=needsAttention?'<button class="danger" data-action="dismissJob" data-arg="'+j.id+'" title="Give up on this permanently -- it will not be retried">Delete</button>':'';
       const actions=(primary||dismiss)?'<div class="row-actions">'+primary+dismiss+'</div>':'';
       return {select,actions}}
-    async function loadConflicts(){const r=await api('/api/sync/jobs?limit=200');const entries=r.entries.filter(job=>job.status==='manual_review'||job.status==='dead_letter');
+    async function loadSyncConflicts(){const r=await api('/api/sync/jobs?limit=200');const entries=r.entries.filter(job=>job.status==='manual_review'||job.status==='dead_letter');
       $('conflicts').innerHTML=entries.length?entries.map(j=>{const c=jobRowCells(j,true);return '<tr>'+c.select+'<td><span class="pill '+j.status+'">'+esc(j.status)+'</span></td><td>'+esc(j.event.system+' '+j.event.type+' '+j.event.changeType)+'</td><td>'+j.attempts+'</td><td>'+esc(j.lastError||'Operator review required')+'</td><td>'+c.actions+'</td></tr>'}).join(''):'<tr><td colspan="6" class="empty">No conflicts or manual reviews waiting.</td></tr>';
       resetBulkBar('conflicts')}
-    $('refresh-conflicts').onclick=loadConflicts;
+    $('refresh-conflicts').onclick=async()=>{
+      const btn=$('refresh-conflicts');if(!btn||btn.disabled)return;
+      const orig=btn.textContent||'Refresh queue';btn.disabled=true;btn.textContent='Refreshing…';showProgressBar();
+      try{await loadSyncConflicts();btn.textContent='Refreshed ✓';btn.classList.add('btn-refreshed');showNotice('Conflicts queue refreshed.');setTimeout(()=>{btn.textContent=orig;btn.classList.remove('btn-refreshed');btn.disabled=false},1500)}
+      catch(e){showError('Failed to refresh conflicts: '+(e.message||e));btn.textContent=orig;btn.disabled=false}
+      finally{hideProgressBar()}};
 
     async function loadJobs(){const f=$('job-filter').value;const r=await api('/api/sync/jobs?limit=200'+(f?'&status='+encodeURIComponent(f):''));
       $('jobs').innerHTML=r.entries.length?r.entries.map(j=>{const c=jobRowCells(j,true);return '<tr>'+c.select+'<td><span class="pill '+j.status+'">'+esc(j.status)+'</span></td><td>'+esc(j.event.system+' '+j.event.type+' '+j.event.changeType)+'<br><span class="muted">'+esc(j.event.sourceId)+'</span></td><td>'+j.attempts+'</td><td>'+esc(j.lastError||'—')+'</td><td>'+c.actions+'</td></tr>'}).join(''):'<tr><td colspan="6" class="empty">No jobs</td></tr>';
       resetBulkBar('jobs')}
-    async function replay(id){await api('/api/sync/jobs/'+id+'/replay',{method:'POST'});await Promise.all([loadJobs(),loadMetrics(),loadConflicts()])}
-    async function approveDelete(id){if(!confirm('Delete/archive the linked record in the other CRM?'))return;await api('/api/sync/jobs/'+id+'/approve-delete',{method:'POST'});await Promise.all([loadJobs(),loadMetrics(),loadConflicts()])}
-    async function dismissJob(id){if(!confirm('Give up on this permanently? It will not be retried, and stays visible in Activity for the record.'))return;await api('/api/sync/jobs/'+id+'/dismiss',{method:'POST'});await Promise.all([loadJobs(),loadMetrics(),loadConflicts()])}
+    async function replay(id){await api('/api/sync/jobs/'+id+'/replay',{method:'POST'});await Promise.all([loadJobs(),loadMetrics(),loadSyncConflicts()])}
+    async function approveDelete(id){if(!confirm('Delete/archive the linked record in the other CRM?'))return;await api('/api/sync/jobs/'+id+'/approve-delete',{method:'POST'});await Promise.all([loadJobs(),loadMetrics(),loadSyncConflicts()])}
+    async function dismissJob(id){if(!confirm('Give up on this permanently? It will not be retried, and stays visible in Activity for the record.'))return;await api('/api/sync/jobs/'+id+'/dismiss',{method:'POST'});await Promise.all([loadJobs(),loadMetrics(),loadSyncConflicts()])}
     window.replay=replay;window.approveDelete=approveDelete;window.dismissJob=dismissJob;$('job-filter').onchange=loadJobs;
 
     // Bulk selection for both the Conflicts card and the Activity tab's Sync jobs table --
@@ -1177,7 +1194,7 @@ export function operationsHtml(): string {
     function selectedJobIds(tbodyId){return [...document.querySelectorAll('#'+tbodyId+' .row-select:checked')].map(el=>el.value)}
     function resetBulkBar(tbodyId){$(bulkTables[tbodyId].selectAll).checked=false;updateBulkBar(tbodyId)}
     function updateBulkBar(tbodyId){const cfg=bulkTables[tbodyId],n=selectedJobIds(tbodyId).length,total=document.querySelectorAll('#'+tbodyId+' .row-select').length;$(cfg.replayBtn).hidden=n===0;$(cfg.deleteBtn).hidden=n===0;$(cfg.replayBtn).textContent='Replay selected ('+n+')';$(cfg.deleteBtn).textContent='Delete selected ('+n+')';$(cfg.selectAll).checked=total>0&&n===total;$(cfg.selectAll).indeterminate=n>0&&n<total}
-    async function bulkRefresh(){await Promise.all([loadJobs(),loadMetrics(),loadConflicts()])}
+    async function bulkRefresh(){await Promise.all([loadJobs(),loadMetrics(),loadSyncConflicts()])}
     Object.entries(bulkTables).forEach(([tbodyId,cfg])=>{
       document.getElementById(tbodyId).addEventListener('change',e=>{if(e.target.classList.contains('row-select'))updateBulkBar(tbodyId)});
       $(cfg.selectAll).onchange=()=>{document.querySelectorAll('#'+tbodyId+' .row-select').forEach(el=>el.checked=$(cfg.selectAll).checked);updateBulkBar(tbodyId)};
@@ -1260,7 +1277,7 @@ export function operationsHtml(): string {
     document.addEventListener('visibilitychange',()=>{if(!document.hidden)loadReadiness()});
     // R10/R13 conflict review: inspect the automatic decision, deliberately keep the other side.
     const SYSTEM_LABEL={salesforce:'Salesforce',hubspot:'HubSpot'};
-    async function loadConflicts(){const c=await api('/api/conflicts?limit=100');
+    async function loadConflictReview(){const c=await api('/api/conflicts?limit=100');
       $('conflict-review').innerHTML=c.entries.length?'<table><thead><tr><th>Record</th><th>Decision</th><th>Changed fields</th><th>Status</th><th></th></tr></thead><tbody>'+c.entries.map(x=>{
         const fields=Object.keys({...x.source.fields,...x.target.fields}).filter(k=>JSON.stringify(x.source.fields[k])!==JSON.stringify(x.target.fields[k]));
         const winner=x.decision&&x.decision.winner;const source=x.source.meta.source;const other=source==='salesforce'?'hubspot':'salesforce';
@@ -1269,9 +1286,67 @@ export function operationsHtml(): string {
         return '<tr data-conflict="'+esc(x.id)+'"><td>'+esc(x.type)+'<br><span class="muted">'+esc(new Date(x.createdAt).toLocaleString())+'</span></td><td>'+esc(x.strategy)+(winner?' → '+esc(SYSTEM_LABEL[winner]||winner):'')+'</td><td>'+diff+'</td><td><span class="pill '+(x.resolutionSource==='manual'?'completed':'ambiguous')+'">'+(x.resolutionSource==='manual'?'resolved by operator':'automatic')+'</span></td><td>'+actions+'</td></tr>'}).join('')+'</tbody></table>':'<div class="empty">No conflicts recorded</div>'}
     async function resolveConflict(arg){const [id,winner]=String(arg).split(':');
       const r=await api('/api/conflicts/'+encodeURIComponent(id)+'/resolve',{method:'POST',body:JSON.stringify({winner})});
-      showNotice('Kept '+SYSTEM_LABEL[winner]+' values for this '+r.type+'.');await loadConflicts()}
+      showNotice('Kept '+SYSTEM_LABEL[winner]+' values for this '+r.type+'.');await loadConflictReview()}
     window.resolveConflict=resolveConflict;
-    async function refreshAll(){await Promise.allSettled([loadRuns(),loadCatalog(),loadSavedPlans(),loadReadiness()]);const view=location.hash.slice(1)||'migration';if(view==='sync')await loadSyncWorkspace();if(view==='activity')await Promise.all([loadJobs(),loadAudit(),loadConflicts()]);if(view==='settings')await loadSettingsWorkspace()}window.refreshAll=refreshAll;refreshAll();
+    async function loadConflicts(){await Promise.all([loadSyncConflicts(),loadConflictReview()])}
+
+    let isRefreshingAll=false;
+    async function refreshAll(arg, el){
+      if(isRefreshingAll)return;
+      const btn=el||$('header-refresh-btn')||document.querySelector('[data-action="refreshAll"]');
+      const isManual=Boolean(el||arg);
+      const origText=btn?(btn.textContent||'Refresh'):'Refresh';
+      const view=location.hash.slice(1)||'migration';
+      if(isManual&&btn){btn.disabled=true;btn.textContent='Refreshing…';showProgressBar()}
+      isRefreshingAll=true;
+      try{
+        if(view==='sync'){
+          await Promise.allSettled([loadSyncWorkspace(),loadReadiness(),checkForNewSyncErrors()]);
+          if(isManual)showNotice('Sync status, metrics, and webhook health refreshed.');
+        }else if(view==='activity'){
+          await Promise.allSettled([loadJobs(),loadAudit(),loadConflictReview(),loadReadiness(),checkForNewSyncErrors()]);
+          if(isManual)showNotice('Sync jobs, conflicts, and audit trail refreshed.');
+        }else if(view==='settings'){
+          await Promise.allSettled([loadSettingsWorkspace(),loadReadiness()]);
+          if(isManual)showNotice('Settings and workspace overview refreshed.');
+        }else{
+          if(workspaceMode==='sync'){
+            const syncTasks=[loadSyncSettings(),loadCatalog(),loadReadiness()];
+            if(migrationState.mapping?.type)syncTasks.push(loadFieldWorkspace(migrationState.mapping.type));
+            await Promise.allSettled(syncTasks);
+            if(isManual)showNotice('Sync object setup refreshed.');
+          }else{
+            const tasks=[loadRuns(),loadCatalog(),loadSavedPlans(),loadReadiness()];
+            if(migrationState.plan?.id){
+              tasks.push(api('/api/migration-plans/'+migrationState.plan.id).then(plan=>{migrationState.plan=plan;updateMigrationSummary();updateMigrationStepper()}).catch(()=>{}))
+            }
+            if(migrationState.currentStep==='fields'&&migrationState.mapping?.type){
+              tasks.push(loadFieldWorkspace(migrationState.mapping.type).catch(()=>{}))
+            }else if(migrationState.currentStep==='values'&&migrationState.valueContext?.type){
+              tasks.push(loadValuesWorkspace(migrationState.valueContext.type).catch(()=>{}))
+            }
+            await Promise.allSettled(tasks);
+            if(isManual)showNotice('Migration workspace refreshed.');
+          }
+        }
+        if(isManual&&btn){
+          btn.textContent='Refreshed ✓';btn.classList.add('btn-refreshed');
+          setTimeout(()=>{btn.textContent=origText;btn.classList.remove('btn-refreshed');btn.disabled=false},1500);
+        }
+      }catch(err){
+        if(isManual){
+          showError('Refresh encountered an issue: '+(err.message||err));
+          if(btn){btn.textContent=origText;btn.disabled=false}
+        }
+      }finally{
+        isRefreshingAll=false;
+        if(isManual)hideProgressBar();
+      }
+    }
+    window.refreshAll=refreshAll;
+    const headerRefreshBtn=$('header-refresh-btn');
+    if(headerRefreshBtn){headerRefreshBtn.addEventListener('click',e=>{e.preventDefault();refreshAll(null,headerRefreshBtn)})}
+    refreshAll();
   </script>
 </body></html>`;
 }

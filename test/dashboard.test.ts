@@ -349,4 +349,20 @@ describe('operations dashboard', () => {
     expect(html).toContain('id="usage"');
     expect(html).toContain('id="plan-overview"');
   });
+
+  it('provides working refresh buttons with loading indicators and notices across views', () => {
+    const html = operationsHtml();
+    expect(html).toContain('id="refresh-progress"');
+    expect(html).toContain('id="header-refresh-btn"');
+    expect(html).toContain('data-action="refreshAll"');
+    expect(html).toContain('id="refresh-runs"');
+    expect(html).toContain('id="refresh-conflicts"');
+    expect(html).toContain('loadSyncConflicts');
+    expect(html).toContain('loadConflictReview');
+    expect(html).toContain('Sync status, metrics, and webhook health refreshed.');
+    expect(html).toContain('Migration workspace refreshed.');
+    expect(html).toContain('Migration run history refreshed.');
+    expect(html).toContain('Conflicts queue refreshed.');
+    expect(html).toContain('Refreshed ✓');
+  });
 });
