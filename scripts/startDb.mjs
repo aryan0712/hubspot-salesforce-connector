@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import { spawn } from 'node:child_process';
 import net from 'node:net';
 import path from 'node:path';
@@ -5,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, '..');
+const dbPort = Number(new URL(process.env.DATABASE_URL ?? 'postgresql://localhost:5432').port) || 5432;
 
 function isPortOpen(port) {
   return new Promise((resolve) => {
@@ -26,8 +28,8 @@ function isPortOpen(port) {
 }
 
 async function main() {
-  if (await isPortOpen(5432)) {
-    console.log('PostgreSQL is already active on port 5432.');
+  if (await isPortOpen(dbPort)) {
+    console.log(`PostgreSQL is already active on port ${dbPort}.`);
     process.exit(0);
   }
 
@@ -47,13 +49,13 @@ async function main() {
   console.log('Waiting for PostgreSQL to become ready...');
   for (let i = 0; i < 40; i++) {
     await new Promise((r) => setTimeout(r, 400));
-    if (await isPortOpen(5432)) {
+    if (await isPortOpen(dbPort)) {
       console.log('PostgreSQL is ready!');
       process.exit(0);
     }
   }
 
-  console.error('[Error] PostgreSQL failed to start on port 5432.');
+  console.error(`[Error] PostgreSQL failed to start on port ${dbPort}.`);
   process.exit(1);
 }
 

@@ -1,6 +1,7 @@
+import 'dotenv/config';
 import net from 'node:net';
 
-const port = 5432;
+const port = Number(new URL(process.env.DATABASE_URL ?? 'postgresql://localhost:5432').port) || 5432;
 const once = process.argv.includes('--once');
 const maxAttempts = once ? 1 : 40;
 let attempts = 0;

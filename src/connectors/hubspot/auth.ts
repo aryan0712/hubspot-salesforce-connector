@@ -33,13 +33,13 @@ const SCOPES = [
   // Without these, /crm/v3/schemas (how listObjects() discovers custom objects) 403s with
   // MISSING_SCOPES -- the app can't see or sync custom objects at all, no matter how the
   // HubSpot app itself is configured, because the token we mint never requested them.
+  // Scoped to plain custom-object access only: nothing in the connector reads or writes a
+  // sensitive/highly_sensitive tier property, and the app config (hubspot-app/.../
+  // app-hsmeta.json) only declares these three -- requesting more than it declares gets the
+  // whole OAuth connect rejected.
   'crm.objects.custom.read',
   'crm.objects.custom.write',
   'crm.schemas.custom.read',
-  'crm.objects.custom.highly_sensitive.read.v2',
-  'crm.objects.custom.highly_sensitive.write.v2',
-  'crm.objects.custom.sensitive.read.v2',
-  'crm.objects.custom.sensitive.write.v2',
 ];
 let refreshInFlight: Promise<string> | undefined;
 

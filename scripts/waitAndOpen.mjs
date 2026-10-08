@@ -1,8 +1,10 @@
+import 'dotenv/config';
 import http from 'node:http';
 import { exec } from 'node:child_process';
 
-const url = 'http://localhost:3000/';
-const healthUrl = 'http://localhost:3000/health';
+const port = Number(process.env.PORT) || 3000;
+const url = `http://localhost:${port}/`;
+const healthUrl = `http://localhost:${port}/health`;
 let attempts = 0;
 const maxAttempts = 60;
 

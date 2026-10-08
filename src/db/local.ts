@@ -3,15 +3,18 @@ import path from 'node:path';
 import net from 'node:net';
 import EmbeddedPostgres from 'embedded-postgres';
 import { logger } from '../logger.js';
+import { cleanStalePidFile } from './localLock.js';
+import { env } from '../config/env.js';
 
 const databaseDir = path.resolve('data/postgres');
 const databaseName = 'crm_sync';
+const port = Number(new URL(env.DATABASE_URL ?? 'postgresql://localhost:5432').port) || 5432;
 
 const postgres = new EmbeddedPostgres({
   databaseDir,
   user: 'crm_sync',
   password: 'local-development-only',
-  port: 5432,
+  port,
   persistent: true,
   authMethod: 'scram-sha-256',
   onLog: (message) => logger.debug({ postgres: message.trim() }, 'local PostgreSQL'),
@@ -37,35 +40,6 @@ function isPortOpen(port: number): Promise<boolean> {
   });
 }
 
-function cleanStalePidFile(): void {
-  const pidFile = path.join(databaseDir, 'postmaster.pid');
-  if (!fs.existsSync(pidFile)) return;
-
-  try {
-    const content = fs.readFileSync(pidFile, 'utf8');
-    const firstLine = content.split('\n')[0]?.trim();
-    const pid = firstLine ? parseInt(firstLine, 10) : NaN;
-
-    if (!isNaN(pid)) {
-      try {
-        process.kill(pid, 0);
-        return;
-      } catch (err: unknown) {
-        const error = err as NodeJS.ErrnoException;
-        if (error.code === 'ESRCH') {
-          logger.warn({ pid }, 'removing stale postmaster.pid from previously terminated PostgreSQL process');
-          fs.unlinkSync(pidFile);
-        }
-      }
-    } else {
-      logger.warn('removing corrupted postmaster.pid');
-      fs.unlinkSync(pidFile);
-    }
-  } catch (err) {
-    logger.warn({ err }, 'failed to inspect postmaster.pid');
-  }
-}
-
 async function ensureDatabase(): Promise<void> {
   const client = postgres.getPgClient();
   await client.connect();
@@ -89,15 +63,15 @@ async function ensureDatabase(): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  const alreadyRunning = await isPortOpen(5432);
+  const alreadyRunning = await isPortOpen(port);
   if (alreadyRunning) {
-    logger.info({ port: 5432, database: databaseName }, 'project-local PostgreSQL is already running');
+    logger.info({ port, database: databaseName }, 'project-local PostgreSQL is already running');
     await ensureDatabase();
     await new Promise<void>(() => undefined);
     return;
   }
 
-  cleanStalePidFile();
+  cleanStalePidFile(databaseDir);
 
   if (!fs.existsSync(path.join(databaseDir, 'PG_VERSION'))) {
     await postgres.initialise();
@@ -105,7 +79,7 @@ async function main(): Promise<void> {
   await postgres.start();
   await ensureDatabase();
   logger.info(
-    { port: 5432, database: databaseName },
+    { port, database: databaseName },
     'project-local PostgreSQL is ready; stop with Ctrl+C',
   );
   await new Promise<void>(() => undefined);

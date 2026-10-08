@@ -39,9 +39,11 @@ if %errorlevel% neq 0 (
 )
 
 :: 3. Start application server and open browser once ready
+:: (no "watch" -- restarting mid-sync on every file change would interrupt in-flight work;
+:: use "npm run dev" instead when iterating on the code)
 echo [3/3] Starting CRM-Sync application server...
 start /b "" "%NODE_EXE%" scripts\waitAndOpen.mjs
-"%NODE_EXE%" node_modules\tsx\dist\cli.mjs watch src/server.ts
+"%NODE_EXE%" node_modules\tsx\dist\cli.mjs src/server.ts
 
 
 
