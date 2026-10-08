@@ -1,4 +1,5 @@
 import axios, { type AxiosInstance } from 'axios';
+import { PublicError } from '../../core/publicError.js';
 import {
   IncompleteCandidateSetError,
   UnsupportedAssociationError,
@@ -32,27 +33,50 @@ import { logger } from '../../logger.js';
 import { RateLimiter } from '../../core/rateLimiter.js';
 import { installHttpPolicy, type ConnectorHealth, type HttpPolicyControls } from '../../core/httpPolicy.js';
 
-const HUBSPOT_STANDARD_OBJECTS: CRMObjectDescriptor[] = [
-  ['contacts', 'Contacts', 'Contact'],
-  ['companies', 'Companies', 'Company'],
-  ['deals', 'Deals', 'Deal'],
-  ['tickets', 'Tickets', 'Ticket'],
-  ['products', 'Products', 'Product'],
-  ['line_items', 'Line items', 'Line item'],
-  ['quotes', 'Quotes', 'Quote'],
-  ['calls', 'Calls', 'Call'],
-  ['emails', 'Emails', 'Email'],
-  ['meetings', 'Meetings', 'Meeting'],
-  ['notes', 'Notes', 'Note'],
-  ['tasks', 'Tasks', 'Task'],
-].map(([id, pluralLabel, label]) => ({
+const HUBSPOT_STANDARD_DEFINITIONS = [
+  // Stable object type IDs: https://developers.hubspot.com/docs/api-reference/latest/crm/understanding-the-crm
+  ['contacts', 'Contacts', 'Contact', '0-1'],
+  ['companies', 'Companies', 'Company', '0-2'],
+  ['deals', 'Deals', 'Deal', '0-3'],
+  ['tickets', 'Tickets', 'Ticket', '0-5'],
+  ['products', 'Products', 'Product', '0-7'],
+  ['line_items', 'Line items', 'Line item', '0-8'],
+  ['quotes', 'Quotes', 'Quote', '0-14'],
+  ['calls', 'Calls', 'Call', '0-48'],
+  ['emails', 'Emails', 'Email', '0-49'],
+  ['meetings', 'Meetings', 'Meeting', '0-47'],
+  ['notes', 'Notes', 'Note', '0-46'],
+  ['tasks', 'Tasks', 'Task', '0-27'],
+  ['0-421', 'Appointments', 'Appointment', '0-421'],
+  ['0-142', 'Carts', 'Cart', '0-142'],
+  ['0-18', 'Communications', 'Communication', '0-18'],
+  ['0-410', 'Courses', 'Course', '0-410'],
+  ['0-84', 'Discounts', 'Discount', '0-84'],
+  ['0-19', 'Feedback submissions', 'Feedback submission', '0-19'],
+  ['0-85', 'Fees', 'Fee', '0-85'],
+  ['0-74', 'Goals', 'Goal', '0-74'],
+  ['0-53', 'Invoices', 'Invoice', '0-53'],
+  ['0-136', 'Leads', 'Lead', '0-136'],
+  ['0-420', 'Listings', 'Listing', '0-420'],
+  ['0-54', 'Marketing events', 'Marketing event', '0-54'],
+  ['0-123', 'Orders', 'Order', '0-123'],
+  ['0-101', 'Payments', 'Payment', '0-101'],
+  ['0-116', 'Postal mail', 'Postal mail', '0-116'],
+  ['0-970', 'Projects', 'Project', '0-970'],
+  ['0-162', 'Services', 'Service', '0-162'],
+  ['0-69', 'Subscriptions', 'Subscription', '0-69'],
+  ['0-86', 'Taxes', 'Tax', '0-86'],
+  ['0-115', 'Users', 'User', '0-115'],
+] as const;
+const HUBSPOT_READ_ONLY_OBJECTS = new Set(['0-19', '0-101', '0-115']);
+const HUBSPOT_STANDARD_OBJECTS: CRMObjectDescriptor[] = HUBSPOT_STANDARD_DEFINITIONS.map(([id, pluralLabel, label]) => ({
   id: id!,
   label: label!,
   pluralLabel: pluralLabel!,
   custom: false,
   queryable: true,
-  createable: true,
-  updateable: true,
+  createable: !HUBSPOT_READ_ONLY_OBJECTS.has(id),
+  updateable: !HUBSPOT_READ_ONLY_OBJECTS.has(id),
   deletable: true,
 }));
 
@@ -64,11 +88,10 @@ export class HubSpotConnector implements CRMConnector {
   // Resolves a webhook's numeric objectTypeId back to HubSpot's object type name. Seeded with
   // the standard-object ids (constant across every portal) and extended from /crm/v3/schemas
   // whenever listObjects() runs, so custom objects resolve too once discovered at least once.
-  private readonly objectTypeIds = new Map<string, string>([
-    ['0-1', 'contacts'],
-    ['0-2', 'companies'],
-    ['0-3', 'deals'],
-  ]);
+  private readonly objectTypeIds = new Map<string, string>(
+    HUBSPOT_STANDARD_DEFINITIONS.map(([name, , , typeId]) => [typeId, name]),
+  );
+  private customSchemaError?: PublicError;
 
   private policy?: HttpPolicyControls;
 
@@ -261,11 +284,11 @@ export class HubSpotConnector implements CRMConnector {
       const { data } = await this.http.get('/crm/v3/schemas');
       const schemas = data.results as HsSchema[] | undefined ?? [];
       for (const schema of schemas) {
-        const id = schema.fullyQualifiedName ?? schema.name;
+        const id = schema.objectTypeId ?? schema.fullyQualifiedName ?? schema.name;
         if (schema.objectTypeId) this.objectTypeIds.set(schema.objectTypeId, id);
       }
       custom = schemas.map((schema) => ({
-        id: schema.fullyQualifiedName ?? schema.name,
+        id: schema.objectTypeId ?? schema.fullyQualifiedName ?? schema.name,
         label: schema.labels?.singular ?? schema.name,
         pluralLabel: schema.labels?.plural ?? schema.name,
         custom: true,
@@ -274,16 +297,19 @@ export class HubSpotConnector implements CRMConnector {
         updateable: true,
         deletable: true,
       }));
+      this.customSchemaError = undefined;
     } catch (err: unknown) {
-      if (!axios.isAxiosError(err) || ![401, 403, 404].includes(err.response?.status ?? 0)) throw err;
+      if (!axios.isAxiosError(err) || ![403, 404].includes(err.response?.status ?? 0)) throw err;
       // Missing the crm.schemas.custom.read scope (or no custom objects defined yet) both land
       // here as a 403/404 -- silently returning zero custom objects either way used to look
       // identical to "this portal genuinely has none," which is exactly the kind of silent
       // failure this app is supposed to avoid. Surfacing which one it actually is.
-      logger.warn(
-        { status: err.response?.status, data: err.response?.data },
-        'could not list HubSpot custom object schemas -- likely a missing scope on the connected app/token',
+      this.customSchemaError = new PublicError(
+        'hubspot_custom_schema_unavailable',
+        'HubSpot custom object schemas are unavailable to this connection; check crm.schemas.custom.read and reconnect only after approval',
+        err.response?.status === 404 ? 424 : 403,
       );
+      logger.warn({ status: err.response?.status }, 'HubSpot custom schema discovery is unavailable');
     }
     return [...HUBSPOT_STANDARD_OBJECTS, ...custom]
       .map((object) => ({ ...object, canonicalType: this.config.canonicalObjectFor('hubspot', object.id) }))
@@ -291,18 +317,15 @@ export class HubSpotConnector implements CRMConnector {
         a.label.localeCompare(b.label));
   }
 
+  catalogWarnings(): string[] {
+    return this.customSchemaError ? [this.customSchemaError.message] : [];
+  }
+
   async describeObject(objectId: string): Promise<CRMObjectMetadata> {
-    const descriptor =
-      (await this.listObjects()).find((object) => object.id === objectId) ?? {
-        id: objectId,
-        label: objectId,
-        pluralLabel: objectId,
-        custom: objectId.startsWith('2-') || objectId.startsWith('p_'),
-        queryable: true,
-        createable: true,
-        updateable: true,
-        deletable: true,
-      };
+    const standard = HUBSPOT_STANDARD_OBJECTS.find((object) => object.id === objectId);
+    const descriptor = standard ?? (await this.listObjects()).find((object) => object.id === objectId);
+    if (!descriptor && this.customSchemaError) throw this.customSchemaError;
+    if (!descriptor) throw new PublicError('hubspot_object_not_found', `HubSpot object ${objectId} is not available`, 404);
     const { data } = await this.http.get(`/crm/v3/properties/${encodeURIComponent(objectId)}`);
     return {
       object: descriptor,
@@ -451,13 +474,15 @@ export class HubSpotConnector implements CRMConnector {
     event: NativeWebhookEvent,
     resolveType?: (nativeObjectId: string, sourceId: string) => Promise<CanonicalType | undefined>,
   ): Promise<ChangeEvent | null> {
-    const objectName = this.objectTypeIds.get(event.nativeObject);
+    // A registered custom object uses its stable objectTypeId as the native registry key.
+    // Resolve it directly even if schema discovery could not warm the optional cache.
+    const objectName = this.objectTypeIds.get(event.nativeObject) ??
+      (this.config.canonicalObjectsFor('hubspot', event.nativeObject).length ? event.nativeObject : undefined);
     if (!objectName) return null;
     const candidates = this.config.canonicalObjectsFor('hubspot', objectName);
-    const type =
-      candidates.length <= 1
-        ? candidates[0]?.canonicalObject
-        : await resolveType?.(objectName, event.sourceId);
+    const type = resolveType
+      ? await resolveType(objectName, event.sourceId)
+      : candidates.length === 1 ? candidates[0]!.canonicalObject : undefined;
     if (!type) return null;
     return {
       eventId: event.deliveryId,

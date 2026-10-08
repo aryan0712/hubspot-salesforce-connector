@@ -1,7 +1,8 @@
 import { isAllowedNaturalKeyField, validateNaturalKeyFields } from '../core/idMap.js';
-import type { ObjectRegistration } from '../core/objectRegistry.js';
+import type { ObjectRegistration, ObjectMappingStore, NewObjectMapping } from '../core/objectRegistry.js';
 import type { ConfigContext } from '../core/configContext.js';
 import type { CanonicalType } from '../core/types.js';
+import { isNativeObjectId } from '../core/identifiers.js';
 import type { PostgresDatabase } from './postgres.js';
 
 interface ObjectMappingRow {
@@ -12,14 +13,6 @@ interface ObjectMappingRow {
   natural_key_fields: string[];
 }
 
-export interface NewObjectMapping {
-  canonicalObject: string;
-  label: string;
-  salesforceObject?: string;
-  hubspotObject?: string;
-  naturalKeyFields?: string[];
-}
-
 /**
  * The tenant's object registry: which canonical objects exist, and their native name in each
  * CRM. Backed by object_mappings, which already stores salesforce_object/hubspot_object per
@@ -27,7 +20,7 @@ export interface NewObjectMapping {
  * re-deriving them from a fixed contact/company/deal ternary. It hydrates and updates only
  * its own tenant's ConfigContext, always persisting before publishing.
  */
-export class PostgresObjectMappingStore {
+export class PostgresObjectMappingStore implements ObjectMappingStore {
   constructor(
     private readonly db: PostgresDatabase,
     private readonly tenantId: string,
@@ -73,6 +66,12 @@ export class PostgresObjectMappingStore {
 
   /** Registers a brand-new canonical object with the native names the operator picked. */
   async create(input: NewObjectMapping): Promise<ObjectRegistration> {
+    if (input.salesforceObject && !isNativeObjectId('salesforce', input.salesforceObject)) {
+      throw new Error('invalid Salesforce object API name');
+    }
+    if (input.hubspotObject && !isNativeObjectId('hubspot', input.hubspotObject)) {
+      throw new Error('invalid HubSpot object type ID');
+    }
     const naturalKeyFields = input.naturalKeyFields?.length
       ? validateNaturalKeyFields(input.canonicalObject, input.naturalKeyFields)
       : [];
@@ -132,6 +131,12 @@ export class PostgresObjectMappingStore {
     type: CanonicalType,
     input: { salesforceObject?: string; hubspotObject?: string },
   ): Promise<ObjectRegistration> {
+    if (input.salesforceObject && !isNativeObjectId('salesforce', input.salesforceObject)) {
+      throw new Error('invalid Salesforce object API name');
+    }
+    if (input.hubspotObject && !isNativeObjectId('hubspot', input.hubspotObject)) {
+      throw new Error('invalid HubSpot object type ID');
+    }
     const result = await this.db.tenant(this.tenantId, async (client) =>
       client.query<{ label: string }>(
         `UPDATE object_mappings SET salesforce_object = $3, hubspot_object = $4,

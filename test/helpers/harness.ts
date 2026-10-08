@@ -105,7 +105,7 @@ export async function buildHarness(opts: {
     searchVisibilityMs: opts.searchVisibilityMs,
   });
   const engine = new MigrationEngine(crms.connectors, config, reconciler, undefined, runs);
-  const preflight = new PreflightService(crms.connectors, config);
+  const preflight = new PreflightService(crms.connectors, config, undefined, true);
   const service = new MigrationService(engine, preflight, executions, plans, {
     connectors: crms.connectors,
     config,

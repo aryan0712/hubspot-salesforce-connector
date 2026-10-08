@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type { CRMConnector } from './core/connector.js';
 import type { SystemId } from './core/types.js';
+import { isBuiltInObjectPair } from './core/defaultObjects.js';
 import { FileIdMapStore, type IdMapStore } from './core/idMap.js';
 import { SalesforceConnector } from './connectors/salesforce/salesforceConnector.js';
 import { HubSpotConnector } from './connectors/hubspot/hubspotConnector.js';
@@ -10,6 +11,7 @@ import { MockConnector } from './connectors/mock/mockConnector.js';
 import { Reconciler } from './engine/reconciler.js';
 import { MigrationEngine } from './engine/migrationEngine.js';
 import { SyncEngine } from './engine/syncEngine.js';
+import { ReviewRequiredError } from './engine/reconciler.js';
 import { ActivityLog } from './observability/activity.js';
 import { env } from './config/env.js';
 import { createCipher, resolveDatabaseUrl } from './config/runtimeSecrets.js';
@@ -52,6 +54,7 @@ import { PreflightService } from './engine/preflight.js';
 import { PostgresSchemaSnapshotStore } from './db/postgresSchemaSnapshotStore.js';
 import { PostgresValueMappingStore } from './db/postgresValueMappingStore.js';
 import { PostgresObjectMappingStore } from './db/postgresObjectMappingStore.js';
+import { InMemoryObjectMappingStore, type ObjectMappingStore } from './core/objectRegistry.js';
 import { InMemoryGovernanceStore, type GovernanceStore } from './engine/governanceStore.js';
 import { PostgresGovernanceStore } from './db/postgresGovernanceStore.js';
 import {
@@ -111,8 +114,10 @@ export interface App {
   apiKeys?: PostgresApiKeyRepository;
   associations: AssociationEngine;
   preflight: PreflightService;
+  /** Read-only readiness checks for enabling a registered pair in live sync. */
+  syncPreflight: PreflightService;
   valueMappings?: PostgresValueMappingStore;
-  objectMappings?: PostgresObjectMappingStore;
+  objectMappings?: ObjectMappingStore;
   migrationPlans: MigrationPlanStore;
   /** The single approved-plan path for every CRM-writing migration (R02-R04). */
   migrations: MigrationService;
@@ -179,7 +184,7 @@ export async function createApp(
   let operations: PostgresOperationsRepository | undefined;
   let apiKeys: PostgresApiKeyRepository | undefined;
   let valueMappings: PostgresValueMappingStore | undefined;
-  let objectMappings: PostgresObjectMappingStore | undefined;
+  let objectMappings: ObjectMappingStore | undefined;
   let aiSettings: PostgresAiSettingsStore | undefined;
   let notificationSettings: PostgresNotificationSettingsStore | undefined;
   let syncConfig: SyncConfigStore | undefined;
@@ -223,12 +228,15 @@ export async function createApp(
   }
   await idMap.init();
   await mappingStore.init();
+  if (mock) objectMappings = new InMemoryObjectMappingStore(config);
 
   // The object registry (and therefore the set of canonical objects available to default
   // sync settings onto) is only guaranteed populated after mappingStore.init() above —
   // objectMappings.init() ran before it in the Postgres branch, and FileMappingStore's
   // init() calls applyDefaultObjects() itself in the mock branch.
-  const registeredTypes = config.listCanonicalObjects().map((object) => object.canonicalObject);
+  const registeredTypes = config.listCanonicalObjects()
+    .filter(isBuiltInObjectPair)
+    .map((object) => object.canonicalObject);
   const syncDefaults = defaultSyncConfig(env.CONFLICT_STRATEGY, env.SOURCE_OF_TRUTH, registeredTypes);
   if (mock || !db || !tenantId) {
     syncConfig = new InMemorySyncConfigStore(syncDefaults);
@@ -295,7 +303,9 @@ export async function createApp(
     connectors,
     config,
     !mock && db && tenantId ? new PostgresSchemaSnapshotStore(db, tenantId) : undefined,
+    mock,
   );
+  const syncPreflight = new PreflightService(connectors, config, undefined, true);
   const migrationStore =
     mock || !db || !tenantId
       ? new InMemoryMigrationStore()
@@ -337,6 +347,7 @@ export async function createApp(
     mock || !db || !tenantId
       ? new InMemorySyncEventStore()
       : new PostgresSyncEventStore(db, tenantId);
+  const syncReadiness = new Map<string, { fingerprint: string; checkedAt: number; promise: Promise<void> }>();
   const sync = new SyncEngine(connectors, reconciler, syncStore, {
     concurrency: env.SYNC_CONCURRENCY,
     maxAttempts: env.SYNC_MAX_ATTEMPTS,
@@ -344,7 +355,56 @@ export async function createApp(
     activity,
     associations,
     governance,
-    route: (event) => syncRoute(syncConfigStore.get(), event.type, event.system),
+    route: (event) => {
+      const syncSettings = syncConfigStore.get();
+      const route = syncRoute(syncSettings, event.type, event.system);
+      if (route.action !== 'process' || isBuiltInObjectPair(config.getObject(event.type))) return route;
+      const registration = config.getObject(event.type);
+      const key = config.naturalKeyFields(event.type);
+      const mapped = (system: SystemId) => new Set(config.fieldRules(system, event.type)
+        .map((rule) => rule.canonical));
+      const sfFields = mapped('salesforce');
+      const hsFields = mapped('hubspot');
+      if (!registration?.salesforceObject || !registration.hubspotObject || !key.length ||
+          key.some((field) => !sfFields.has(field) || !hsFields.has(field))) {
+        return { action: 'defer', reason: `${event.type} needs a reviewed object pair, mappings and shared key` };
+      }
+      const sourceObject = config.nativeObjectName(event.system, event.type);
+      const enrolledSiblings = sourceObject
+        ? config.canonicalObjectsFor(event.system, sourceObject)
+          .filter((pair) => syncSettings.objects[pair.canonicalObject]?.enrolledForSync)
+        : [];
+      if (enrolledSiblings.length > 1 && enrolledSiblings.some((pair) => {
+        const settings = syncSettings.objects[pair.canonicalObject];
+        return !settings?.conditions?.[event.system]?.length || Boolean(settings.rawCondition?.[event.system]);
+      })) {
+        return { action: 'defer', reason: `${event.system} ${sourceObject} needs unambiguous structured sync conditions` };
+      }
+      return route;
+    },
+    validateRecord: async (record) => {
+      if (isBuiltInObjectPair(config.getObject(record.type))) return;
+      if (!config.naturalKeyFields(record.type).length || !config.naturalKeyQuery(record)) {
+        throw new ReviewRequiredError(`${record.type} has no complete shared natural key`);
+      }
+      const cacheKey = `${record.meta.source}:${record.type}`;
+      const fingerprint = config.fingerprint([record.type]);
+      let check = syncReadiness.get(cacheKey);
+      if (!check || check.fingerprint !== fingerprint || Date.now() - check.checkedAt > 5 * 60_000) {
+        const promise = syncPreflight.run(record.meta.source, record.type).then((report) => {
+          if (!report.ok) {
+            throw new ReviewRequiredError(`${record.type} sync preflight failed: ${report.issues
+              .filter((issue) => issue.severity === 'error').map((issue) => issue.message).join('; ')}`);
+          }
+        });
+        check = { fingerprint, checkedAt: Date.now(), promise };
+        syncReadiness.set(cacheKey, check);
+        void promise.catch(() => {
+          if (syncReadiness.get(cacheKey)?.promise === promise) syncReadiness.delete(cacheKey);
+        });
+      }
+      await check.promise;
+    },
     // The live worker starts claiming only once connectors are initialized (see
     // httpApp startBackground / src/worker.ts); the mock app processes immediately.
     manualStart: !mock,
@@ -408,6 +468,7 @@ export async function createApp(
     apiKeys,
     associations,
     preflight,
+    syncPreflight,
     valueMappings,
     objectMappings,
     migrationPlans,

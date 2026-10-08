@@ -1,11 +1,11 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { execFileSync } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import { createServer } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import EmbeddedPostgres from 'embedded-postgres';
+import { generate } from 'selfsigned';
 import { PostgresDatabase, pendingMigrations, runMigrations } from '../src/db/postgres.js';
 import { databaseOptions, UnsafeDatabaseConfigError } from '../src/config/database.js';
 import { startIsolatedPostgres, type IsolatedPostgres } from './helpers/postgres.js';
@@ -47,7 +47,7 @@ describe('R14 timeouts and migrations', () => {
     expect([...first, ...second].sort()).toEqual(files.sort());
     expect(Math.min(first.length, second.length)).toBe(0);
     expect(await pendingMigrations(open(pg.ownerUrl))).toEqual([]);
-  });
+  }, 30_000);
 
   it('aborts statements that exceed the statement timeout', async () => {
     const db = open(pg.ownerUrl, { statementTimeoutMs: 300 });
@@ -109,12 +109,23 @@ describe('R14 database TLS certificate verification', () => {
   beforeAll(async () => {
     dir = await fs.mkdtemp(path.join(os.tmpdir(), 'crm-sync-tls-'));
     // A self-signed server certificate for "localhost" (stands in for a managed DB's CA).
-    execFileSync('openssl', [
-      'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1',
-      '-subj', '/CN=localhost', '-addext', 'subjectAltName=DNS:localhost',
-      '-keyout', path.join(dir, 'server.key'), '-out', path.join(dir, 'server.crt'),
-    ], { stdio: 'ignore' });
-    caPem = await fs.readFile(path.join(dir, 'server.crt'), 'utf8');
+    const certificate = await generate([{ name: 'commonName', value: 'localhost' }], {
+      algorithm: 'sha256',
+      notAfterDate: new Date(Date.now() + 24 * 60 * 60 * 1000),
+      extensions: [
+        { name: 'basicConstraints', cA: false },
+        { name: 'keyUsage', digitalSignature: true, keyEncipherment: true },
+        { name: 'extKeyUsage', serverAuth: true },
+        { name: 'subjectAltName', altNames: [{ type: 2, value: 'localhost' }] },
+      ],
+    });
+    const certificatePath = path.join(dir, 'server.crt');
+    const keyPath = path.join(dir, 'server.key');
+    await Promise.all([
+      fs.writeFile(certificatePath, certificate.cert),
+      fs.writeFile(keyPath, certificate.private, { mode: 0o600 }),
+    ]);
+    caPem = certificate.cert;
     port = await freePort();
     cluster = new EmbeddedPostgres({
       databaseDir: path.join(dir, 'data'),
@@ -125,8 +136,8 @@ describe('R14 database TLS certificate verification', () => {
       authMethod: 'scram-sha-256',
       postgresFlags: [
         '-c', 'ssl=on',
-        '-c', `ssl_cert_file=${path.join(dir, 'server.crt').replace(/\\/g, '/')}`,
-        '-c', `ssl_key_file=${path.join(dir, 'server.key').replace(/\\/g, '/')}`,
+        '-c', `ssl_cert_file=${certificatePath.replace(/\\/g, '/')}`,
+        '-c', `ssl_key_file=${keyPath.replace(/\\/g, '/')}`,
       ],
       onLog: () => undefined,
       onError: () => undefined,

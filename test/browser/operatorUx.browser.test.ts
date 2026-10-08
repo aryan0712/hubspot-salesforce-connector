@@ -393,6 +393,130 @@ describe('R13 operator UX in a real browser', () => {
     }
   });
 
+  it('removes an invalid target mapping without dropping its source mapping', async () => {
+    const sourceBefore = await app.mappingStore.get('salesforce', 'company');
+    const targetBefore = await app.mappingStore.get('hubspot', 'company');
+    const canonical = 'cleanupProbe';
+    await app.mappingStore.set('salesforce', 'company', [
+      ...sourceBefore,
+      { canonical, native: 'AccountNumber' },
+    ]);
+    await app.mappingStore.set('hubspot', 'company', [
+      ...targetBefore,
+      { canonical, native: 'readOnlyCleanupProbe', readOnly: true },
+    ]);
+
+    const { context, page } = await signIn('operator@example.com');
+    try {
+      await page.goto(`${base}/ops#migration`);
+      await page.waitForLoadState('networkidle');
+      await page.locator('.workspace-step[data-step="fields"]').click();
+      await page.locator('#field-object option[value="company"]').waitFor({ state: 'attached' });
+      await page.locator('#field-object').evaluate((select: any) => {
+        select.value = 'company';
+        select.dispatchEvent(new Event('change', { bubbles: true }));
+      });
+      const row = page.locator(`#field-map-rows tr[data-canonical="${canonical}"]`);
+      await row.waitFor();
+
+      await page.locator('#remove-invalid-targets').click();
+      expect(await row.locator('.target-native').inputValue()).toBe('');
+      expect(await row.locator('.source-native').inputValue()).toBe('AccountNumber');
+      await page.locator('#save-field-map').click();
+      await expect.poll(async () => (await app.mappingStore.get('hubspot', 'company'))
+        .some((rule) => rule.canonical === canonical), { timeout: 10_000 }).toBe(false);
+
+      expect(app.mappingStore.get('salesforce', 'company')).toContainEqual(
+        expect.objectContaining({ canonical, native: 'AccountNumber' }),
+      );
+      expect(app.mappingStore.get('hubspot', 'company')).not.toContainEqual(
+        expect.objectContaining({ canonical }),
+      );
+    } finally {
+      await app.mappingStore.set('salesforce', 'company', sourceBefore);
+      await app.mappingStore.set('hubspot', 'company', targetBefore);
+      await context.close();
+    }
+  });
+
+  it('pairs a custom object explicitly and runs a reviewed records-only migration', async () => {
+    const sf = app.connectors.salesforce as MockConnector;
+    const hs = app.connectors.hubspot as MockConnector;
+    const descriptor = (id: string, label: string) => ({
+      id, label, pluralLabel: `${label}s`, custom: true,
+      queryable: true, createable: true, updateable: true, deletable: false,
+    });
+    sf.defineNativeObject({ object: descriptor('BrowserProject__c', 'Browser Project'),
+      fields: [{ name: 'External_Id__c', label: 'External ID', type: 'string' },
+        { name: 'Name', label: 'Name', type: 'string' }], relationships: [] });
+    hs.defineNativeObject({ object: descriptor('2-998877', 'Browser Project'),
+      fields: [{ name: 'external_id', label: 'External ID', type: 'string' },
+        { name: 'project_name', label: 'Name', type: 'string' }], relationships: [] });
+    const { context, page, problems } = await signIn('operator@example.com');
+    try {
+      await page.goto(`${base}/ops#migration`);
+      await page.locator('.workspace-step[data-step="objects"]').click();
+      await page.locator('#catalog-filter').selectOption('all');
+      await page.locator('#catalog-search').fill('Browser Project');
+      const row = page.locator('#object-rows .catalog-row').filter({ hasText: 'BrowserProject__c' });
+      await row.waitFor();
+      expect(await row.textContent()).toContain('No target match');
+      await row.click();
+      await page.locator('#manual-target').selectOption('2-998877');
+      await page.locator('#manual-target-confirm').click();
+      await expect.poll(() => app.config.getObject('browser_project')?.hubspotObject).toBe('2-998877');
+
+      await page.evaluate(async () => {
+        const call = async (method: string, url: string, body?: unknown): Promise<any> => {
+          const response = await fetch(url, { method, headers: { 'content-type': 'application/json' },
+            ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+          const payload = await response.json();
+          if (!response.ok) throw new Error(`${url}: ${response.status} ${JSON.stringify(payload)}`);
+          return payload;
+        };
+        await call('PUT', '/api/mappings/salesforce/browser_project', { rules: [
+          { canonical: 'externalId', native: 'External_Id__c' }, { canonical: 'name', native: 'Name' },
+        ] });
+        await call('PUT', '/api/mappings/hubspot/browser_project', { rules: [
+          { canonical: 'externalId', native: 'external_id' }, { canonical: 'name', native: 'project_name' },
+        ] });
+        await call('PUT', '/api/object-mappings/browser_project', { naturalKeyFields: ['externalId'] });
+      });
+      const first = sf.seed('browser_project', { externalId: 'BROWSER-1', name: 'First project' });
+      sf.seed('browser_project', { externalId: 'BROWSER-2', name: 'Second project' });
+      const result = await page.evaluate(async (sourceId) => {
+        const call = async (method: string, url: string, body?: unknown): Promise<any> => {
+          const response = await fetch(url, { method, headers: { 'content-type': 'application/json' },
+            ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+          const payload = await response.json();
+          if (!response.ok) throw new Error(`${url}: ${response.status} ${JSON.stringify(payload)}`);
+          return payload;
+        };
+        const plan = await call('POST', '/api/migration-plans', {
+          name: 'Browser project migration', source: 'salesforce', types: ['browser_project'], limitPerType: 2,
+        });
+        const preflight = await call('POST', `/api/migration-plans/${plan.id}/preflight`, {});
+        const canary = await call('POST', `/api/migration-plans/${plan.id}/test-record/preview`,
+          { type: 'browser_project', sourceId });
+        const tested = await call('POST', `/api/migration-plans/${plan.id}/test-record/execute`,
+          { previewRunId: canary.runId, confirm: true });
+        const preview = await call('POST', `/api/migration-plans/${plan.id}/preview`, {});
+        const execution = await call('POST', `/api/migration-plans/${plan.id}/execute`, { confirm: true });
+        return { planId: plan.id, preflightOk: preflight.ok, canaryPassed: tested.verification?.passed,
+          previewActions: preview.perType.browser_project.actions, executionId: execution.execution.id };
+      }, first);
+      expect(result.preflightOk).toBe(true);
+      expect(result.canaryPassed).toBe(true);
+      expect(result.previewActions).toMatchObject({ create: 1, skip: 1 });
+      await app.migrations.worker.runUntilIdle(result.executionId);
+      expect((await app.migrationPlans.get(result.planId))?.status).toBe('completed');
+      expect(hs.writes.filter((write) => write.type === 'browser_project')).toHaveLength(2);
+      expect(problems.join(' | ')).toBe('');
+    } finally {
+      await context.close();
+    }
+  });
+
   for (const path of ['/auth/login', '/', '/ops']) {
     it(`fits a phone-width screen without sideways scrolling: ${path}`, async () => {
       const { context, page } = await signIn('admin@example.com', { width: 390, height: 844 });

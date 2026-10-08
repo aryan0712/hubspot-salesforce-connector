@@ -327,5 +327,15 @@ export function normalizeDomain(value: string): string {
 
 function normalizeKeyValue(field: string, value: string): string {
   if (field === 'domain') return normalizeDomain(value);
+  if (field === 'closeDate') {
+    const trimmed = value.trim();
+    // HubSpot deal dates arrive as epoch milliseconds while Salesforce uses a
+    // date-only string. Both must identify the same deal in a composite key.
+    if (/^\d{13}$/.test(trimmed) || /^\d{4}-\d{2}-\d{2}T/i.test(trimmed)) {
+      const date = /^\d{13}$/.test(trimmed) ? new Date(Number(trimmed)) : new Date(trimmed);
+      if (!Number.isNaN(date.getTime())) return date.toISOString().slice(0, 10);
+    }
+    return trimmed.toLowerCase();
+  }
   return value.trim().toLowerCase();
 }

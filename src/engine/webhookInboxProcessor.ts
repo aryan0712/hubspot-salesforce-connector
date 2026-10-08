@@ -67,11 +67,11 @@ export class WebhookInboxProcessor {
     const entries = await this.inbox.claim(this.opts.batch ?? 100, this.opts.leaseMs ?? 60_000);
     for (const entry of entries) {
       try {
-        const event = await this.connectors[entry.system].resolveWebhookEvent(entry, (nativeObject, sourceId) =>
-          this.opts.resolveType
-            ? this.opts.resolveType(entry.system, nativeObject, sourceId)
-            : Promise.resolve(undefined),
-        );
+        const resolveType = this.opts.resolveType
+          ? (nativeObject: string, sourceId: string) =>
+            this.opts.resolveType!(entry.system, nativeObject, sourceId)
+          : undefined;
+        const event = await this.connectors[entry.system].resolveWebhookEvent(entry, resolveType);
         if (!event) {
           await this.inbox.markDiscarded(entry.id, `${entry.system} ${entry.nativeObject} is not synced in this workspace`);
           continue;

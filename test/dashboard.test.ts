@@ -223,10 +223,14 @@ describe('operations dashboard', () => {
       'boolean',
       'yes-no',
       'iso-date',
+      'date-only',
+      'epoch-millis',
       'phone',
     ]) {
       expect(html).toContain(`'${transform}'`);
     }
+    expect(html).toContain('id="remove-invalid-targets"');
+    expect(html).toContain('invalid target mapping');
     expect(html).toContain("toCanonical:tr.querySelector('.source-to').value");
     expect(html).toContain("fromCanonical:tr.querySelector('.source-from').value");
     expect(html).toContain("toCanonical:tr.querySelector('.target-to').value");

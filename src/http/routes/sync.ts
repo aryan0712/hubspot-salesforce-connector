@@ -157,6 +157,62 @@ export function syncRoutes(ctx: RouteContext): Router {
         polling[type] = merged;
       }
     }
+    const activating = Object.entries(objects).filter(([type, object]) =>
+      object.enabled && (
+        !current.objects[type]?.enabled ||
+        current.objects[type]?.direction !== object.direction ||
+        current.objects[type]?.enrolledForSync === false ||
+        JSON.stringify(current.objects[type]?.conditions ?? {}) !== JSON.stringify(object.conditions ?? {}) ||
+        JSON.stringify(current.objects[type]?.rawCondition ?? {}) !== JSON.stringify(object.rawCondition ?? {})
+      ));
+    if (activating.length) {
+      await ensureLiveInit();
+      for (const [type, object] of activating) {
+        if (!object.enrolledForSync) {
+          return res.status(409).json({ error: 'sync_object_not_enrolled', type });
+        }
+        const sources: SystemId[] = object.direction === 'bidirectional'
+          ? ['salesforce', 'hubspot']
+          : [object.direction === 'salesforce_to_hubspot' ? 'salesforce' : 'hubspot'];
+        for (const source of sources) {
+          const nativeObject = app.config.nativeObjectName(source, type);
+          const siblings = nativeObject
+            ? app.config.canonicalObjectsFor(source, nativeObject)
+              .filter((pair) => objects[pair.canonicalObject]?.enrolledForSync)
+            : [];
+          if (siblings.length > 1 && siblings.some((pair) =>
+            !objects[pair.canonicalObject]?.conditions?.[source]?.length ||
+            Boolean(objects[pair.canonicalObject]?.rawCondition?.[source]))) {
+            return res.status(409).json({
+              error: 'ambiguous_sync_object_routing', type, source,
+              detail: `${source} ${nativeObject} is shared by ${siblings.map((pair) => pair.canonicalObject).join(', ')}; each needs structured conditions before sync can start`,
+            });
+          }
+          if (nativeObject) {
+            const nativeFields = new Set((await app.connectors[source].describeObject(nativeObject))
+              .fields.map((field) => field.name));
+            const invalidCondition = siblings.flatMap((pair) =>
+              objects[pair.canonicalObject]?.conditions?.[source] ?? [])
+              .find((condition) => !nativeFields.has(condition.field));
+            if (invalidCondition) {
+              return res.status(409).json({
+                error: 'sync_condition_field_missing', type, source,
+                detail: `${source} ${nativeObject} has no field ${invalidCondition.field}`,
+              });
+            }
+          }
+          const report = await app.syncPreflight.run(source, type);
+          if (!report.ok) {
+            const issues = report.issues.filter((issue) => issue.severity === 'error');
+            return res.status(409).json({
+              error: 'sync_preflight_failed', type, source,
+              detail: `${type} cannot sync from ${source}: ${issues.map((issue) => issue.message).join('; ')}`,
+              issues,
+            });
+          }
+        }
+      }
+    }
     const config = await app.syncConfig.update({
       conflictStrategy: conflictStrategy as never,
       sourceOfTruth,

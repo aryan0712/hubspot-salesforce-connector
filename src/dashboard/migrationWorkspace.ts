@@ -418,6 +418,7 @@ export function migrationWorkspaceHtml(): string {
                       <div class="mapping-tools-actions">
                         <button id="auto-map-all" class="secondary">Auto-map selected objects</button>
                         <button id="auto-map" class="secondary">Auto-map this object</button>
+                        <button id="remove-invalid-targets" class="secondary">Remove invalid targets</button>
                         <button id="add-field-mapping" class="secondary">+ Add field</button>
                         <button id="remove-all-fields" class="danger">Remove all</button>
                         <button id="save-field-map">Save mappings</button>

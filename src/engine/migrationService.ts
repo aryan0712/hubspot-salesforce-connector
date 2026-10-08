@@ -114,8 +114,14 @@ export class MigrationService {
     );
   }
 
-  async checks(from: SystemId, types: CanonicalType[]): Promise<{ checks: PreflightReport[]; schemaHashes: Record<string, string> }> {
-    const checks = await Promise.all([...new Set(types)].map((type) => this.preflight.run(from, type)));
+  async checks(
+    from: SystemId,
+    types: CanonicalType[],
+    sourceIdsByType: Partial<Record<CanonicalType, string[]>> = {},
+  ): Promise<{ checks: PreflightReport[]; schemaHashes: Record<string, string> }> {
+    const checks = await Promise.all(
+      [...new Set(types)].map((type) => this.preflight.run(from, type, { sourceIds: sourceIdsByType[type] })),
+    );
     return { checks, schemaHashes: schemaHashesFromChecks(checks) };
   }
 
@@ -135,7 +141,11 @@ export class MigrationService {
     /** Validate every object in the plan scope, not just the canary's own object. */
     scopeTypes?: CanonicalType[];
   }): Promise<MigrationReport & { checks: PreflightReport[] }> {
-    const { checks, schemaHashes } = await this.checks(input.from, input.scopeTypes ?? [input.type]);
+    const scopeTypes = [...new Set([input.type, ...(input.scopeTypes ?? [])])];
+    const sourceIdsByType = Object.fromEntries(
+      scopeTypes.map((type) => [type, type === input.type ? input.sourceIds : []]),
+    );
+    const { checks, schemaHashes } = await this.checks(input.from, scopeTypes, sourceIdsByType);
     if (checks.some((check) => !check.ok)) throw new PreflightFailedError(checks);
     const report = await this.engine.previewRecords({ ...input, schemaHashes });
     return { ...report, checks };

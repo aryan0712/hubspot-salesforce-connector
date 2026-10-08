@@ -1,4 +1,5 @@
 import type { CRMConnector } from '../core/connector.js';
+import { isBuiltInObjectPair } from '../core/defaultObjects.js';
 import type { CanonicalRecord, CanonicalType, SystemId } from '../core/types.js';
 import { contentHash } from '../core/idMap.js';
 import type { ResolveOptions } from '../core/conflict.js';
@@ -185,6 +186,10 @@ export class MigrationEngine {
   }
 
   async preview(opts: MigrationOptions): Promise<MigrationReport> {
+    if (opts.types.some((type) => !isBuiltInObjectPair(this.config.getObject(type))) &&
+        (!opts.limitPerType || opts.limitPerType > 500)) {
+      throw new Error('custom-object preview requires a limit of 1–500 records per object');
+    }
     const approval = { ...(await this.approvalContext(opts.from, opts.types)), schemaHashes: opts.schemaHashes };
     const runId = await this.store.begin({
       source: opts.from,
@@ -205,6 +210,7 @@ export class MigrationEngine {
     try {
       for (const type of opts.types) {
         const stats = report.perType[type]!;
+        const seenKeys = new Map<string, string>();
         let cursor: string | undefined;
         do {
           const page = await source.list(type, cursor);
@@ -214,7 +220,7 @@ export class MigrationEngine {
               break;
             }
             stats.read += 1;
-            const plan = await this.planRecord(record, policy, opts.from);
+            const plan = await this.planRecord(record, policy, opts.from, seenKeys);
             await this.store.recordPlan(runId, plan);
             if (report.plans.length < PREVIEW_RESPONSE_PLAN_LIMIT) report.plans.push(plan);
             else report.plansTruncated = true;
@@ -253,6 +259,9 @@ export class MigrationEngine {
     opts: MigrationRecordsPreviewOptions,
     marker: Record<string, unknown> = { canary: true, sourceIds: opts.sourceIds },
   ): Promise<MigrationReport> {
+    if (!isBuiltInObjectPair(this.config.getObject(opts.type)) && opts.sourceIds.length > 500) {
+      throw new Error('custom-object test previews are limited to 500 records');
+    }
     const approval = { ...(await this.approvalContext(opts.from, [opts.type])), schemaHashes: opts.schemaHashes };
     const records: CanonicalRecord[] = [];
     for (const sourceId of opts.sourceIds) {
@@ -272,9 +281,10 @@ export class MigrationEngine {
     const policy = this.reconciler.migrationPolicy(approval.conflict);
     try {
       const stats = report.perType[opts.type]!;
+      const seenKeys = new Map<string, string>();
       for (const record of records) {
         stats.read += 1;
-        const plan = await this.planRecord(record, policy, opts.from);
+        const plan = await this.planRecord(record, policy, opts.from, seenKeys);
         await this.store.recordPlan(runId, plan);
         report.plans.push(plan);
         stats.actions[plan.action] = (stats.actions[plan.action] ?? 0) + 1;
@@ -406,8 +416,18 @@ export class MigrationEngine {
     record: CanonicalRecord,
     policy: ReturnType<Reconciler['migrationPolicy']>,
     from: SystemId,
+    seenKeys?: Map<string, string>,
   ): Promise<ReconcilePlan> {
     try {
+      if (!isBuiltInObjectPair(this.config.getObject(record.type))) {
+        const key = this.config.naturalKeyQuery(record)?.key;
+        if (!key) throw new Error('custom-object record has no complete shared natural key');
+        const previous = seenKeys?.get(key);
+        if (previous && previous !== record.meta.sourceId) {
+          throw new Error('custom-object source records have a duplicate natural key');
+        }
+        seenKeys?.set(key, record.meta.sourceId);
+      }
       return await this.reconciler.preview(record, policy);
     } catch (err) {
       const targetSystem = from === 'salesforce' ? 'HubSpot' : 'Salesforce';
@@ -452,12 +472,12 @@ export class MigrationEngine {
       for (const plan of page) {
         count += 1;
         types.add(plan.type);
-        if (!plan.writes || !plan.fingerprints) {
-          throw new ApprovalInvalidatedError('format', 'preview predates exact approved plans; preview again');
-        }
         if (plan.action === 'ambiguous') throw new Error('preview contains ambiguous matches');
         if (plan.action === 'review') throw new Error('preview contains records that need operator review');
         if (plan.action === 'error') throw new Error('preview contains records that could not be planned');
+        if (!plan.writes || !plan.fingerprints) {
+          throw new ApprovalInvalidatedError('format', 'preview predates exact approved plans; preview again');
+        }
         if (plan.from !== approval.from || plan.to !== approval.to) {
           throw new Error('preview contains mixed source systems');
         }
@@ -491,6 +511,9 @@ export class MigrationEngine {
       }
     } else if (plan.writes!.some((write) => write.operation === 'create')) {
       const query = this.config.naturalKeyQuery(record);
+      if (!query && !isBuiltInObjectPair(this.config.getObject(plan.type))) {
+        throw new PreviewDriftError(`${label} no longer has a complete shared natural key`);
+      }
       if (query) {
         const candidates = await this.connectors[plan.to].findByNaturalKey(plan.type, query);
         if (candidates.length) {

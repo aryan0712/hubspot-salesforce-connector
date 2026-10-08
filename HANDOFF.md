@@ -1,12 +1,11 @@
 # crm-sync — Project Handoff & Status
 
-**Last updated:** 2026-09-24 (remediation plan R01–R12 and R14 complete, R13 core
-delivered; prior live CRM verification remains 2026-07-29)
+**Last updated:** 2026-09-28 (bidirectional app verification and read-only live checks)
 **Status:** PostgreSQL product upgrade is installed and running locally. Schema migrations
 and the legacy-state import completed successfully, and the live app was verified healthy
 on 2026-07-29. Extensive engine/security/operability work has since landed on the
-`remediation-plan` branch (below); none of it has touched live Salesforce or HubSpot, and
-none of it has been verified against those live accounts.
+`crm-sync-configure` branch. Read-only checks against the connected Salesforce and
+HubSpot accounts ran on 2026-09-28; no live CRM records were written.
 
 This is the single source of truth after a restart.
 
@@ -22,17 +21,31 @@ It covers migration preview/source-write correctness, demo configuration isolati
 concurrent linking and execution, canary verification, retries, durable workers,
 authentication/tenancy, webhook authenticity, and operational/product verification.
 
-Typecheck, lint, the full test suite (35 files / 314 tests, plus 10 real-browser tests),
-and the mock demo all pass — see §5 for the exact commands. Every fix a package claims has
-a regression test named in the plan's evidence line for that package. No live CRM writes
-or connection changes have been performed under this plan; everything above was verified
-against mock connectors and isolated, embedded PostgreSQL clusters, never against the live
-Salesforce org or HubSpot portal in §3.
+Typecheck, lint, the full test suite (38 files / 381 passed, 2 skipped, plus 14
+real-browser tests), and build pass with the registered-object sync follow-up; see §5 for
+commands. PostgreSQL TLS
+certificate tests now generate certificates without an external OpenSSL executable. No
+live CRM records were written and no OAuth connect flow was run. Automated scenarios use
+mock connectors and isolated PostgreSQL; read-only live findings and remaining gaps are
+recorded in [docs/BIDIRECTIONAL_VERIFICATION.md](docs/BIDIRECTIONAL_VERIFICATION.md) and
+[docs/BIDIRECTIONAL_TEST_GAPS.md](docs/BIDIRECTIONAL_TEST_GAPS.md).
 
 The plan also includes a **deferred next-phase feature roadmap** for assessment,
 explainable plans, a migration control center, relationship migration, reconciliation,
 data health, team workflows, AI assistance, and recovery. The user explicitly deferred
 this feature work on 2026-09-23; do not start it automatically after remediation.
+
+The operator subsequently requested sync for all standard and custom objects. The current
+worktree removes the three-object live-sync gate for explicitly registered pairs and checks
+both directions before activation. New non-default pairs start paused; jobs check object
+pairing, mappings, key completeness, and read-only preflight before a write. Polling and
+HubSpot webhook routing now include registered pairs beyond the original three. This is
+code and mock-test coverage: no live sync configuration or connected CRM record has been
+changed. The first account-specific pairs and vendor scopes still need review; see
+[docs/CUSTOM_OBJECT_REMEDIATION_PLAN.md](docs/CUSTOM_OBJECT_REMEDIATION_PLAN.md).
+Read-only inspection on 2026-09-29 found eight registrations. Company alone is enabled;
+four other registrations have no field mappings or shared key. Do not infer those mappings
+or turn on all eight without passing each pair's preflight.
 
 ## 1. Current state
 
@@ -190,14 +203,25 @@ Verify:
 - Activity at `http://localhost:3000/ops#activity` (jobs, conflicts, and audit)
 - Settings at `http://localhost:3000/ops#settings`
 
-Verified on 2026-07-29 (predates the remediation-plan work in §1; not re-verified against
-the live accounts since):
+Verified on 2026-07-29 (predates the remediation-plan work in §1):
 
 - PostgreSQL health returned OK
 - Salesforce and HubSpot connections decrypted successfully
 - `/api/status` reported `ready: true`
 - `/ops` returned HTTP 200
 - Salesforce reauthorization completed and live schema preflight checked 1,072 fields
+
+Read-only checks on 2026-09-28: schema/list/read succeeded for all three supported objects
+in both CRMs; Salesforce → HubSpot one-record previews passed; HubSpot → Salesforce was
+blocked by duplicate destination natural keys and read-only company mappings. The persisted
+reverse deal mapping has since been corrected in local PostgreSQL by migration `023`:
+HubSpot epoch milliseconds now normalize to a canonical date-only value and Salesforce
+`CloseDate` remains date-only. This mapping fix is covered by mock and isolated-PostgreSQL
+tests; it has not been exercised as a live CRM write. The destination duplicate keys and
+read-only company mappings remain blockers. HubSpot custom-schema discovery returned 403
+for missing scope. See
+[docs/BIDIRECTIONAL_VERIFICATION.md](docs/BIDIRECTIONAL_VERIFICATION.md) for the exact
+direction-by-direction results. No live CRM write or reconnection was performed.
 
 ## 5. Commands
 
@@ -303,16 +327,17 @@ The user explicitly deferred these for now:
 1. Public HTTPS deployment and HubSpot webhook component
 2. External billing-provider integration
 3. Salesforce CDC/Pub/Sub worker
-4. Custom CRM object support
+4. Live custom CRM object rollout
 
 The complete prioritized production-readiness backlog and public go-live gates are in
 `docs/PRODUCTION_READINESS.md`.
 
-The migration workspace now discovers and displays standard/custom object metadata, but
-execution remains intentionally limited to the canonical Contact, Company, and Deal
-objects. Migration is intentionally record-only; relationship propagation remains part
-of the separate live-sync engine. Generic custom-object execution still requires the
-planned dynamic canonical-object work.
+The migration workspace discovers and displays standard/custom object metadata. Local
+mock-backed custom-object registration, strict preflight, bounded preview, canary/read-back,
+and records-only execution now use the shared migration core. Live custom-object execution
+and sync remain gated pending the explicit pair/key/scope decisions and vendor permissions.
+No live custom CRM records were written. The remaining phases and release gates are in
+[docs/CUSTOM_OBJECT_REMEDIATION_PLAN.md](docs/CUSTOM_OBJECT_REMEDIATION_PLAN.md).
 
 If this workstation becomes a long-term environment, add automated backups for both
 `data/postgres/` and `data/.encryption-key`. `docs/OPERATIONS.md` now documents a measured
