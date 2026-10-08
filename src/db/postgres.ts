@@ -143,12 +143,47 @@ async function migrationFiles(): Promise<string[]> {
 }
 
 /**
+ * Connection failures seen only while PostgreSQL is still coming up (embedded Postgres on a
+ * fresh launch, a container whose port opens before the server accepts queries): worth a
+ * few retries. Anything else (bad credentials, unknown database, a real network outage) is a
+ * permanent misconfiguration that retrying would only mask.
+ */
+function isRetryableStartupError(err: unknown): boolean {
+  const code = (err as NodeJS.ErrnoException | undefined)?.code;
+  if (code === '57P03' || code === 'ECONNREFUSED' || code === 'ECONNRESET') return true;
+  const message = err instanceof Error ? err.message : '';
+  return message.includes('Connection terminated unexpectedly');
+}
+
+/**
+ * Acquires a pool connection, retrying with a fixed delay while PostgreSQL is still starting
+ * up (R14). Bounded so a genuinely unreachable or misconfigured database still fails fast.
+ */
+export async function connectWithRetry(
+  pool: Pool,
+  opts: { attempts?: number; delayMs?: number } = {},
+): Promise<PoolClient> {
+  const attempts = opts.attempts ?? 10;
+  const delayMs = opts.delayMs ?? 500;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      return await pool.connect();
+    } catch (err) {
+      if (attempt === attempts || !isRetryableStartupError(err)) throw err;
+      logger.warn({ err, attempt, attempts }, 'database not ready yet, retrying');
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+  throw new Error('unreachable');
+}
+
+/**
  * Applies pending migrations (R14): serialized across processes with a session advisory
  * lock (a second process waits, then finds nothing left to do), each migration in its own
  * transaction, without the runtime statement timeout (DDL on large tables may be slow).
  */
 export async function runMigrations(db: PostgresDatabase): Promise<string[]> {
-  const client = await db.pool.connect();
+  const client = await connectWithRetry(db.pool);
   const applied: string[] = [];
   try {
     await client.query('SET statement_timeout = 0');

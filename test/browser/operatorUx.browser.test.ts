@@ -21,6 +21,7 @@ import type { SystemId } from '../../src/core/types.js';
  * globals used everywhere else in the test suite).
  */
 declare const document: any;
+declare const window: any;
 declare function getComputedStyle(element: any): any;
 
 const TENANT = '00000000-0000-4000-8000-0000000000c1';
@@ -512,6 +513,156 @@ describe('R13 operator UX in a real browser', () => {
       expect((await app.migrationPlans.get(result.planId))?.status).toBe('completed');
       expect(hs.writes.filter((write) => write.type === 'browser_project')).toHaveLength(2);
       expect(problems.join(' | ')).toBe('');
+    } finally {
+      await context.close();
+    }
+  });
+
+  it('sorts the field-mapping table by each column without losing or altering any rule', async () => {
+    const sourceBefore = await app.mappingStore.get('salesforce', 'contact');
+    const targetBefore = await app.mappingStore.get('hubspot', 'contact');
+    const { context, page } = await signIn('operator@example.com');
+    try {
+      await page.goto(`${base}/ops#migration`);
+      await page.waitForLoadState('networkidle');
+      await page.locator('.workspace-step[data-step="fields"]').click();
+      await page.locator('#field-object option[value="contact"]').waitFor({ state: 'attached' });
+      await page.locator('#field-object').evaluate((select: any) => {
+        select.value = 'contact';
+        select.dispatchEvent(new Event('change', { bubbles: true }));
+      });
+      const sourceValues = () => page.locator('#field-map-rows .source-native').evaluateAll(
+        (inputs: any[]) => inputs.map((input) => input.value),
+      );
+      await page.locator('#field-map-rows tr[data-canonical]').first().waitFor();
+      const unsorted = await sourceValues();
+      expect(new Set(unsorted)).toEqual(
+        new Set(['FirstName', 'LastName', 'Email', 'Phone', 'Title', 'OwnerId', 'Account.Name']),
+      );
+
+      const sourceHeader = page.locator('.mapping-table th[data-sort="source"]');
+      await sourceHeader.click();
+      const ascending = await sourceValues();
+      expect(ascending).toEqual([...ascending].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' })));
+      expect(await sourceHeader.getAttribute('aria-sort')).toBe('ascending');
+
+      await sourceHeader.click();
+      const descending = await sourceValues();
+      expect(descending).toEqual([...ascending].reverse());
+      expect(await sourceHeader.getAttribute('aria-sort')).toBe('descending');
+
+      await page.locator('#save-field-map').click();
+      await expect.poll(() => page.locator('#save-field-map').textContent()).toContain('Saved');
+
+      const sourceAfter = await app.mappingStore.get('salesforce', 'contact');
+      const targetAfter = await app.mappingStore.get('hubspot', 'contact');
+      expect(new Set(sourceAfter.map((rule) => `${rule.canonical}:${rule.native}`)))
+        .toEqual(new Set(sourceBefore.map((rule) => `${rule.canonical}:${rule.native}`)));
+      expect(new Set(targetAfter.map((rule) => `${rule.canonical}:${rule.native}`)))
+        .toEqual(new Set(targetBefore.map((rule) => `${rule.canonical}:${rule.native}`)));
+    } finally {
+      await app.mappingStore.set('salesforce', 'contact', sourceBefore);
+      await app.mappingStore.set('hubspot', 'contact', targetBefore);
+      await context.close();
+    }
+  });
+
+  it('groups the sync wizard object list by how many of its registrations are enrolled for sync', async () => {
+    const sf = app.connectors.salesforce as MockConnector;
+    const hs = app.connectors.hubspot as MockConnector;
+    const descriptor = (id: string, label: string) => ({
+      id, label, pluralLabel: `${label}s`, custom: true,
+      queryable: true, createable: true, updateable: true, deletable: false,
+    });
+    sf.defineNativeObject({ object: descriptor('WizardShared__c', 'Wizard Shared'),
+      fields: [{ name: 'Name', label: 'Name', type: 'string' }], relationships: [] });
+    hs.defineNativeObject({ object: descriptor('2-911001', 'Wizard Target A'),
+      fields: [{ name: 'name', label: 'Name', type: 'string' }], relationships: [] });
+    hs.defineNativeObject({ object: descriptor('2-911002', 'Wizard Target B'),
+      fields: [{ name: 'name', label: 'Name', type: 'string' }], relationships: [] });
+
+    const { context, page } = await signIn('admin@example.com');
+    const call = async (method: string, url: string, body?: unknown): Promise<any> => page.evaluate(
+      async ([m, u, b]: [string, string, unknown]) => {
+        const response = await fetch(u, { method: m, headers: { 'content-type': 'application/json' },
+          ...(b === undefined ? {} : { body: JSON.stringify(b) }) });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(`${u}: ${response.status} ${JSON.stringify(payload)}`);
+        return payload;
+      },
+      [method, url, body] as [string, string, unknown],
+    );
+    try {
+      await page.goto(`${base}/ops#sync`);
+      await page.waitForLoadState('networkidle');
+
+      const registrationA = await call('POST', '/api/object-mappings', {
+        label: 'Wizard Target A', salesforceObject: 'WizardShared__c', hubspotObject: '2-911001',
+      });
+      const registrationB = await call('POST', '/api/object-mappings', {
+        label: 'Wizard Target B', salesforceObject: 'WizardShared__c', hubspotObject: '2-911002',
+      });
+      const settings = await call('GET', '/api/sync/settings');
+
+      const openWizardOptions = async () => {
+        // refreshAll() reloads syncConfigState -- the wizard otherwise reuses whatever it
+        // cached on the #sync view's first load, before the PATCH calls below ran.
+        await page.evaluate(() => window.refreshAll());
+        await page.locator('#add-sync-object').click();
+        await page.locator('#sync-wizard-step1-continue').click();
+        await page.locator('#sync-wizard-sf-object option[value="WizardShared__c"]').first().waitFor({ state: 'attached' });
+        return page.locator('#sync-wizard-sf-object option', { hasText: 'WizardShared__c' }).allTextContents();
+      };
+      const closeWizard = () => page.locator('#sync-wizard-cancel').click();
+
+      // Neither registration is enrolled for sync: exactly one untagged option.
+      let options = await openWizardOptions();
+      expect(options).toEqual(['Wizard Shared (WizardShared__c)']);
+      await closeWizard();
+
+      // Exactly one of the two is enrolled: exactly one tagged option, naming that target.
+      await call('PATCH', '/api/sync/settings', {
+        conflictStrategy: settings.conflictStrategy, sourceOfTruth: settings.sourceOfTruth,
+        objects: { [registrationA.canonicalObject]: { enabled: false, direction: 'bidirectional', enrolledForSync: true } },
+      });
+      options = await openWizardOptions();
+      expect(options).toEqual(['Wizard Shared (WizardShared__c) — already mapped to Wizard Target A']);
+      await closeWizard();
+
+      // Both registrations are enrolled: one tagged option per registration.
+      await call('PATCH', '/api/sync/settings', {
+        conflictStrategy: settings.conflictStrategy, sourceOfTruth: settings.sourceOfTruth,
+        objects: { [registrationB.canonicalObject]: { enabled: false, direction: 'bidirectional', enrolledForSync: true } },
+      });
+      options = await openWizardOptions();
+      expect(options.sort()).toEqual([
+        'Wizard Shared (WizardShared__c) — already mapped to Wizard Target A',
+        'Wizard Shared (WizardShared__c) — already mapped to Wizard Target B',
+      ]);
+      await closeWizard();
+    } finally {
+      await context.close();
+    }
+  });
+
+  it('does not run two refreshes at once when refreshAll is triggered twice back to back', async () => {
+    const { context, page } = await signIn('admin@example.com');
+    try {
+      await page.goto(`${base}/ops#activity`);
+      await page.waitForLoadState('networkidle');
+      // Calls refreshAll() twice without waiting on the first -- the race the in-flight
+      // guard (isRefreshingAll) exists for, which a single real click can't reliably
+      // reproduce because the button disables itself before Playwright's second click lands.
+      await page.evaluate(async () => {
+        const btn = document.getElementById('header-refresh-btn');
+        await Promise.all([window.refreshAll(null, btn), window.refreshAll(null, btn)]);
+      });
+      const button = page.locator('#header-refresh-btn');
+      await expect.poll(() => button.textContent(), { timeout: 10_000 }).toBe('Refresh');
+      expect(await button.isDisabled()).toBe(false);
+      const notices = await page.locator('.ui-message.ui-notice', { hasText: /refreshed/i }).count();
+      expect(notices).toBe(1);
+      expect(await page.locator('.ui-error').count()).toBe(0);
     } finally {
       await context.close();
     }

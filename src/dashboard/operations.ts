@@ -292,7 +292,7 @@ export function operationsHtml(): string {
       if(view!=='migration')workspaceMode='migration';
       $('page-title').textContent=viewMeta[view][0];$('page-subtitle').textContent=viewMeta[view][1];
       if(view==='migration')applyWorkspaceMode();
-      if(view==='sync')loadSyncWorkspace();if(view==='activity'){loadJobs();loadAudit();loadConflicts()}if(view==='settings')loadSettingsWorkspace();
+      if(view==='sync')loadSyncWorkspace();if(view==='activity'){loadJobs();loadAudit();loadConflictReview()}if(view==='settings')loadSettingsWorkspace();
       if(view==='sync'||view==='activity')checkForNewSyncErrors();
     }
     document.querySelectorAll('.app-nav a[href^="/ops#"]').forEach(a=>a.onclick=e=>{e.preventDefault();workspaceMode='migration';const view=a.getAttribute('href').split('#')[1];history.replaceState(null,'','#'+view);selectView(view)});
@@ -1408,7 +1408,6 @@ export function operationsHtml(): string {
       const r=await api('/api/conflicts/'+encodeURIComponent(id)+'/resolve',{method:'POST',body:JSON.stringify({winner})});
       showNotice('Kept '+SYSTEM_LABEL[winner]+' values for this '+r.type+'.');await loadConflictReview()}
     window.resolveConflict=resolveConflict;
-    async function loadConflicts(){await Promise.all([loadSyncConflicts(),loadConflictReview()])}
 
     let isRefreshingAll=false;
     async function refreshAll(arg, el){
