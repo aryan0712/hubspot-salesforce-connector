@@ -214,9 +214,14 @@ describe('R11 API isolation', () => {
     const plans = (await (await alice('/api/migration-plans')).json()) as { entries?: { id: string }[] } | { id: string }[];
     const ids = (Array.isArray(plans) ? plans : plans.entries ?? []).map((plan) => plan.id);
     expect(ids).not.toContain(bPlanId);
+    expect((await alice(`/api/migration-plans/${bPlanId}`, { method: 'DELETE' })).status).toBe(404);
     // Bob's requests are routed to tenant B's App.
     expect((await bob(`/api/migration-plans/${bPlanId}`)).status).toBe(200);
     expect((await appB.migrationPlans.get(bPlanId))?.name).toBe('B plan');
+    const bobTemp = await appB.migrationPlans.create({ name: 'Bob temp', source: 'salesforce', types: ['contact'] });
+    const bobDelRes = await bob(`/api/migration-plans/${bobTemp.id}`, { method: 'DELETE' });
+    expect(bobDelRes.status).toBe(200);
+    expect(await appB.migrationPlans.get(bobTemp.id)).toBeUndefined();
     const bobSession = (await bob('/api/session').then((r) => r.json())) as { tenantId: string };
     expect(bobSession.tenantId).toBe(tenantB);
   });

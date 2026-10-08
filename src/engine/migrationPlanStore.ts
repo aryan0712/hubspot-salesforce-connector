@@ -96,6 +96,8 @@ export interface MigrationPlanStore {
   get(id: string): Promise<MigrationPlan | undefined>;
   /** Edits bump the revision and clear approvals; refused (PlanStateError) while executing. */
   update(id: string, input: MigrationPlanInput): Promise<MigrationPlan | undefined>;
+  /** Deletes a saved plan; refused (PlanStateError) while executing. Returns false if not found. */
+  delete(id: string): Promise<boolean>;
   saveValidation(id: string, revision: number, schemaHashes: Record<string, string>): Promise<boolean>;
   savePreview(id: string, revision: number, runId: string): Promise<boolean>;
   saveCanaryPreview(
@@ -206,6 +208,15 @@ export class InMemoryMigrationPlanStore implements MigrationPlanStore {
       updatedAt: new Date().toISOString(),
     });
     return structuredClone(plan);
+  }
+
+  async delete(id: string): Promise<boolean> {
+    const plan = this.plans.get(id);
+    if (!plan) return false;
+    if (plan.status === 'executing' || plan.activeExecutionId) {
+      throw new PlanStateError('plan_executing', 'a plan cannot be deleted while it is executing');
+    }
+    return this.plans.delete(id);
   }
 
   async saveValidation(

@@ -385,7 +385,7 @@ export function migrationWorkspaceHtml(): string {
                     <div class="scope-option"><span><b>Test one record first</b><small>A verified one-record migration is required before the full migration is prepared.</small></span></div>
                   </div>
                 </div>
-                <div class="step-footer"><span class="step-footer-note">Draft configuration is autosaved.</span><button id="save-plan" class="secondary">Save now</button><button class="secondary" disabled>← Back</button><button class="next-step" data-go-step="objects" data-save-before="true">Choose objects →</button></div>
+                <div class="step-footer"><button id="delete-current-plan" class="danger secondary" type="button" hidden>Delete plan</button><span class="step-footer-note">Draft configuration is autosaved.</span><button id="save-plan" class="secondary">Save now</button><button class="secondary" disabled>← Back</button><button class="next-step" data-go-step="objects" data-save-before="true">Choose objects →</button></div>
               </div>
             </section>
 

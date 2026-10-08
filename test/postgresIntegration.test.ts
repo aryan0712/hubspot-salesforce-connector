@@ -227,6 +227,10 @@ describe('PostgreSQL repositories', () => {
       previewRevision: undefined,
       canary: undefined,
     });
+
+    expect(await plans.delete(created.id)).toBe(true);
+    expect(await plans.get(created.id)).toBeUndefined();
+    expect(await plans.delete(created.id)).toBe(false);
   });
 
   it('persists an intentionally empty mapping set across initialization', async () => {

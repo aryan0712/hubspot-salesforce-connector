@@ -14,7 +14,7 @@ import {
 } from '../src/engine/associationEngine.js';
 import { InMemorySyncEventStore } from '../src/engine/syncEventStore.js';
 import { SyncEngine } from '../src/engine/syncEngine.js';
-import { InMemoryMigrationPlanStore } from '../src/engine/migrationPlanStore.js';
+import { InMemoryMigrationPlanStore, PlanStateError } from '../src/engine/migrationPlanStore.js';
 import { createDefaultConfigContext } from '../src/core/configContext.js';
 
 // Each test gets its own configuration context, like each app does in production.
@@ -224,6 +224,28 @@ describe('migration plan drafts', () => {
       previewRevision: undefined,
       canary: undefined,
     });
+  });
+
+  it('deletes plans but refuses deleting while executing', async () => {
+    const store = new InMemoryMigrationPlanStore();
+    const plan = await store.create({
+      name: 'To be deleted',
+      source: 'salesforce',
+      types: ['contact'],
+    });
+    expect(await store.get(plan.id)).toBeDefined();
+
+    // Refuse delete while executing
+    store.holdForExecution(plan.id, 'exec-1', true);
+    await expect(store.delete(plan.id)).rejects.toThrow(PlanStateError);
+
+    // Release execution and delete
+    store.releaseExecution(plan.id, 'exec-1', 'completed');
+    expect(await store.delete(plan.id)).toBe(true);
+    expect(await store.get(plan.id)).toBeUndefined();
+
+    // Deleting again returns false
+    expect(await store.delete(plan.id)).toBe(false);
   });
 });
 

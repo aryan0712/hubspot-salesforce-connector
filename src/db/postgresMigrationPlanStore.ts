@@ -130,6 +130,26 @@ export class PostgresMigrationPlanStore implements MigrationPlanStore {
     });
   }
 
+  async delete(id: string): Promise<boolean> {
+    return this.db.tenant(this.tenantId, async (client) => {
+      const result = await client.query(
+        `DELETE FROM migration_plans
+         WHERE tenant_id = $1 AND id = $2
+           AND status <> 'executing' AND active_execution_id IS NULL`,
+        [this.tenantId, id],
+      );
+      if (result.rowCount && result.rowCount > 0) return true;
+      const exists = await client.query(
+        `SELECT 1 FROM migration_plans WHERE tenant_id = $1 AND id = $2`,
+        [this.tenantId, id],
+      );
+      if (exists.rowCount) {
+        throw new PlanStateError('plan_executing', 'a plan cannot be deleted while it is executing');
+      }
+      return false;
+    });
+  }
+
   async saveValidation(
     id: string,
     revision: number,

@@ -123,6 +123,22 @@ export function migrationWorkspaceRoutes(ctx: RouteContext): Router {
     res.json(plan);
   });
 
+  router.delete('/api/migration-plans/:id', requireRole('operator'), async (req, res) => {
+    const id = String(req.params.id);
+    const existing = await app.migrationPlans.get(id);
+    if (!existing) return res.status(404).json({ error: 'migration_plan_not_found' });
+    const deleted = await app.migrationPlans.delete(id);
+    if (!deleted) return res.status(404).json({ error: 'migration_plan_not_found' });
+    await app.operations?.recordAudit({
+      actorId: res.locals.auth?.actorId,
+      action: 'migration_plan.deleted',
+      resourceType: 'migration_plan',
+      resourceId: id,
+      detail: { name: existing.name, source: existing.source, types: existing.types },
+    });
+    res.json({ ok: true });
+  });
+
   router.post('/api/migration-plans/:id/preflight', requireRole('operator'), async (req, res) => {
     const plan = await app.migrationPlans.get(String(req.params.id));
     if (!plan) return res.status(404).json({ error: 'migration_plan_not_found' });

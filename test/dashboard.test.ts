@@ -15,9 +15,11 @@ describe('operations dashboard', () => {
       'workspace-preview',
       'saved-plans',
       'execute',
+      'delete-current-plan',
     ]) {
       expect(html).toContain(`id="${id}"`);
     }
+    expect(html).toContain('data-action="deleteSavedPlan"');
   });
 
   it('renders a guided six-step builder with Back and Next navigation', () => {
