@@ -142,18 +142,21 @@ export const migrationWorkspaceCss = `
   .coverage-list{display:grid;grid-template-columns:repeat(5,minmax(74px,1fr));gap:0;color:var(--text-2);font-size:12px}
   .coverage-list div{display:flex;flex-direction:column;gap:3px;padding:2px 14px;border-left:1px solid var(--border)}
   .coverage-list b{color:var(--text);font-size:18px;line-height:1.2}
-  .mapping-table input,.mapping-table select{min-width:124px}
-  .mapping-table tr[hidden]{display:none}.mapping-table .mapping-action{width:82px;min-width:82px;position:sticky;left:0;background:#fff;z-index:1}
+  .mapping-table{width:100%;border-collapse:collapse}
+  .mapping-table th,.mapping-table td{padding:8px 6px}
+  .mapping-table input,.mapping-table select{min-width:98px;width:100%;box-sizing:border-box}
+  .mapping-table tr[hidden]{display:none}.mapping-table .mapping-action{width:68px;min-width:68px;position:sticky;left:0;background:#fff;z-index:1}
   .mapping-table th.mapping-action{background:#fafcfd;z-index:2}
-  .mapping-table th.sortable-th{cursor:pointer;user-select:none;transition:background .12s,color .12s}
+  .mapping-table th.sortable-th{cursor:pointer;user-select:none;transition:background .12s,color .12s;white-space:nowrap}
   .mapping-table th.sortable-th:hover{background:#edf3f8;color:var(--orange)}
-  .mapping-table th.sortable-th .sort-icon{display:inline-block;margin-left:5px;font-size:11px;opacity:.45}
+  .mapping-table th.sortable-th .sort-icon{display:inline-block;margin-left:4px;font-size:11px;opacity:.45}
   .mapping-table th.sortable-th.sorted-asc .sort-icon,.mapping-table th.sortable-th.sorted-desc .sort-icon{opacity:1;color:var(--orange);font-weight:700}
-  .mapping-remove{padding:7px 9px;background:#fff;border-color:#e5bcb3;color:var(--red)}
+  .mapping-remove{padding:6px 8px;background:#fff;border-color:#e5bcb3;color:var(--red);font-size:11px}
   .mapping-remove:hover{background:#fdf1ee;border-color:var(--red);color:var(--red)}
-  .mapping-transform{min-width:116px;padding:8px 10px;background:#fff;border-color:#b9cad9;color:var(--text-2);text-align:left}
+  .mapping-transform{min-width:92px;padding:6px 8px;background:#fff;border-color:#b9cad9;color:var(--text-2);text-align:left;font-size:11px}
   .mapping-transform:hover{background:#f5f9fc;border-color:var(--blue);color:var(--blue)}
   .mapping-transform small{display:block;color:var(--muted);font-size:9px;margin-top:2px}
+  .mapping-table select.field-sot{min-width:115px;padding:6px 8px;font-size:12px}
   .mapping-change-notice{display:flex;align-items:center;gap:10px;padding:10px 20px;background:#fff8f5;
     border-bottom:1px solid #f3d5cc;color:#8d4935;font-size:12px}
   .mapping-change-notice[hidden]{display:none}.mapping-change-notice button{margin-left:auto;padding:7px 10px}
