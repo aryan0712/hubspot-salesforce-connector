@@ -82,6 +82,8 @@ export function syncRoutes(ctx: RouteContext): Router {
             enrolledForSync?: unknown;
             conditions?: unknown;
             rawCondition?: unknown;
+            conflictStrategy?: unknown;
+            sourceOfTruth?: unknown;
           } | null;
           return (
             isType(type) &&
@@ -90,7 +92,15 @@ export function syncRoutes(ctx: RouteContext): Router {
             directions.includes(String(object.direction)) &&
             (object.enrolledForSync === undefined || typeof object.enrolledForSync === 'boolean') &&
             isValidConditionsBySystem(object.conditions) &&
-            isValidRawConditionBySystem(object.rawCondition)
+            isValidRawConditionBySystem(object.rawCondition) &&
+            (object.conflictStrategy === undefined ||
+              object.conflictStrategy === null ||
+              object.conflictStrategy === '' ||
+              ['source-of-truth', 'last-write-wins', 'field-merge'].includes(String(object.conflictStrategy))) &&
+            (object.sourceOfTruth === undefined ||
+              object.sourceOfTruth === null ||
+              object.sourceOfTruth === '' ||
+              isSystem(String(object.sourceOfTruth)))
           );
         }));
     const pollingValid =
@@ -134,8 +144,23 @@ export function syncRoutes(ctx: RouteContext): Router {
     const current = app.syncConfig.get();
     const objects = { ...current.objects };
     if (objectsInput) {
-      for (const [type, value] of Object.entries(objectsInput as Record<string, typeof current.objects[string]>)) {
-        objects[type] = { ...current.objects[type], ...value };
+      for (const [type, value] of Object.entries(objectsInput as Record<string, Partial<typeof current.objects[string]>>)) {
+        const merged = { ...current.objects[type], ...value };
+        if (value.conflictStrategy !== undefined) {
+          if (value.conflictStrategy && ['source-of-truth', 'last-write-wins', 'field-merge'].includes(String(value.conflictStrategy))) {
+            merged.conflictStrategy = value.conflictStrategy as typeof current.conflictStrategy;
+          } else {
+            delete merged.conflictStrategy;
+          }
+        }
+        if (value.sourceOfTruth !== undefined) {
+          if (value.sourceOfTruth && isSystem(String(value.sourceOfTruth))) {
+            merged.sourceOfTruth = value.sourceOfTruth as typeof current.sourceOfTruth;
+          } else {
+            delete merged.sourceOfTruth;
+          }
+        }
+        objects[type] = merged as typeof current.objects[string];
       }
     }
     const polling = { ...current.polling };

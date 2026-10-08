@@ -44,4 +44,25 @@ describe('conflict.resolve', () => {
     expect(r.winner.fields.firstName).toBe('Robert');
     expect(r.winner.fields.phone).toBe('+1-old');
   });
+
+  it('source-of-truth strategy respects field-level ownership overrides', () => {
+    const sfRecord = make('salesforce', '2026-06-01T00:00:00Z', {
+      firstName: 'SF Name',
+      phone: '+1-sf-phone',
+      email: 'sf@example.com',
+    });
+    const hsRecord = make('hubspot', '2026-06-01T00:00:00Z', {
+      firstName: 'HS Name',
+      phone: '+1-hs-phone',
+      email: 'hs@example.com',
+    });
+    const r = resolve(sfRecord, hsRecord, {
+      strategy: 'source-of-truth',
+      sourceOfTruth: 'hubspot',
+      fieldOwners: { phone: 'salesforce' },
+    });
+    expect(r.winner.fields.firstName).toBe('HS Name');
+    expect(r.winner.fields.email).toBe('hs@example.com');
+    expect(r.winner.fields.phone).toBe('+1-sf-phone');
+  });
 });

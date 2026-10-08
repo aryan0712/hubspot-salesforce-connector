@@ -46,6 +46,10 @@ export interface SyncObjectConfig {
    */
   conditions?: Partial<Record<SystemId, SyncCondition[]>>;
   rawCondition?: Partial<Record<SystemId, string>>;
+  /** Object-level conflict strategy override; inherits org conflictStrategy when omitted. */
+  conflictStrategy?: ConflictStrategy;
+  /** Object-level source of truth override; inherits org sourceOfTruth when omitted. */
+  sourceOfTruth?: SystemId;
 }
 
 /**

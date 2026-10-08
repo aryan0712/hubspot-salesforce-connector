@@ -46,10 +46,13 @@ export function resolve(
 
   switch (strategy) {
     case 'source-of-truth': {
-      const winner = pickBySystem(a, b, sourceOfTruth);
+      const winner = sourceOfTruthMerge(a, b, sourceOfTruth, opts.fieldOwners);
       return { winner, reason: `source-of-truth:${sourceOfTruth}` };
     }
     case 'last-write-wins': {
+      if (opts.fieldOwners && Object.keys(opts.fieldOwners).length) {
+        return { winner: fieldMerge(a, b, opts.fieldOwners), reason: 'last-write-wins' };
+      }
       const winner = newer(a, b);
       return { winner, reason: 'last-write-wins' };
     }
@@ -63,6 +66,30 @@ export function resolve(
 
 function pickBySystem(a: CanonicalRecord, b: CanonicalRecord, system: SystemId): CanonicalRecord {
   return a.meta.source === system ? a : b;
+}
+
+function sourceOfTruthMerge(
+  a: CanonicalRecord,
+  b: CanonicalRecord,
+  sourceOfTruth: SystemId,
+  fieldOwners: Record<string, SystemId> = {},
+): CanonicalRecord {
+  const hasOverrides = Object.keys(fieldOwners).some(
+    (k) => fieldOwners[k] && fieldOwners[k] !== sourceOfTruth,
+  );
+  if (!hasOverrides) {
+    return pickBySystem(a, b, sourceOfTruth);
+  }
+  const defaultWinner = pickBySystem(a, b, sourceOfTruth);
+  const fields: Record<string, FieldValue> = {};
+  const keys = new Set([...Object.keys(a.fields), ...Object.keys(b.fields)]);
+  for (const key of keys) {
+    const owner = fieldOwners[key] || sourceOfTruth;
+    const owned = a.meta.source === owner ? a : b;
+    const fallback = owned === a ? b : a;
+    fields[key] = owned.fields[key] ?? fallback.fields[key] ?? null;
+  }
+  return { ...defaultWinner, fields };
 }
 
 function newer(a: CanonicalRecord, b: CanonicalRecord): CanonicalRecord {

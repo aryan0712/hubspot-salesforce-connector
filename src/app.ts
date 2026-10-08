@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import type { CRMConnector } from './core/connector.js';
-import type { SystemId } from './core/types.js';
+import type { CanonicalType, SystemId } from './core/types.js';
 import { FileIdMapStore, type IdMapStore } from './core/idMap.js';
 import { SalesforceConnector } from './connectors/salesforce/salesforceConnector.js';
 import { HubSpotConnector } from './connectors/hubspot/hubspotConnector.js';
@@ -274,11 +274,12 @@ export async function createApp(
     locks,
     activity,
     governance,
-    conflictOptions: () => {
+    conflictOptions: (type?: CanonicalType) => {
       const config = syncConfigStore.get();
+      const objConfig = type ? config.objects[type] : undefined;
       return {
-        strategy: config.conflictStrategy,
-        sourceOfTruth: config.sourceOfTruth,
+        strategy: objConfig?.conflictStrategy ?? config.conflictStrategy,
+        sourceOfTruth: objConfig?.sourceOfTruth ?? config.sourceOfTruth,
       };
     },
     // A one-directional sync must never write a merged value back to the system that is

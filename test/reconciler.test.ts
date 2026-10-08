@@ -4,7 +4,7 @@ import os from 'node:os';
 import crypto from 'node:crypto';
 import { AxiosError } from 'axios';
 import type { CRMConnector } from '../src/core/connector.js';
-import type { ChangeEvent, SystemId } from '../src/core/types.js';
+import type { CanonicalType, ChangeEvent, SystemId } from '../src/core/types.js';
 import { MockConnector } from '../src/connectors/mock/mockConnector.js';
 import { FileIdMapStore } from '../src/core/idMap.js';
 import { Reconciler } from '../src/engine/reconciler.js';
@@ -226,5 +226,62 @@ describe('required-field validation before writing', () => {
     const sfRecord = await ctx.sf.read('contact', sfId);
     await expect(ctx.reconciler.reconcile(sfRecord!)).resolves.toBeUndefined();
     expect((await ctx.hs.list('contact')).records).toHaveLength(1);
+  });
+});
+
+describe('Org -> Object -> Field level conflict resolution hierarchy', () => {
+  it('respects org default, object override, and field-level override', async () => {
+    const config = createDefaultConfigContext('hierarchy-test');
+    const sf = new MockConnector('salesforce', config);
+    const hs = new MockConnector('hubspot', config);
+    const connectors: Record<SystemId, CRMConnector> = { salesforce: sf, hubspot: hs };
+    const idMap = new FileIdMapStore(path.join(os.tmpdir(), `idmap-test-${crypto.randomUUID()}.json`));
+    await idMap.init();
+
+    // Org SOT = salesforce, but Company Object SOT = hubspot
+    const reconciler = new Reconciler(connectors, idMap, config, {
+      conflictOptions: (type?: CanonicalType) => {
+        if (type === 'company') {
+          return { strategy: 'source-of-truth', sourceOfTruth: 'hubspot' };
+        }
+        return { strategy: 'source-of-truth', sourceOfTruth: 'salesforce' };
+      },
+    });
+
+    config.configureFieldRules('salesforce', 'company', [
+      { canonical: 'name', native: 'Name' },
+      { canonical: 'domain', native: 'Website' },
+      { canonical: 'phone', native: 'Phone', sourceOfTruth: 'salesforce' },
+    ]);
+    config.configureFieldRules('hubspot', 'company', [
+      { canonical: 'name', native: 'name' },
+      { canonical: 'domain', native: 'domain' },
+      { canonical: 'phone', native: 'phone', sourceOfTruth: 'salesforce' },
+    ]);
+
+    const sfId = sf.seed('company', { name: 'SF Corp', domain: 'sf.com', phone: '+1-SF-PHONE' });
+    const hsId = hs.seed('company', { name: 'HS Corp', domain: 'hs.com', phone: '+1-HS-PHONE' });
+    await idMap.upsertLink({
+      canonicalId: crypto.randomUUID(),
+      type: 'company',
+      ids: { salesforce: sfId, hubspot: hsId },
+      hashes: {},
+      modifiedAt: {},
+      naturalKeys: [],
+      updatedAt: new Date().toISOString(),
+    });
+
+    const sfRecord = await sf.read('company', sfId);
+    await reconciler.reconcile(sfRecord!);
+
+    const finalSf = await sf.read('company', sfId);
+    const finalHs = await hs.read('company', hsId);
+
+    // Name comes from HubSpot (object-level SOT)
+    expect(finalSf!.fields.name).toBe('HS Corp');
+    expect(finalHs!.fields.name).toBe('HS Corp');
+    // Phone comes from Salesforce (field-level override)
+    expect(finalSf!.fields.phone).toBe('+1-SF-PHONE');
+    expect(finalHs!.fields.phone).toBe('+1-SF-PHONE');
   });
 });

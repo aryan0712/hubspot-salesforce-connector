@@ -215,7 +215,7 @@ export class Reconciler {
       readCounterpartForConflict?: boolean;
       activity?: ActivityLog;
       governance?: GovernanceStore;
-      conflictOptions?: () => Pick<ResolveOptions, 'strategy' | 'sourceOfTruth'>;
+      conflictOptions?: (type?: CanonicalType) => Pick<ResolveOptions, 'strategy' | 'sourceOfTruth'>;
       /** Live sync write scope per object; defaults to bidirectional reconciliation. */
       syncWriteScope?: (type: CanonicalType) => ReconcilePolicy['writeScope'];
       /** R06: durable write intents (recorded before every CRM mutation). */
@@ -232,20 +232,28 @@ export class Reconciler {
   }
 
   /** The conflict settings a plan made now would use. */
-  conflictSettings(): Pick<ResolveOptions, 'strategy' | 'sourceOfTruth'> {
-    return { ...this.opts.conflictOptions?.() };
+  conflictSettings(type?: CanonicalType): Pick<ResolveOptions, 'strategy' | 'sourceOfTruth'> {
+    return { ...this.opts.conflictOptions?.(type) };
   }
 
   syncPolicy(type: CanonicalType): ReconcilePolicy {
     return {
       mode: 'sync',
       writeScope: this.opts.syncWriteScope?.(type) ?? 'bidirectional',
-      conflict: this.conflictSettings(),
+      conflict: this.conflictSettings(type),
     };
   }
 
-  migrationPolicy(conflict = this.conflictSettings()): ReconcilePolicy {
-    return { ...MIGRATION_POLICY, conflict };
+  migrationPolicy(conflict?: Pick<ResolveOptions, 'strategy' | 'sourceOfTruth'>): ReconcilePolicy;
+  migrationPolicy(type: CanonicalType, conflict?: Pick<ResolveOptions, 'strategy' | 'sourceOfTruth'>): ReconcilePolicy;
+  migrationPolicy(
+    arg1?: CanonicalType | Pick<ResolveOptions, 'strategy' | 'sourceOfTruth'>,
+    arg2?: Pick<ResolveOptions, 'strategy' | 'sourceOfTruth'>,
+  ): ReconcilePolicy {
+    if (typeof arg1 === 'string') {
+      return { ...MIGRATION_POLICY, conflict: arg2 ?? this.conflictSettings(arg1) };
+    }
+    return { ...MIGRATION_POLICY, conflict: arg1 ?? this.conflictSettings() };
   }
 
   // ------------------------------------------------------------------ live sync
@@ -436,8 +444,8 @@ export class Reconciler {
 
     // Echo suppression: content equal to what we last recorded for this system originated
     // from our own write. Ignore it to break the loop.
-    if (!opts.force && hashMatches(link.hashes[from], source.fields)) {
-      if (isLegacyHash(link.hashes[from])) {
+    if (!opts.force && hashMatches(link.hashes?.[from], source.fields)) {
+      if (isLegacyHash(link.hashes?.[from])) {
         // Upgrade the stored hash from this read-only observation; no CRM write.
         await this.idMap.upsertLink({ ...link, hashes: { ...link.hashes, [from]: incomingHash } });
       }

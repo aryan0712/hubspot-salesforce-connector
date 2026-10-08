@@ -387,5 +387,17 @@ describe('operations dashboard', () => {
     expect(html).toContain('data-target-id');
     expect(html).toContain('already mapped to');
   });
+
+  it('renders source-of-truth mapping columns and object-level conflict controls', () => {
+    const html = operationsHtml();
+    expect(html).toContain('data-sort="sot"');
+    expect(html).toContain('Source of truth');
+    expect(html).toContain('.object-conflict-row');
+    expect(html).toContain('data-object-strategy');
+    expect(html).toContain('data-object-sot');
+    expect(html).toContain('data-conflict-row');
+    expect(html).toContain('class="field-sot"');
+  });
 });
+
 

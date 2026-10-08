@@ -56,6 +56,10 @@ export function operationsHtml(): string {
     .object-poll-row .muted{color:var(--muted)}
     .object-poll-row .muted.error{color:var(--red)}
     .object-poll-row.disabled{opacity:.5}
+    .object-conflict-row{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding-left:25px;font-size:12px;color:var(--text-2)}
+    .object-conflict-row label{margin:0;display:flex;align-items:center;gap:6px;white-space:nowrap}
+    .object-conflict-row select{width:auto;padding:3px 8px;font-size:12px}
+    .object-conflict-row.disabled{opacity:.5}
     .object-links-row{display:flex;gap:14px;padding-left:25px}
     .poll-history{padding:10px 12px 4px 25px;display:flex;flex-direction:column;gap:6px}
     .poll-history-row{display:flex;gap:14px;font-size:12px;color:var(--text-2)}
@@ -440,12 +444,16 @@ export function operationsHtml(): string {
     function transformOptionList(value){return transformIds.map(id=>'<option value="'+id+'" '+(id===(value||'identity')?'selected':'')+'>'+esc(transformMeta[id][0])+' — '+esc(transformMeta[id][1])+'</option>').join('')}
     function transformSummary(values){const active=values.filter(value=>value&&value!=='identity');if(!active.length)return 'Identity';if(active.length===1)return transformMeta[active[0]][0];return active.length+' transforms'}
     function transformHidden(cls,value){return '<input type="hidden" class="'+cls+'" value="'+esc(value||'identity')+'">'}
-    async function loadFieldWorkspace(type){if(!type)return;const loadToken=++migrationState.fieldLoadToken;$('field-map-rows').innerHTML='<tr><td colspan="5" class="empty">Loading schemas and mappings…</td></tr>';$('field-map-notice').hidden=true;closeTransformLab();const row=migrationState.catalog.find(item=>item.canonicalType===type);if(!row)return;$('field-object').value=type;$('field-current-name').textContent=row.source.label+' → '+row.target.label;updateFieldObjectPosition();renderFieldObjectQueue();
+    function conflictStrategyLabel(strategy){return strategy==='source-of-truth'?'Source of truth':strategy==='last-write-wins'?'Last write wins':strategy==='field-merge'?'Field merge':strategy||'Last write wins'}
+    function systemLabel(sys){return sys==='salesforce'?'Salesforce':sys==='hubspot'?'HubSpot':sys||'Salesforce'}
+    function getObjectSot(type){return (type&&syncConfigState?.objects?.[type]?.sourceOfTruth)||syncConfigState?.sourceOfTruth||'salesforce'}
+    async function loadFieldWorkspace(type){if(!type)return;const loadToken=++migrationState.fieldLoadToken;$('field-map-rows').innerHTML='<tr><td colspan="6" class="empty">Loading schemas and mappings…</td></tr>';$('field-map-notice').hidden=true;closeTransformLab();const row=migrationState.catalog.find(item=>item.canonicalType===type);if(!row)return;$('field-object').value=type;$('field-current-name').textContent=row.source.label+' → '+row.target.label;updateFieldObjectPosition();renderFieldObjectQueue();
+      if(!syncConfigState){try{syncConfigState=await api('/api/sync/settings')}catch{}}
       try{const from=$('mig-from').value,to=from==='salesforce'?'hubspot':'salesforce';const [sourceMeta,targetMeta,sourceMap,targetMap]=await Promise.all([getMetadata(from,row.source.id),getMetadata(to,row.target.id),api('/api/mappings/'+from+'/'+type),api('/api/mappings/'+to+'/'+type)]);
         if(loadToken!==migrationState.fieldLoadToken)return;
         const sourceByCanonical=new Map(sourceMap.rules.map(rule=>[rule.canonical,rule])),targetByCanonical=new Map(targetMap.rules.map(rule=>[rule.canonical,rule]));const canonicals=[...new Set([...sourceByCanonical.keys(),...targetByCanonical.keys()])];
         migrationState.mapping={type,from,to,sourceMeta,targetMeta,sourceMap,targetMap,canonicals,removed:[],dirty:false};
-        renderFieldMappings();updateFieldObjectPosition();renderFieldObjectQueue()}catch(e){if(loadToken===migrationState.fieldLoadToken)$('field-map-rows').innerHTML='<tr><td colspan="5" class="empty">'+esc(e.message)+'</td></tr>'}}
+        renderFieldMappings();updateFieldObjectPosition();renderFieldObjectQueue()}catch(e){if(loadToken===migrationState.fieldLoadToken)$('field-map-rows').innerHTML='<tr><td colspan="6" class="empty">'+esc(e.message)+'</td></tr>'}}
     let fieldSortCol=null,fieldSortAsc=true;
     function updateFieldSortHeaders(){
       document.querySelectorAll('.mapping-table th[data-sort]').forEach(th=>{
@@ -480,6 +488,9 @@ export function operationsHtml(): string {
         }else if(col==='target'){
           valA=(a.querySelector('.target-native')?.value||'').trim().toLowerCase();
           valB=(b.querySelector('.target-native')?.value||'').trim().toLowerCase();
+        }else if(col==='sot'){
+          valA=(a.querySelector('.field-sot')?.value||'').trim().toLowerCase();
+          valB=(b.querySelector('.field-sot')?.value||'').trim().toLowerCase();
         }
         if(!valA&&valB)return 1;
         if(valA&&!valB)return -1;
@@ -514,6 +525,9 @@ export function operationsHtml(): string {
           }else if(fieldSortCol==='target'){
             valA=(targetBy.get(a)?.native||'').trim().toLowerCase();
             valB=(targetBy.get(b)?.native||'').trim().toLowerCase();
+          }else if(fieldSortCol==='sot'){
+            valA=(sourceBy.get(a)?.sourceOfTruth||targetBy.get(a)?.sourceOfTruth||'').trim().toLowerCase();
+            valB=(sourceBy.get(b)?.sourceOfTruth||targetBy.get(b)?.sourceOfTruth||'').trim().toLowerCase();
           }
           if(!valA&&valB)return 1;
           if(valA&&!valB)return -1;
@@ -522,12 +536,15 @@ export function operationsHtml(): string {
           return fieldSortAsc?cmp:-cmp;
         });
       }
+      const objectSot=getObjectSot(state.type);
+      const sotLabel=systemLabel(objectSot);
       $('field-map-rows').innerHTML=visible.map(canonical=>{const s=sourceBy.get(canonical)||{},t=targetBy.get(canonical)||{};
         const transforms=[s.toCanonical||'identity',s.fromCanonical||'identity',t.toCanonical||'identity',t.fromCanonical||'identity'];
-        return '<tr data-canonical="'+esc(canonical)+'"><td class="mapping-action"><button class="mapping-remove" data-remove-canonical="'+esc(canonical)+'" aria-label="Remove '+esc(canonical)+' mapping" title="Remove this mapping">Remove</button></td><td><input class="source-native" list="source-native-datalist" value="'+esc(s.native||'')+'" placeholder="— Not mapped —"></td><td><input class="canonical" value="'+esc(canonical)+'"></td><td>'+transformHidden('source-to',transforms[0])+transformHidden('source-from',transforms[1])+transformHidden('target-to',transforms[2])+transformHidden('target-from',transforms[3])+'<button class="mapping-transform" data-transform-canonical="'+esc(canonical)+'">'+esc(transformSummary([transforms[0],transforms[3]]))+'<small>Configure</small></button></td><td><input class="target-native" list="target-native-datalist" value="'+esc(t.native||'')+'" placeholder="— Not mapped —"></td></tr>'}).join('')||'<tr><td colspan="5" class="empty">No mappings remain. Save to persist this empty mapping set, or undo the removal.</td></tr>';
-      refreshMappingCoverage();updateFieldSortHeaders();$('field-map-notice').hidden=!state.removed.length;$('field-map-notice-text').textContent=state.removed.length+' mapping'+(state.removed.length===1?'':'s')+' marked for removal. Save mappings to apply.';document.querySelectorAll('[data-remove-canonical]').forEach(button=>button.onclick=()=>{state.removed.push(button.dataset.removeCanonical);state.dirty=true;closeTransformLab();renderFieldMappings()});document.querySelectorAll('[data-transform-canonical]').forEach(button=>button.onclick=()=>openTransformLab(button));document.querySelectorAll('#field-map-rows tr[data-canonical] input').forEach(control=>{control.oninput=control.onchange=()=>{state.dirty=true;refreshMappingCoverage();applyMappingFilters();setDraftStatus('Mapping changes not saved')}});applyMappingFilters()}
+        const currentSot=s.sourceOfTruth||t.sourceOfTruth||'';
+        return '<tr data-canonical="'+esc(canonical)+'"><td class="mapping-action"><button class="mapping-remove" data-remove-canonical="'+esc(canonical)+'" aria-label="Remove '+esc(canonical)+' mapping" title="Remove this mapping">Remove</button></td><td><input class="source-native" list="source-native-datalist" value="'+esc(s.native||'')+'" placeholder="— Not mapped —"></td><td><input class="canonical" value="'+esc(canonical)+'"></td><td>'+transformHidden('source-to',transforms[0])+transformHidden('source-from',transforms[1])+transformHidden('target-to',transforms[2])+transformHidden('target-from',transforms[3])+'<button class="mapping-transform" data-transform-canonical="'+esc(canonical)+'">'+esc(transformSummary([transforms[0],transforms[3]]))+'<small>Configure</small></button></td><td><input class="target-native" list="target-native-datalist" value="'+esc(t.native||'')+'" placeholder="— Not mapped —"></td><td><select class="field-sot" data-canonical="'+esc(canonical)+'"><option value="">Default ('+esc(sotLabel)+')</option><option value="salesforce" '+(currentSot==='salesforce'?'selected':'')+'>Salesforce</option><option value="hubspot" '+(currentSot==='hubspot'?'selected':'')+'>HubSpot</option></select></td></tr>'}).join('')||'<tr><td colspan="6" class="empty">No mappings remain. Save to persist this empty mapping set, or undo the removal.</td></tr>';
+      refreshMappingCoverage();updateFieldSortHeaders();$('field-map-notice').hidden=!state.removed.length;$('field-map-notice-text').textContent=state.removed.length+' mapping'+(state.removed.length===1?'':'s')+' marked for removal. Save mappings to apply.';document.querySelectorAll('[data-remove-canonical]').forEach(button=>button.onclick=()=>{state.removed.push(button.dataset.removeCanonical);state.dirty=true;closeTransformLab();renderFieldMappings()});document.querySelectorAll('[data-transform-canonical]').forEach(button=>button.onclick=()=>openTransformLab(button));document.querySelectorAll('#field-map-rows tr[data-canonical] input, #field-map-rows tr[data-canonical] select.field-sot').forEach(control=>{control.oninput=control.onchange=()=>{state.dirty=true;refreshMappingCoverage();applyMappingFilters();setDraftStatus('Mapping changes not saved')}});applyMappingFilters()}
     function refreshMappingCoverage(){const state=migrationState.mapping;if(!state)return;const rows=[...$('field-map-rows').querySelectorAll('tr[data-canonical]')],ready=rows.filter(tr=>tr.querySelector('.source-native').value&&tr.querySelector('.target-native').value).length,total=rows.length,pct=total?Math.round(ready/total*100):0;$('coverage-number').textContent=pct+'%';$('coverage-list').innerHTML='<div><span>Mapped</span><b>'+ready+'</b></div><div><span>Needs review</span><b>'+(total-ready)+'</b></div><div><span>Removed</span><b>'+state.removed.length+'</b></div><div><span>Source fields</span><b>'+state.sourceMeta.fields.length+'</b></div><div><span>Target fields</span><b>'+state.targetMeta.fields.length+'</b></div>';$('summary-coverage').textContent=pct+'%'}
-    function applyMappingFilters(){const query=$('field-search').value.trim().toLowerCase(),filter=$('field-filter').value;document.querySelectorAll('#field-map-rows tr[data-canonical]').forEach(tr=>{const source=tr.querySelector('.source-native').value||'',target=tr.querySelector('.target-native').value||'',canonical=tr.querySelector('.canonical').value,text=(source+' '+target+' '+canonical).toLowerCase(),ready=tr.querySelector('.source-native').value&&tr.querySelector('.target-native').value,transformed=['source-to','target-from'].some(cls=>tr.querySelector('.'+cls).value!=='identity');tr.hidden=Boolean((query&&!text.includes(query))||(filter==='review'&&ready)||(filter==='transformed'&&!transformed))})}
+    function applyMappingFilters(){const query=$('field-search').value.trim().toLowerCase(),filter=$('field-filter').value;document.querySelectorAll('#field-map-rows tr[data-canonical]').forEach(tr=>{const source=tr.querySelector('.source-native').value||'',target=tr.querySelector('.target-native').value||'',canonical=tr.querySelector('.canonical').value,sot=tr.querySelector('.field-sot')?.value||'',text=(source+' '+target+' '+canonical+' '+sot).toLowerCase(),ready=tr.querySelector('.source-native').value&&tr.querySelector('.target-native').value,transformed=['source-to','target-from'].some(cls=>tr.querySelector('.'+cls).value!=='identity');tr.hidden=Boolean((query&&!text.includes(query))||(filter==='review'&&ready)||(filter==='transformed'&&!transformed))})}
     $('field-search').oninput=applyMappingFilters;$('field-filter').onchange=applyMappingFilters;
     function updateFieldObjectPosition(){const select=$('field-object'),count=select.options.length,index=select.selectedIndex;$('field-object-position').textContent=count&&index>=0?(index+1)+' of '+count:'No objects'}
     async function moveFieldObject(delta){const select=$('field-object'),next=select.selectedIndex+delta;if(next<0||next>=select.options.length)return;if(migrationState.mapping?.dirty)await saveFieldMappings(false);select.selectedIndex=next;await loadFieldWorkspace(select.value)}
@@ -557,7 +574,7 @@ export function operationsHtml(): string {
     $('auto-map').onclick=()=>autoMapCurrentObject();
     $('auto-map-all').onclick=async()=>{const rows=selectedCatalogRows();if(!rows.length)return;const button=$('auto-map-all'),from=$('mig-from').value,to=from==='salesforce'?'hubspot':'salesforce',current=migrationState.mapping?.type;button.disabled=true;button.textContent='Finding matches…';try{const batch=await Promise.all(rows.map(async row=>{const [sourceMeta,targetMeta,sourceMap,targetMap]=await Promise.all([getMetadata(from,row.source.id),getMetadata(to,row.target.id),api('/api/mappings/'+from+'/'+row.canonicalType),api('/api/mappings/'+to+'/'+row.canonicalType)]);return {row,sourceMap,targetMap,additions:compatibleMappingAdditions(sourceMeta,targetMeta,sourceMap.rules,targetMap.rules)}})),added=batch.reduce((total,item)=>total+item.additions.length,0),summary=batch.filter(item=>item.additions.length).map(item=>item.row.source.label+': '+item.additions.length).join(' · ');if(!added){setDraftStatus('No new exact matches found','saved');return}const confirmed=await requestTypedConfirmation({title:'Review automatic mappings',message:'Found '+added+' exact matches across '+batch.filter(item=>item.additions.length).length+' objects. '+summary+'. Existing mappings and transforms are preserved.',token:'MAP ALL',buttonLabel:'Apply mappings'});if(!confirmed)return;button.textContent='Applying mappings…';for(const item of batch){if(!item.additions.length)continue;await Promise.all([api('/api/mappings/'+from+'/'+item.row.canonicalType,{method:'PUT',body:JSON.stringify({rules:[...item.sourceMap.rules,...item.additions.map(entry=>({canonical:entry.canonical,native:entry.source}))]})}),api('/api/mappings/'+to+'/'+item.row.canonicalType,{method:'PUT',body:JSON.stringify({rules:[...item.targetMap.rules,...item.additions.map(entry=>({canonical:entry.canonical,native:entry.target}))]})})])}migrationState.metadata.clear();markPlanDirty();queuePlanAutosave();await loadCatalog();if(current)await loadFieldWorkspace(current);setDraftStatus(added+' mappings added across selected objects','saved')}catch(e){setDraftStatus(e.message,'error')}finally{button.disabled=false;button.textContent='Auto-map selected objects'}};
     async function saveFieldMappings(reload=true){const state=migrationState.mapping;if(!state)return;const rows=[...$('field-map-rows').querySelectorAll('tr[data-canonical]')];const existingSource=new Map(state.sourceMap.rules.map(r=>[r.canonical,r])),existingTarget=new Map(state.targetMap.rules.map(r=>[r.canonical,r]));const sourceRules=[],targetRules=[];
-      for(const tr of rows){const canonical=tr.querySelector('.canonical').value.trim(),sourceNative=tr.querySelector('.source-native').value,targetNative=tr.querySelector('.target-native').value;if(!canonical||!sourceNative||!targetNative)continue;const oldS=existingSource.get(tr.dataset.canonical)||{},oldT=existingTarget.get(tr.dataset.canonical)||{};sourceRules.push({...oldS,canonical,native:sourceNative,toCanonical:tr.querySelector('.source-to').value,fromCanonical:tr.querySelector('.source-from').value});targetRules.push({...oldT,canonical,native:targetNative,toCanonical:tr.querySelector('.target-to').value,fromCanonical:tr.querySelector('.target-from').value})}
+      for(const tr of rows){const canonical=tr.querySelector('.canonical').value.trim(),sourceNative=tr.querySelector('.source-native').value,targetNative=tr.querySelector('.target-native').value;if(!canonical||!sourceNative||!targetNative)continue;const sot=tr.querySelector('.field-sot')?.value||undefined;const oldS=existingSource.get(tr.dataset.canonical)||{},oldT=existingTarget.get(tr.dataset.canonical)||{};sourceRules.push({...oldS,canonical,native:sourceNative,toCanonical:tr.querySelector('.source-to').value,fromCanonical:tr.querySelector('.source-from').value,sourceOfTruth:sot});targetRules.push({...oldT,canonical,native:targetNative,toCanonical:tr.querySelector('.target-to').value,fromCanonical:tr.querySelector('.target-from').value,sourceOfTruth:sot})}
       const button=$('save-field-map');try{button.disabled=true;button.textContent='Saving…';const results=await Promise.all([api('/api/mappings/'+state.from+'/'+state.type,{method:'PUT',body:JSON.stringify({rules:sourceRules})}),api('/api/mappings/'+state.to+'/'+state.type,{method:'PUT',body:JSON.stringify({rules:targetRules})})]);state.dirty=false;migrationState.metadata.clear();markPlanDirty();queuePlanAutosave();await loadCatalog();if(reload)await loadFieldWorkspace(state.type);button.textContent='Saved ✓';setTimeout(()=>button.textContent='Save mappings',1200);
         if(results.some(r=>r.syncPaused))showNotice('Heads up: '+state.type+' was live-syncing, so saving this mapping change paused both real-time and scheduled sync for it. Review the mapping, then re-enable it from the Sync tab when ready.')
         if(workspaceMode==='sync')await maybeOfferNaturalKeyStep();
@@ -781,6 +798,20 @@ export function operationsHtml(): string {
       $('sync-conflict-strategy').value=config.conflictStrategy;$('sync-source-of-truth').value=config.sourceOfTruth;
       renderSyncObjectRows(config);
       $('webhook-health').innerHTML=Object.entries(config.webhooks).map(([system,value])=>'<div class="webhook-card"><div class="webhook-card-head"><b>'+esc(system==='salesforce'?'Salesforce':'HubSpot')+'</b><span class="pill '+(value.connected&&value.signingConfigured?'completed':'ambiguous')+'">'+(value.connected&&value.signingConfigured?'Healthy':'Needs attention')+'</span></div><p>'+esc(value.connected?'Account connected':'Account disconnected')+' · '+esc(value.signingConfigured?'signature verification configured':'signing secret missing')+'</p></div>').join('')}
+    function updateOrgDefaultsInObjectRows(){
+      const orgStrat=$('sync-conflict-strategy').value;
+      const orgSot=$('sync-source-of-truth').value;
+      document.querySelectorAll('[data-object-strategy]').forEach(sel=>{
+        const opt=sel.options[0];
+        if(opt&&opt.value==='')opt.textContent='Inherit org default ('+conflictStrategyLabel(orgStrat)+')';
+      });
+      document.querySelectorAll('[data-object-sot]').forEach(sel=>{
+        const opt=sel.options[0];
+        if(opt&&opt.value==='')opt.textContent='Inherit org default ('+systemLabel(orgSot)+')';
+      });
+    }
+    $('sync-conflict-strategy').onchange=()=>{if(syncConfigState)syncConfigState.conflictStrategy=$('sync-conflict-strategy').value;updateOrgDefaultsInObjectRows()};
+    $('sync-source-of-truth').onchange=()=>{if(syncConfigState)syncConfigState.sourceOfTruth=$('sync-source-of-truth').value;updateOrgDefaultsInObjectRows()};
     function minutesToUnit(min){if(min%1440===0)return{value:min/1440,unit:'days'};if(min%60===0)return{value:min/60,unit:'hours'};return{value:min,unit:'minutes'}}
     function unitToMinutes(value,unit){const n=Number(value)||0;return unit==='days'?n*1440:unit==='hours'?n*60:n}
     function pollingStatusText(status){if(!status)return 'No scheduled poll has run yet.';
@@ -804,6 +835,18 @@ export function operationsHtml(): string {
       enrolled.forEach(obj=>{const type=obj.canonicalObject;
         $('poll-now-'+type).onclick=()=>pollObjectNow(type);$('map-fields-'+type).onclick=()=>goMapFields(type);$('edit-conditions-'+type).onclick=()=>openSyncWizardForEdit(type);
         document.querySelector('[data-sync-enabled="'+type+'"]').onchange=e=>setPollRowEnabled(type,e.target.checked);
+        const stratSelect=document.querySelector('[data-object-strategy="'+type+'"]');
+        if(stratSelect)stratSelect.onchange=e=>{
+          if(!syncConfigState.objects[type])syncConfigState.objects[type]={enabled:true,direction:'bidirectional'};
+          if(e.target.value)syncConfigState.objects[type].conflictStrategy=e.target.value;
+          else delete syncConfigState.objects[type].conflictStrategy;
+        };
+        const sotSelect=document.querySelector('[data-object-sot="'+type+'"]');
+        if(sotSelect)sotSelect.onchange=e=>{
+          if(!syncConfigState.objects[type])syncConfigState.objects[type]={enabled:true,direction:'bidirectional'};
+          if(e.target.value)syncConfigState.objects[type].sourceOfTruth=e.target.value;
+          else delete syncConfigState.objects[type].sourceOfTruth;
+        };
         document.querySelector('[data-poll-mode="'+type+'"]').onchange=e=>{
           const cron=e.target.value==='cron';
           document.querySelector('[data-poll-interval-fields="'+type+'"]').hidden=cron;
@@ -858,11 +901,16 @@ export function operationsHtml(): string {
     // toggled, without waiting for a save + full re-render -- the whole point is that checking
     // it while the master switch is off has no effect, so the controls shouldn't look usable.
     function setPollRowEnabled(type,masterEnabled){
-      const row=document.querySelector('[data-poll-row="'+type+'"]');if(!row)return;
-      row.classList.toggle('disabled',!masterEnabled);
-      row.querySelectorAll('input,select,button').forEach(el=>el.disabled=!masterEnabled);
-      const statusEl=$('poll-status-'+type);
-      statusEl.textContent=masterEnabled?statusEl.dataset.pollStatusText:'Turn on "Sync enabled" above to use scheduled polling.';
+      const row=document.querySelector('[data-poll-row="'+type+'"]');if(row){
+        row.classList.toggle('disabled',!masterEnabled);
+        row.querySelectorAll('input,select,button').forEach(el=>el.disabled=!masterEnabled);
+        const statusEl=$('poll-status-'+type);
+        if(statusEl)statusEl.textContent=masterEnabled?statusEl.dataset.pollStatusText:'Turn on "Sync enabled" above to use scheduled polling.';
+      }
+      const conflictRow=document.querySelector('[data-conflict-row="'+type+'"]');if(conflictRow){
+        conflictRow.classList.toggle('disabled',!masterEnabled);
+        conflictRow.querySelectorAll('select').forEach(el=>el.disabled=!masterEnabled);
+      }
     }
     function directionLabel(direction){return direction==='salesforce_to_hubspot'?'Salesforce → HubSpot':direction==='hubspot_to_salesforce'?'HubSpot → Salesforce':'Bidirectional'}
     function capitalizeWord(word){return word?word.charAt(0).toUpperCase()+word.slice(1):word}
@@ -885,6 +933,9 @@ export function operationsHtml(): string {
         +'<div class="object-sync-main"><label><input type="checkbox" data-sync-enabled="'+esc(type)+'" '+(value.enabled?'checked':'')+' title="Master switch -- turns sync off entirely, both webhooks and scheduled polling, when unchecked"><b>'+esc(pairLabel)+'</b><span class="muted" style="font-weight:400;font-size:11px"> · Sync enabled</span></label>'
         +'<span class="pill '+(value.enabled?'completed':'queued')+'">'+(value.enabled?'Live':'Paused')+'</span>'
         +'<span class="muted" data-sync-direction-label="'+esc(type)+'">'+esc(directionLabel(value.direction))+'</span></div>'
+        +'<div class="object-conflict-row'+(value.enabled?'':' disabled')+'" data-conflict-row="'+esc(type)+'">'
+        +'<label>Conflict strategy: <select data-object-strategy="'+esc(type)+'" '+dis+'><option value="">Inherit org default ('+esc(conflictStrategyLabel(config.conflictStrategy))+')</option><option value="source-of-truth" '+(value.conflictStrategy==='source-of-truth'?'selected':'')+'>Source of truth</option><option value="last-write-wins" '+(value.conflictStrategy==='last-write-wins'?'selected':'')+'>Last write wins</option><option value="field-merge" '+(value.conflictStrategy==='field-merge'?'selected':'')+'>Field merge</option></select></label>'
+        +'<label>Source of truth: <select data-object-sot="'+esc(type)+'" '+dis+'><option value="">Inherit org default ('+esc(systemLabel(config.sourceOfTruth))+')</option><option value="salesforce" '+(value.sourceOfTruth==='salesforce'?'selected':'')+'>Salesforce</option><option value="hubspot" '+(value.sourceOfTruth==='hubspot'?'selected':'')+'>HubSpot</option></select></label></div>'
         +'<div class="object-poll-row'+(value.enabled?'':' disabled')+'" data-poll-row="'+esc(type)+'">'
         +'<label><input type="checkbox" data-poll-enabled="'+esc(type)+'" '+(polling.enabled?'checked':'')+' '+dis+'> Also poll on a schedule</label>'
         +'<select data-poll-mode="'+esc(type)+'" '+dis+'><option value="interval" '+(cronMode?'':'selected')+'>Every…</option><option value="cron" '+(cronMode?'selected':'')+'>Cron schedule</option></select>'
@@ -912,7 +963,19 @@ export function operationsHtml(): string {
         return '<div class="poll-history-row'+(entry.errors?' error':'')+'"><span>'+esc(new Date(entry.at).toLocaleString())+'</span><span>'+entry.changed+' change'+(entry.changed===1?'':'s')+', '+entry.deleted+' deletion'+(entry.deleted===1?'':'s')+(entry.errors?', '+entry.errors+' error'+(entry.errors===1?'':'s')+detail:'')+'</span></div>';
       }).join('');
     }
-    function collectSyncObjects(){return Object.fromEntries(enrolledSyncCatalog().map(obj=>{const type=obj.canonicalObject;return [type,{enabled:document.querySelector('[data-sync-enabled="'+type+'"]').checked,direction:syncConfigState.objects[type]?.direction||'bidirectional'}]}))}
+    function collectSyncObjects(){
+      return Object.fromEntries(enrolledSyncCatalog().map(obj=>{
+        const type=obj.canonicalObject;
+        const strat=document.querySelector('[data-object-strategy="'+type+'"]')?.value||undefined;
+        const sot=document.querySelector('[data-object-sot="'+type+'"]')?.value||undefined;
+        return [type,{
+          enabled:document.querySelector('[data-sync-enabled="'+type+'"]').checked,
+          direction:syncConfigState.objects[type]?.direction||'bidirectional',
+          ...(strat?{conflictStrategy:strat}:{conflictStrategy:''}),
+          ...(sot?{sourceOfTruth:sot}:{sourceOfTruth:''}),
+        }];
+      }));
+    }
     function collectSyncPolling(){return Object.fromEntries(enrolledSyncCatalog().map(obj=>{
       const type=obj.canonicalObject,isCron=document.querySelector('[data-poll-mode="'+type+'"]').value==='cron';
       return [type,{
@@ -1171,7 +1234,11 @@ export function operationsHtml(): string {
     async function persistSyncWizardConditions(type,extra){
       const conditions=collectSyncWizardConditions(),rawText=$('sync-wizard-raw-condition').value.trim();
       const body={conflictStrategy:syncConfigState.conflictStrategy,sourceOfTruth:syncConfigState.sourceOfTruth,objects:{}};
-      body.objects[type]={enabled:false,direction:syncWizard.direction,enrolledForSync:true,...extra,
+      const currentObj=syncConfigState?.objects?.[type]||{};
+      body.objects[type]={enabled:false,direction:syncWizard.direction,enrolledForSync:true,
+        ...(currentObj.conflictStrategy?{conflictStrategy:currentObj.conflictStrategy}:{}),
+        ...(currentObj.sourceOfTruth?{sourceOfTruth:currentObj.sourceOfTruth}:{}),
+        ...extra,
         conditions:conditions.length?{[syncWizard.browseSystem]:conditions}:{},
         ...(rawText&&syncWizard.browseSystem==='salesforce'?{rawCondition:{salesforce:rawText}}:{rawCondition:{}})};
       const config=await api('/api/sync/settings',{method:'PATCH',body:JSON.stringify(body)});
