@@ -134,6 +134,11 @@ export const migrationWorkspaceCss = `
   .mapping-tools-actions{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;flex-basis:100%;flex-shrink:0}
   .mapping-tools-actions button{padding:8px 12px;font-size:12px}
   .field-layout{min-width:0}
+  .field-layout .scroll{overflow-x:auto;scrollbar-color:#718ba6 #e8eff6;scrollbar-width:auto;border-bottom:2px solid #e1e9f1}
+  .field-layout .scroll::-webkit-scrollbar{height:14px;width:10px}
+  .field-layout .scroll::-webkit-scrollbar-track{background:#e8eff6;border-radius:7px;margin:0 4px}
+  .field-layout .scroll::-webkit-scrollbar-thumb{background:#718ba6;border-radius:7px;border:2px solid #e8eff6}
+  .field-layout .scroll::-webkit-scrollbar-thumb:hover{background:#4a6580}
   .coverage-card{display:grid;grid-template-columns:minmax(180px,.45fr) minmax(0,1.55fr);gap:20px;
     align-items:center;padding:14px 20px;border-bottom:1px solid #eaeff4;background:#fafcfd}
   .coverage-overview{display:flex;flex-direction:column;gap:4px}

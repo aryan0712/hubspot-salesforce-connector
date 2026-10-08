@@ -89,15 +89,18 @@ export const dashboardShellCss = `
   .toolbar{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
   .toolbar>*{width:auto}
   .notice{padding:12px 14px;border:1px solid #f3d5cc;background:#fff8f5;border-radius:8px;color:#8d4935;font-size:13px}
-  .scroll{overflow:auto;max-height:500px}
+  .scroll{overflow:auto;max-height:500px;scrollbar-color:#849bb3 #edf2f7;scrollbar-width:auto}
   table{width:100%;border-collapse:collapse;font-size:13px}
   th{padding:11px 14px;background:#fafcfd;border-bottom:1px solid #eaeff4;color:var(--muted);
     text-align:left;font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;white-space:nowrap}
   td{padding:12px 14px;border-bottom:1px solid #f0f3f7;color:var(--text-2);vertical-align:middle}
   tbody tr:hover{background:#fafcfd}
   .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
-  ::-webkit-scrollbar{width:10px;height:10px}
-  ::-webkit-scrollbar-thumb{background:#cbd6e2;border-radius:8px;border:3px solid #fff}
+  ::-webkit-scrollbar{width:12px;height:12px}
+  ::-webkit-scrollbar-track{background:#edf2f7;border-radius:6px}
+  ::-webkit-scrollbar-thumb{background:#849bb3;border-radius:6px;border:2px solid #edf2f7}
+  ::-webkit-scrollbar-thumb:hover{background:#5c758e}
+  *{scrollbar-color:#849bb3 #edf2f7}
   @media(max-width:940px){
     .header-inner{padding:0 20px}.header-actions .quiet{display:none}.page{padding:28px 20px 52px}
     .metric-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
