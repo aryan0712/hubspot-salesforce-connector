@@ -141,7 +141,15 @@ export class SalesforceConnector implements CRMConnector {
   async read(type: CanonicalType, sourceId: string): Promise<CanonicalRecord | null> {
     try {
       const sobject = this.config.requireNativeObjectName('salesforce', type);
-      const fields = excludeAlwaysQueriedFields(this.config.nativeFields('salesforce', type).filter((f) => !f.includes('.')));
+      const allFields = excludeAlwaysQueriedFields(this.config.nativeFields('salesforce', type));
+      const hasDotted = allFields.some((f) => f.includes('.'));
+      if (hasDotted) {
+        const soql = `SELECT Id, LastModifiedDate, ${allFields.join(', ')} FROM ${sobject} WHERE Id = '${escapeSoql(sourceId)}'`;
+        const { data } = await this.http.get(`/query?q=${encodeURIComponent(soql)}`);
+        const records = (data.records as Record<string, unknown>[] | undefined) ?? [];
+        return records[0] ? this.canonicalize(type, records[0]) : null;
+      }
+      const fields = allFields.filter((f) => !f.includes('.'));
       const { data } = await this.http.get(
         `/sobjects/${sobject}/${sourceId}?fields=${['Id', 'LastModifiedDate', ...fields].join(',')}`,
       );
@@ -334,10 +342,11 @@ export class SalesforceConnector implements CRMConnector {
     options: WriteOptions = {},
   ): Promise<UpsertResult & { conditional: boolean }> {
     const sobject = this.config.requireNativeObjectName('salesforce', type);
+    const cleaned = cleanSalesforcePayload(payload, Boolean(targetId));
     if (targetId) {
       const conditional = Boolean(options.ifUnmodifiedSince);
       try {
-        await this.http.patch(`/sobjects/${sobject}/${targetId}`, payload, {
+        await this.http.patch(`/sobjects/${sobject}/${targetId}`, cleaned, {
           headers: conditional
             ? { 'If-Unmodified-Since': new Date(options.ifUnmodifiedSince!).toUTCString() }
             : undefined,
@@ -350,7 +359,7 @@ export class SalesforceConnector implements CRMConnector {
       }
       return { system: this.system, type, targetId, operation: 'updated', conditional };
     }
-    const { data } = await this.http.post(`/sobjects/${sobject}`, payload);
+    const { data } = await this.http.post(`/sobjects/${sobject}`, cleaned);
     return { system: this.system, type, targetId: data.id, operation: 'created', conditional: false };
   }
 
@@ -501,4 +510,28 @@ function compileConditionSoql(condition: SyncCondition): string {
 
 function escapeSoql(value: string): string {
   return value.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+}
+
+function cleanSalesforcePayload(
+  payload: Record<string, FieldValue>,
+  isUpdate: boolean,
+): Record<string, FieldValue> {
+  const out: Record<string, FieldValue> = {};
+  for (const [key, value] of Object.entries(payload)) {
+    // In Salesforce, OwnerId must be a valid 15- or 18-character User or Group/Queue ID.
+    // If null, empty, or not a valid Salesforce ID (e.g. cross-system numeric owner ID),
+    // omit it so Salesforce defaults on create and preserves existing owner on update.
+    if (key === 'OwnerId') {
+      if (typeof value === 'string' && /^(005|00G)[a-zA-Z0-9]{12,15}$/.test(value)) {
+        out[key] = value;
+      }
+      continue;
+    }
+    // On create, omit null or undefined fields so Salesforce doesn't reject fields with defaults or non-nillable constraints.
+    if (!isUpdate && (value === null || value === undefined)) {
+      continue;
+    }
+    out[key] = value;
+  }
+  return out;
 }

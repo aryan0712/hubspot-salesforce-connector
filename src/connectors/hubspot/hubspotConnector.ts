@@ -68,6 +68,7 @@ export class HubSpotConnector implements CRMConnector {
     ['0-1', 'contacts'],
     ['0-2', 'companies'],
     ['0-3', 'deals'],
+    ['0-5', 'tickets'],
   ]);
 
   private policy?: HttpPolicyControls;
@@ -129,15 +130,16 @@ export class HubSpotConnector implements CRMConnector {
         since = cursor.slice(3);
         after = undefined;
       }
+      const lastModifiedProp = lastModifiedPropertyFor(object);
       const filters = [
         ...(since
-          ? [{ propertyName: 'hs_lastmodifieddate', operator: 'GTE', value: Date.parse(since) }]
+          ? [{ propertyName: lastModifiedProp, operator: 'GTE', value: Date.parse(since) }]
           : []),
         ...conditionFilters,
       ];
       const { data } = await this.http.post(`/crm/v3/objects/${object}/search`, {
         filterGroups: [{ filters }],
-        sorts: [{ propertyName: 'hs_lastmodifieddate', direction: 'ASCENDING' }],
+        sorts: [{ propertyName: lastModifiedProp, direction: 'ASCENDING' }],
         properties,
         limit: 100,
         after,
@@ -159,22 +161,23 @@ export class HubSpotConnector implements CRMConnector {
   /**
    * HubSpot has no dedicated "recently deleted" listing; archived (soft-deleted) records stay
    * retrievable for ~90 days via the archived=true flag. There's no separate archive timestamp,
-   * so hs_lastmodifieddate (set when the record was archived) is used as the deletion time.
+   * so hs_lastmodifieddate / lastmodifieddate (set when the record was archived) is used as the deletion time.
    */
   async listDeletedSince(
     type: CanonicalType,
     since: string,
   ): Promise<{ sourceId: string; occurredAt: string }[]> {
     const object = this.config.requireNativeObjectName('hubspot', type);
+    const lastModifiedProp = lastModifiedPropertyFor(object);
     const sinceMs = Date.parse(since);
     const out: { sourceId: string; occurredAt: string }[] = [];
     let after: string | undefined;
     do {
       const { data } = await this.http.get(`/crm/v3/objects/${object}`, {
-        params: { limit: 100, after, archived: true, properties: 'hs_lastmodifieddate' },
+        params: { limit: 100, after, archived: true, properties: lastModifiedProp },
       });
       for (const record of (data.results as HsObject[]) ?? []) {
-        const modifiedAt = record.properties?.hs_lastmodifieddate;
+        const modifiedAt = record.properties?.[lastModifiedProp];
         if (modifiedAt && Date.parse(modifiedAt) >= sinceMs) {
           out.push({ sourceId: record.id, occurredAt: new Date(Date.parse(modifiedAt)).toISOString() });
         }
@@ -451,7 +454,7 @@ export class HubSpotConnector implements CRMConnector {
     event: NativeWebhookEvent,
     resolveType?: (nativeObjectId: string, sourceId: string) => Promise<CanonicalType | undefined>,
   ): Promise<ChangeEvent | null> {
-    const objectName = this.objectTypeIds.get(event.nativeObject);
+    const objectName = this.objectTypeIds.get(event.nativeObject) ?? event.nativeObject;
     if (!objectName) return null;
     const candidates = this.config.canonicalObjectsFor('hubspot', objectName);
     const type =
@@ -480,7 +483,12 @@ export class HubSpotConnector implements CRMConnector {
       meta: {
         source: 'hubspot',
         sourceId: String(native.id),
-        modifiedAt: String(native.updatedAt ?? native.properties?.hs_lastmodifieddate ?? new Date().toISOString()),
+        modifiedAt: String(
+          native.updatedAt ??
+            native.properties?.hs_lastmodifieddate ??
+            native.properties?.lastmodifieddate ??
+            new Date().toISOString(),
+        ),
       },
     };
   }
@@ -559,4 +567,8 @@ function compileConditionFilter(
     default:
       return { propertyName: condition.field, operator: 'HAS_PROPERTY' };
   }
+}
+
+function lastModifiedPropertyFor(object: string): string {
+  return object === 'contacts' || object === 'contact' ? 'lastmodifieddate' : 'hs_lastmodifieddate';
 }
