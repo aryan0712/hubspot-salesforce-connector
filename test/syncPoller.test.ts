@@ -34,7 +34,7 @@ async function setup() {
   const sync = new SyncEngine(connectors, reconciler, store);
   await sync.init();
   const cursors = new InMemoryReplayCursorStore();
-  const poller = new SyncPoller(connectors, syncConfig, cursors, sync, config);
+  const poller = new SyncPoller(connectors, syncConfig, cursors, sync, config, undefined, idMap);
   return { sf, hs, connectors, idMap, reconciler, syncConfig, sync, cursors, poller };
 }
 
@@ -152,7 +152,7 @@ describe('scheduled sync polling -- independent per-object intervals', () => {
     const sync = new SyncEngine(connectors, reconciler, store);
     await sync.init();
     const cursors = new InMemoryReplayCursorStore();
-    const poller = new SyncPoller(connectors, syncConfig, cursors, sync, config);
+    const poller = new SyncPoller(connectors, syncConfig, cursors, sync, config, undefined, idMap);
 
     const policy = syncConfig.get();
     policy.polling.contact = { enabled: true, intervalMinutes: 1 };
@@ -194,7 +194,7 @@ describe('scheduled sync polling -- independent per-object intervals', () => {
     const sync = new SyncEngine(connectors, reconciler, store);
     await sync.init();
     const cursors = new InMemoryReplayCursorStore();
-    const poller = new SyncPoller(connectors, syncConfig, cursors, sync, config);
+    const poller = new SyncPoller(connectors, syncConfig, cursors, sync, config, undefined, idMap);
 
     const policy = syncConfig.get();
     // intervalMinutes is present but irrelevant here -- a cron expression takes precedence.

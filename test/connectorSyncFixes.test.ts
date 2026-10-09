@@ -250,3 +250,145 @@ describe('SalesforceConnector payload sanitization and read fixes', () => {
     expect(queriedUrl).toContain('Account.Name');
   });
 });
+
+describe('Default redundant-update prevention: sync only when record is updated', () => {
+  it('does not re-sync from Salesforce to HubSpot unless Salesforce record is updated', async () => {
+    const { MockConnector } = await import('../src/connectors/mock/mockConnector.js');
+    const { FileIdMapStore } = await import('../src/core/idMap.js');
+    const { Reconciler } = await import('../src/engine/reconciler.js');
+    const os = await import('node:os');
+    const path = await import('node:path');
+    const crypto = await import('node:crypto');
+
+    const config = createDefaultConfigContext('sf-to-hs-update-only');
+    const sf = new MockConnector('salesforce', config);
+    const hs = new MockConnector('hubspot', config);
+    const connectors = { salesforce: sf, hubspot: hs };
+    const idMap = new FileIdMapStore(path.join(os.tmpdir(), `idmap-update-test-${crypto.randomUUID()}.json`));
+    await idMap.init();
+    const reconciler = new Reconciler(connectors, idMap, config);
+
+    // 1. Initial record in Salesforce
+    const sfId = sf.seed('contact', { firstName: 'Alice', email: 'alice@example.com' });
+    const sfRecord1 = (await sf.read('contact', sfId))!;
+
+    // Initial sync: creates in HubSpot
+    await reconciler.reconcile(sfRecord1);
+    expect(hs.writes).toHaveLength(1);
+    expect(hs.writes[0]!.type).toBe('contact');
+    const hsRecord = (await hs.list('contact')).records[0]!;
+    expect(hsRecord.fields.firstName).toBe('Alice');
+
+    // 2. Poll/reconcile the same Salesforce record AGAIN without any updates
+    const sfRecordUnchanged = (await sf.read('contact', sfId))!;
+    await reconciler.reconcile(sfRecordUnchanged);
+    // Should NOT write to HubSpot again
+    expect(hs.writes).toHaveLength(1);
+
+    // 3. Now UPDATE the Salesforce record
+    await sf.upsert({ ...sfRecordUnchanged, fields: { ...sfRecordUnchanged.fields, firstName: 'Alice Updated' } }, sfId);
+    const sfRecordUpdated = (await sf.read('contact', sfId))!;
+
+    // Reconcile after update: SHOULD write to HubSpot
+    await reconciler.reconcile(sfRecordUpdated);
+    expect(hs.writes).toHaveLength(2);
+    expect(hs.writes[1]!.payload.firstname).toBe('Alice Updated');
+  });
+
+  it('does not re-sync from HubSpot to Salesforce unless HubSpot record is updated', async () => {
+    const { MockConnector } = await import('../src/connectors/mock/mockConnector.js');
+    const { FileIdMapStore } = await import('../src/core/idMap.js');
+    const { Reconciler } = await import('../src/engine/reconciler.js');
+    const os = await import('node:os');
+    const path = await import('node:path');
+    const crypto = await import('node:crypto');
+
+    const config = createDefaultConfigContext('hs-to-sf-update-only');
+    const sf = new MockConnector('salesforce', config);
+    const hs = new MockConnector('hubspot', config);
+    const connectors = { salesforce: sf, hubspot: hs };
+    const idMap = new FileIdMapStore(path.join(os.tmpdir(), `idmap-update-test-2-${crypto.randomUUID()}.json`));
+    await idMap.init();
+    const reconciler = new Reconciler(connectors, idMap, config);
+
+    // 1. Initial record in HubSpot
+    const hsId = hs.seed('contact', { firstName: 'Bob', email: 'bob@example.com' });
+    const hsRecord1 = (await hs.read('contact', hsId))!;
+
+    // Initial sync: creates in Salesforce
+    await reconciler.reconcile(hsRecord1);
+    expect(sf.writes).toHaveLength(1);
+    const sfRecord = (await sf.list('contact')).records[0]!;
+    expect(sfRecord.fields.firstName).toBe('Bob');
+
+    // 2. Poll/reconcile the same HubSpot record AGAIN without any updates
+    const hsRecordUnchanged = (await hs.read('contact', hsId))!;
+    await reconciler.reconcile(hsRecordUnchanged);
+    // Should NOT write to Salesforce again
+    expect(sf.writes).toHaveLength(1);
+
+    // 3. Now UPDATE the HubSpot record
+    await hs.upsert({ ...hsRecordUnchanged, fields: { ...hsRecordUnchanged.fields, firstName: 'Bob Updated' } }, hsId);
+    const hsRecordUpdated = (await hs.read('contact', hsId))!;
+
+    // Reconcile after update: SHOULD write to Salesforce
+    await reconciler.reconcile(hsRecordUpdated);
+    expect(sf.writes).toHaveLength(2);
+    expect(sf.writes[1]!.payload.FirstName).toBe('Bob Updated');
+  });
+
+  it('SyncPoller filters out already-synced records that have not been updated', async () => {
+    const { MockConnector } = await import('../src/connectors/mock/mockConnector.js');
+    const { FileIdMapStore } = await import('../src/core/idMap.js');
+    const { Reconciler } = await import('../src/engine/reconciler.js');
+    const { SyncEngine } = await import('../src/engine/syncEngine.js');
+    const { SyncPoller } = await import('../src/engine/syncPoller.js');
+    const { InMemorySyncEventStore } = await import('../src/engine/syncEventStore.js');
+    const { InMemoryReplayCursorStore } = await import('../src/connectors/salesforce/cdcWorker.js');
+    const { InMemorySyncConfigStore, defaultSyncConfig } = await import('../src/core/syncConfig.js');
+    const os = await import('node:os');
+    const path = await import('node:path');
+    const crypto = await import('node:crypto');
+
+    const config = createDefaultConfigContext('poller-filter-test');
+    const sf = new MockConnector('salesforce', config);
+    const hs = new MockConnector('hubspot', config);
+    const connectors = { salesforce: sf, hubspot: hs };
+    const idMap = new FileIdMapStore(path.join(os.tmpdir(), `idmap-poller-test-${crypto.randomUUID()}.json`));
+    await idMap.init();
+    const reconciler = new Reconciler(connectors, idMap, config);
+    const syncConfig = new InMemorySyncConfigStore(defaultSyncConfig('last-write-wins', 'salesforce', ['contact']));
+    const store = new InMemorySyncEventStore();
+    const sync = new SyncEngine(connectors, reconciler, store);
+    await sync.init();
+    const cursors = new InMemoryReplayCursorStore();
+    const poller = new SyncPoller(connectors, syncConfig, cursors, sync, config, undefined, idMap);
+
+    // Seed a record in Salesforce
+    const sfId = sf.seed('contact', { firstName: 'Charlie', email: 'charlie@example.com' });
+
+    // First poll: Charlie is new and gets synced
+    const firstPoll = await poller.runOnce('contact');
+    await sync.drain();
+    expect(firstPoll.changed).toBe(1);
+    expect((await hs.list('contact')).records).toHaveLength(1);
+
+    // Second poll without update: Charlie is already synced and unchanged
+    const secondPoll = await poller.runOnce('contact');
+    await sync.drain();
+    expect(secondPoll.changed).toBe(0);
+
+    // Update Charlie in Salesforce
+    const sfRecord = (await sf.read('contact', sfId))!;
+    await sf.upsert({ ...sfRecord, fields: { ...sfRecord.fields, firstName: 'Charlie Jr' } }, sfId);
+
+    // Third poll: Charlie was updated, so it is detected and synced
+    const thirdPoll = await poller.runOnce('contact');
+    await sync.drain();
+    expect(thirdPoll.changed).toBe(1);
+    const hsRecords = (await hs.list('contact')).records;
+    expect(hsRecords[0]!.fields.firstName).toBe('Charlie Jr');
+    poller.stop();
+  });
+});
+

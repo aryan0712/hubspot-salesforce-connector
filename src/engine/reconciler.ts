@@ -457,6 +457,31 @@ export class Reconciler {
       return { ...base, targetId: link.ids[to], action: 'skip', fieldDiff: [], warnings: ['echo'], writes: [] };
     }
 
+    // Redundant update prevention: if the record is already linked/synced to the destination system,
+    // only sync if the source record has actually been updated since it was last synced.
+    if (!opts.force && link.ids[to] && link.modifiedAt?.[from]) {
+      const sourceTs = Date.parse(source.meta.modifiedAt);
+      const lastSyncTs = Date.parse(link.modifiedAt[from]);
+      if (Number.isFinite(sourceTs) && Number.isFinite(lastSyncTs) && sourceTs <= lastSyncTs) {
+        logger.debug(
+          { canonicalId: link.canonicalId, from, to, sourceModifiedAt: source.meta.modifiedAt, lastSync: link.modifiedAt[from] },
+          'record already synced and source not updated; skipping redundant sync',
+        );
+        this.opts.activity?.record({
+          kind: 'echo-suppressed',
+          message: `${source.type} from ${from} already synced and not updated (${link.canonicalId.slice(0, 8)})`,
+        });
+        return {
+          ...base,
+          targetId: link.ids[to],
+          action: 'skip',
+          fieldDiff: [],
+          warnings: ['already-synced: not updated'],
+          writes: [],
+        };
+      }
+    }
+
     let targetId = link.ids[to];
     let counterpart: CanonicalRecord | null = null;
     if ((this.opts.readCounterpartForConflict ?? true) && targetId) {

@@ -10,7 +10,7 @@ import {
   type SyncConfigStore,
 } from '../core/syncConfig.js';
 import type { ConfigContext } from '../core/configContext.js';
-import type { IdMapStore } from '../core/idMap.js';
+import { hashMatches, type IdMapStore } from '../core/idMap.js';
 import type { ActivityLog } from '../observability/activity.js';
 import type { SyncEngine } from './syncEngine.js';
 import { logger } from '../logger.js';
@@ -224,6 +224,22 @@ export class SyncPoller {
     do {
       const page = await connector.list(type, cursor, since, condition);
       for (const record of page.records) {
+        if (this.idMap) {
+          const other: SystemId = system === 'salesforce' ? 'hubspot' : 'salesforce';
+          const link = await this.idMap.bySource(system, record.meta.sourceId, type);
+          if (link?.ids[other]) {
+            const lastSync = link.modifiedAt?.[system];
+            const notUpdated =
+              lastSync !== undefined &&
+              Number.isFinite(Date.parse(record.meta.modifiedAt)) &&
+              Number.isFinite(Date.parse(lastSync)) &&
+              Date.parse(record.meta.modifiedAt) <= Date.parse(lastSync);
+            const contentUnchanged = hashMatches(link.hashes?.[system], record.fields);
+            if (notUpdated || contentUnchanged) {
+              continue;
+            }
+          }
+        }
         events.push({
           eventId: `poll:${system}:${type}:${record.meta.sourceId}:${record.meta.modifiedAt}`,
           system,
@@ -232,8 +248,8 @@ export class SyncPoller {
           changeType: 'updated',
           occurredAt: record.meta.modifiedAt,
         });
+        changed += 1;
       }
-      changed += page.records.length;
       cursor = page.nextCursor;
     } while (cursor);
 
