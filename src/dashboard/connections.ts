@@ -164,7 +164,6 @@ ${dashboardHeader('connections')}
     <div class="ico" id="banner-ico">○</div>
     <div class="msg"><div class="t" id="banner-title">Connect both CRMs to unlock migration and sync</div>
       <div class="cstate" id="banner-sub">Authorize Salesforce and HubSpot above to continue.</div></div>
-    <a class="button" id="banner-action" href="/ops#migration" hidden>Build a migration plan</a>
   </div>
   </div>
   </div>
@@ -301,10 +300,8 @@ ${dashboardHeader('connections')}
       if(s.ready){ b.className='banner ready'; $('banner-ico').textContent='✓';
         $('banner-title').textContent='Both CRMs connected';
         $('banner-sub').textContent='Migration and real-time sync are unlocked.';
-        $('banner-action').hidden=false;
         $('page-status-dot').className='status-dot'; $('page-status').textContent='Connected'; }
       else { b.className='banner'; $('banner-ico').textContent='○';
-        $('banner-action').hidden=true;
         $('page-status-dot').className='status-dot off';
         const connected=Object.values(s.connections).filter(Boolean).length;
         $('page-status').textContent=connected?'1 of 2 connected':'Setup required'; }
