@@ -98,16 +98,20 @@ export function operationsHtml(): string {
     .readiness-list{list-style:none;margin:0;padding:0;display:grid;gap:10px}.readiness-list li{line-height:1.5}
     .status-dot.warn{background:#f5b642}.linkbtn{background:none;border:0;color:inherit;font:inherit;font-weight:700;cursor:pointer;padding:0}
     .linkbtn:focus-visible,button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid #53a6ff;outline-offset:2px}
+    .refresh-progress{position:fixed;top:0;left:0;right:0;height:3px;background:linear-gradient(90deg,var(--orange),var(--blue),var(--teal));background-size:200% 100%;animation:refresh-slide 1s linear infinite;z-index:9999}
+    @keyframes refresh-slide{0%{background-position:200% 0}100%{background-position:-200% 0}}
+    .btn-refreshed{border-color:var(--teal)!important;color:var(--teal)!important}
   </style>
 </head>
 <body>
+  <div class="refresh-progress" id="refresh-progress" hidden></div>
   ${dashboardHeader('migration')}
   <main class="page">
     <div class="page-heading"><div><div class="eyebrow" id="workspace-name">Workspace</div><h1 id="page-title">Migration</h1>
       <p class="subcopy" id="page-subtitle">Test one real record, verify it, then run the full migration safely.</p></div>
       <div class="status-pill"><span class="status-dot off" id="readiness-dot"></span>
         <button class="linkbtn" type="button" id="readiness-label" aria-expanded="false" aria-controls="readiness-panel">Checking readiness…</button>
-        <button class="secondary" data-action="refreshAll">Refresh</button></div></div>
+        <button class="secondary" data-action="refreshAll" id="header-refresh-btn">Refresh</button></div></div>
     <section class="card" id="readiness-panel" hidden aria-label="Readiness checks"><div class="card-body"><ul class="readiness-list" id="readiness-list"></ul></div></section>
     <div class="notice" id="live-error-banner" hidden style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
       <span id="live-error-banner-text"></span>
@@ -241,6 +245,8 @@ export function operationsHtml(): string {
   </main>
   <script>${csrfFetchScript}
     const $=id=>document.getElementById(id), esc=v=>String(v??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+    function showProgressBar(){const b=$('refresh-progress');if(b)b.hidden=false}
+    function hideProgressBar(){const b=$('refresh-progress');if(b)b.hidden=true}
     async function api(url,opts){opts=opts||{};const r=await fetch(url,{...opts,headers:{'content-type':'application/json',...(opts.headers||{})}});const j=await r.json().catch(()=>({}));if(!r.ok){const e=new Error(j.detail||(r.status===403&&j.error==='insufficient_role'?'Your role cannot do this (requires '+j.required+').':j.error)||r.statusText);e.code=j.error;e.system=j.system;e.actionUrl=j.actionUrl;e.requestId=j.requestId||r.headers.get('x-request-id');throw e}return j}
     const viewMeta={
       migration:['Migrate','Build, validate, preview, and run a controlled CRM migration.'],
@@ -286,7 +292,7 @@ export function operationsHtml(): string {
       if(view!=='migration')workspaceMode='migration';
       $('page-title').textContent=viewMeta[view][0];$('page-subtitle').textContent=viewMeta[view][1];
       if(view==='migration')applyWorkspaceMode();
-      if(view==='sync')loadSyncWorkspace();if(view==='activity'){loadJobs();loadAudit();loadConflicts()}if(view==='settings')loadSettingsWorkspace();
+      if(view==='sync')loadSyncWorkspace();if(view==='activity'){loadJobs();loadAudit();loadConflictReview()}if(view==='settings')loadSettingsWorkspace();
       if(view==='sync'||view==='activity')checkForNewSyncErrors();
     }
     document.querySelectorAll('.app-nav a[href^="/ops#"]').forEach(a=>a.onclick=e=>{e.preventDefault();workspaceMode='migration';const view=a.getAttribute('href').split('#')[1];history.replaceState(null,'','#'+view);selectView(view)});
@@ -296,9 +302,9 @@ export function operationsHtml(): string {
     async function loadMetrics(){const [s,q]=await Promise.all([api('/api/status'),api('/api/sync/stats')]);$('metrics').innerHTML=
       metric('Ready',s.ready?'Yes':'No',s.ready?'create':'error')+metric('Queued',q.queued)+metric('Retrying',q.retry,'retry')+
       metric('Manual review',q.manualReview,'ambiguous')+metric('Dead letter',q.deadLetter,'dead_letter')+metric('Synced',s.stats.synced)}
-    const migrationState={plan:null,dirty:true,catalog:[],catalogError:null,targets:[],selected:new Set(),selectionInitialized:false,selectedRow:null,metadata:new Map(),mapping:null,fieldLoadToken:0,valueLoadToken:0,preflight:null,copilot:null,preview:null,canaryPreview:null,canaryVerified:false,currentStep:'scope',visited:new Set(['scope']),transformRow:null,savedPlans:[],runs:[]};
+    const migrationState={plan:null,dirty:true,catalog:[],catalogError:null,catalogWarnings:[],targets:[],selected:new Set(),selectionInitialized:false,selectedRow:null,metadata:new Map(),mapping:null,fieldLoadToken:0,valueLoadToken:0,preflight:null,copilot:null,preview:null,canaryPreview:null,canaryVerified:false,currentStep:'scope',visited:new Set(['scope']),transformRow:null,savedPlans:[],runs:[]};
     const migrationSteps=['scope','objects','fields','values','validate','preview'];
-    const transformIds=['identity','domain','lowercase','trim','number','boolean','yes-no','true-false','iso-date','epoch-millis','phone'];
+    const transformIds=['identity','domain','lowercase','trim','number','boolean','yes-no','true-false','iso-date','date-only','epoch-millis','phone'];
     const transformMeta={
       identity:['Identity','Keep the value unchanged'],
       trim:['Trim','Remove leading and trailing spaces'],
@@ -309,6 +315,7 @@ export function operationsHtml(): string {
       'yes-no':['Yes/No ↔ boolean','true ↔ "yes", false ↔ "no" (e.g. a HubSpot checkbox stored as yes/no)'],
       'true-false':['True/False ↔ boolean','true ↔ "true", false ↔ "false" (e.g. a dropdown whose options are the strings true/false)'],
       'iso-date':['ISO date','Convert a valid date to ISO-8601'],
+      'date-only':['Date only','Convert an ISO date or timestamp to YYYY-MM-DD'],
       'epoch-millis':['Epoch date ↔ ISO','ISO-8601 ↔ Unix epoch milliseconds (e.g. a custom date property stored as a number)'],
       phone:['Normalize phone','Keep digits and a leading plus sign']
     };
@@ -355,14 +362,14 @@ export function operationsHtml(): string {
       return catalogLoadPromise;
     }
     async function loadCatalogNow(){const source=$('mig-from').value;$('object-rows').innerHTML='<tr><td colspan="6" class="empty">Discovering CRM objects…</td></tr>';
-      try{const result=await api('/api/object-catalog?from='+encodeURIComponent(source));migrationState.catalog=result.rows;migrationState.catalogError=null;migrationState.targets=result.targets||[];
+      try{const result=await api('/api/object-catalog?from='+encodeURIComponent(source));migrationState.catalog=result.rows;migrationState.catalogError=null;migrationState.catalogWarnings=result.warnings||[];migrationState.targets=result.targets||[];
         if(!migrationState.selectionInitialized){migrationState.selected=new Set(result.rows.filter(row=>row.registered).map(row=>row.canonicalType));migrationState.selectionInitialized=true}
         renderCatalog();refreshObjectSelectors();updateMigrationSummary()}
       // Kept separate from "filter matched nothing" (renderCatalog's own empty state) so a
       // real fetch failure -- most commonly an expired CRM connection -- stays visible and
       // actionable instead of silently turning into a misleading "no objects match this view"
       // the next time renderCatalog() runs (e.g. when the filter dropdown changes).
-      catch(e){migrationState.catalog=[];migrationState.catalogError={message:e.message,actionUrl:e.actionUrl};renderCatalog()}}
+      catch(e){migrationState.catalog=[];migrationState.catalogWarnings=[];migrationState.catalogError={message:e.message,actionUrl:e.actionUrl};renderCatalog()}}
     // Shared by the catalog checkbox and the manual target picker: registers row.source paired
     // with whatever row.target currently is (auto-matched or manually chosen) as a canonical object.
     async function registerCatalogMapping(row){const from=$('mig-from').value,to=from==='salesforce'?'hubspot':'salesforce',body={label:row.source.label};body[from+'Object']=row.source.id;if(row.target)body[to+'Object']=row.target.id;
@@ -384,6 +391,7 @@ export function operationsHtml(): string {
           '<td>'+(row.target?'<span class="object-name">'+esc(row.target.label)+'</span><span class="api-name">'+esc(row.target.id)+'</span>':'<span class="muted">No target match</span>')+'</td>'+
           '<td><span class="pill">'+type+'</span></td><td>'+esc(row.mappedFields)+' / '+esc(row.totalMappedFields||'—')+'</td>'+
           '<td><span class="readiness"><span class="mini-dot '+(!row.supported?'off':!row.registered?'warning':row.mappedFields===row.totalMappedFields?'':'warning')+'"></span>'+esc(!row.supported?'Not supported yet':!row.registered?'Not yet mapped':row.mappedFields===row.totalMappedFields?'Ready':'Needs mapping')+'</span></td></tr>'}).join('')+(visible.length>shown.length?'<tr><td colspan="6" class="empty">Showing the first '+shown.length+' of '+visible.length+' objects. Refine the search to inspect more.</td></tr>':''):'<tr><td colspan="6" class="empty">No objects match this view.</td></tr>';
+      if(migrationState.catalogWarnings.length)$('object-rows').insertAdjacentHTML('afterbegin',migrationState.catalogWarnings.map(warning=>'<tr><td colspan="6" class="empty" role="status">'+esc(warning)+'</td></tr>').join(''));
       document.querySelectorAll('.catalog-row').forEach(tr=>{const row=migrationState.catalog.find(item=>item.source.id===tr.dataset.object);tr.onclick=()=>selectCatalogRow(row);const box=tr.querySelector('input');if(box)box.onclick=async e=>{e.stopPropagation();if(!row||!row.supported)return;
         if(box.checked){
           if(!row.canonicalType){
@@ -438,19 +446,93 @@ export function operationsHtml(): string {
         const sourceByCanonical=new Map(sourceMap.rules.map(rule=>[rule.canonical,rule])),targetByCanonical=new Map(targetMap.rules.map(rule=>[rule.canonical,rule]));const canonicals=[...new Set([...sourceByCanonical.keys(),...targetByCanonical.keys()])];
         migrationState.mapping={type,from,to,sourceMeta,targetMeta,sourceMap,targetMap,canonicals,removed:[],dirty:false};
         renderFieldMappings();updateFieldObjectPosition();renderFieldObjectQueue()}catch(e){if(loadToken===migrationState.fieldLoadToken)$('field-map-rows').innerHTML='<tr><td colspan="5" class="empty">'+esc(e.message)+'</td></tr>'}}
+    let fieldSortCol=null,fieldSortAsc=true;
+    function updateFieldSortHeaders(){
+      document.querySelectorAll('.mapping-table th[data-sort]').forEach(th=>{
+        const col=th.dataset.sort,icon=th.querySelector('.sort-icon');
+        if(fieldSortCol===col){
+          th.classList.toggle('sorted-asc',fieldSortAsc);
+          th.classList.toggle('sorted-desc',!fieldSortAsc);
+          th.setAttribute('aria-sort',fieldSortAsc?'ascending':'descending');
+          if(icon)icon.textContent=fieldSortAsc?'▲':'▼';
+        }else{
+          th.classList.remove('sorted-asc','sorted-desc');
+          th.setAttribute('aria-sort','none');
+          if(icon)icon.textContent='↕';
+        }
+      });
+    }
+    function sortFieldMappings(col){
+      if(fieldSortCol===col){fieldSortAsc=!fieldSortAsc}
+      else{fieldSortCol=col;fieldSortAsc=true}
+      updateFieldSortHeaders();
+      const tbody=$('field-map-rows');if(!tbody)return;
+      const rows=[...tbody.querySelectorAll('tr[data-canonical]')];
+      if(!rows.length)return;
+      rows.sort((a,b)=>{
+        let valA='',valB='';
+        if(col==='source'){
+          valA=(a.querySelector('.source-native')?.value||'').trim().toLowerCase();
+          valB=(b.querySelector('.source-native')?.value||'').trim().toLowerCase();
+        }else if(col==='canonical'){
+          valA=(a.querySelector('.canonical')?.value||a.dataset.canonical||'').trim().toLowerCase();
+          valB=(b.querySelector('.canonical')?.value||b.dataset.canonical||'').trim().toLowerCase();
+        }else if(col==='target'){
+          valA=(a.querySelector('.target-native')?.value||'').trim().toLowerCase();
+          valB=(b.querySelector('.target-native')?.value||'').trim().toLowerCase();
+        }
+        if(!valA&&valB)return 1;
+        if(valA&&!valB)return -1;
+        if(!valA&&!valB)return 0;
+        const cmp=valA.localeCompare(valB,undefined,{numeric:true,sensitivity:'base'});
+        return fieldSortAsc?cmp:-cmp;
+      });
+      rows.forEach(tr=>tbody.appendChild(tr));
+      if(migrationState.mapping?.canonicals){
+        const order=new Map(rows.map((r,i)=>[r.dataset.canonical,i]));
+        migrationState.mapping.canonicals.sort((x,y)=>(order.get(x)??9999)-(order.get(y)??9999));
+      }
+    }
+    document.querySelectorAll('.mapping-table th[data-sort]').forEach(th=>{
+      th.tabIndex=0;
+      th.onclick=()=>sortFieldMappings(th.dataset.sort);
+      th.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();sortFieldMappings(th.dataset.sort)}};
+    });
+
     function renderFieldMappings(){const state=migrationState.mapping;if(!state)return;const sourceBy=new Map(state.sourceMap.rules.map(r=>[r.canonical,r])),targetBy=new Map(state.targetMap.rules.map(r=>[r.canonical,r]));
       $('source-native-datalist').innerHTML=datalistOptions(state.sourceMeta.fields);$('target-native-datalist').innerHTML=datalistOptions(state.targetMeta.fields);
-      const removed=new Set(state.removed),visible=state.canonicals.filter(canonical=>!removed.has(canonical));$('field-map-rows').innerHTML=visible.map(canonical=>{const s=sourceBy.get(canonical)||{},t=targetBy.get(canonical)||{};
+      const removed=new Set(state.removed),visible=state.canonicals.filter(canonical=>!removed.has(canonical));
+      if(fieldSortCol){
+        visible.sort((a,b)=>{
+          let valA='',valB='';
+          if(fieldSortCol==='source'){
+            valA=(sourceBy.get(a)?.native||'').trim().toLowerCase();
+            valB=(sourceBy.get(b)?.native||'').trim().toLowerCase();
+          }else if(fieldSortCol==='canonical'){
+            valA=a.trim().toLowerCase();
+            valB=b.trim().toLowerCase();
+          }else if(fieldSortCol==='target'){
+            valA=(targetBy.get(a)?.native||'').trim().toLowerCase();
+            valB=(targetBy.get(b)?.native||'').trim().toLowerCase();
+          }
+          if(!valA&&valB)return 1;
+          if(valA&&!valB)return -1;
+          if(!valA&&!valB)return 0;
+          const cmp=valA.localeCompare(valB,undefined,{numeric:true,sensitivity:'base'});
+          return fieldSortAsc?cmp:-cmp;
+        });
+      }
+      $('field-map-rows').innerHTML=visible.map(canonical=>{const s=sourceBy.get(canonical)||{},t=targetBy.get(canonical)||{};
         const transforms=[s.toCanonical||'identity',s.fromCanonical||'identity',t.toCanonical||'identity',t.fromCanonical||'identity'];
         return '<tr data-canonical="'+esc(canonical)+'"><td class="mapping-action"><button class="mapping-remove" data-remove-canonical="'+esc(canonical)+'" aria-label="Remove '+esc(canonical)+' mapping" title="Remove this mapping">Remove</button></td><td><input class="source-native" list="source-native-datalist" value="'+esc(s.native||'')+'" placeholder="— Not mapped —"></td><td><input class="canonical" value="'+esc(canonical)+'"></td><td>'+transformHidden('source-to',transforms[0])+transformHidden('source-from',transforms[1])+transformHidden('target-to',transforms[2])+transformHidden('target-from',transforms[3])+'<button class="mapping-transform" data-transform-canonical="'+esc(canonical)+'">'+esc(transformSummary([transforms[0],transforms[3]]))+'<small>Configure</small></button></td><td><input class="target-native" list="target-native-datalist" value="'+esc(t.native||'')+'" placeholder="— Not mapped —"></td></tr>'}).join('')||'<tr><td colspan="5" class="empty">No mappings remain. Save to persist this empty mapping set, or undo the removal.</td></tr>';
-      refreshMappingCoverage();$('field-map-notice').hidden=!state.removed.length;$('field-map-notice-text').textContent=state.removed.length+' mapping'+(state.removed.length===1?'':'s')+' marked for removal. Save mappings to apply.';document.querySelectorAll('[data-remove-canonical]').forEach(button=>button.onclick=()=>{state.removed.push(button.dataset.removeCanonical);state.dirty=true;closeTransformLab();renderFieldMappings()});document.querySelectorAll('[data-transform-canonical]').forEach(button=>button.onclick=()=>openTransformLab(button));document.querySelectorAll('#field-map-rows tr[data-canonical] input').forEach(control=>{control.oninput=control.onchange=()=>{state.dirty=true;refreshMappingCoverage();applyMappingFilters();setDraftStatus('Mapping changes not saved')}});applyMappingFilters()}
+      refreshMappingCoverage();updateFieldSortHeaders();$('field-map-notice').hidden=!state.removed.length;$('field-map-notice-text').textContent=state.removed.length+' mapping'+(state.removed.length===1?'':'s')+' marked for removal. Save mappings to apply.';document.querySelectorAll('[data-remove-canonical]').forEach(button=>button.onclick=()=>{state.removed.push(button.dataset.removeCanonical);state.dirty=true;closeTransformLab();renderFieldMappings()});document.querySelectorAll('[data-transform-canonical]').forEach(button=>button.onclick=()=>openTransformLab(button));document.querySelectorAll('#field-map-rows tr[data-canonical] input').forEach(control=>{control.oninput=control.onchange=()=>{state.dirty=true;refreshMappingCoverage();applyMappingFilters();setDraftStatus('Mapping changes not saved')}});applyMappingFilters()}
     function refreshMappingCoverage(){const state=migrationState.mapping;if(!state)return;const rows=[...$('field-map-rows').querySelectorAll('tr[data-canonical]')],ready=rows.filter(tr=>tr.querySelector('.source-native').value&&tr.querySelector('.target-native').value).length,total=rows.length,pct=total?Math.round(ready/total*100):0;$('coverage-number').textContent=pct+'%';$('coverage-list').innerHTML='<div><span>Mapped</span><b>'+ready+'</b></div><div><span>Needs review</span><b>'+(total-ready)+'</b></div><div><span>Removed</span><b>'+state.removed.length+'</b></div><div><span>Source fields</span><b>'+state.sourceMeta.fields.length+'</b></div><div><span>Target fields</span><b>'+state.targetMeta.fields.length+'</b></div>';$('summary-coverage').textContent=pct+'%'}
     function applyMappingFilters(){const query=$('field-search').value.trim().toLowerCase(),filter=$('field-filter').value;document.querySelectorAll('#field-map-rows tr[data-canonical]').forEach(tr=>{const source=tr.querySelector('.source-native').value||'',target=tr.querySelector('.target-native').value||'',canonical=tr.querySelector('.canonical').value,text=(source+' '+target+' '+canonical).toLowerCase(),ready=tr.querySelector('.source-native').value&&tr.querySelector('.target-native').value,transformed=['source-to','target-from'].some(cls=>tr.querySelector('.'+cls).value!=='identity');tr.hidden=Boolean((query&&!text.includes(query))||(filter==='review'&&ready)||(filter==='transformed'&&!transformed))})}
     $('field-search').oninput=applyMappingFilters;$('field-filter').onchange=applyMappingFilters;
     function updateFieldObjectPosition(){const select=$('field-object'),count=select.options.length,index=select.selectedIndex;$('field-object-position').textContent=count&&index>=0?(index+1)+' of '+count:'No objects'}
     async function moveFieldObject(delta){const select=$('field-object'),next=select.selectedIndex+delta;if(next<0||next>=select.options.length)return;if(migrationState.mapping?.dirty)await saveFieldMappings(false);select.selectedIndex=next;await loadFieldWorkspace(select.value)}
     $('save-next-field-object').onclick=async()=>{try{if(migrationState.mapping?.dirty)await saveFieldMappings(false);if(workspaceMode==='sync'){history.replaceState(null,'','#sync');selectView('sync')}else await moveFieldObject(1)}catch(e){setDraftStatus(e.message,'error')}};
-    function previewTransform(id,value){if(!id||id==='identity')return value;if(id==='trim')return typeof value==='string'?value.trim():value;if(id==='lowercase')return typeof value==='string'?value.trim().toLowerCase():value;if(id==='domain'){if(typeof value!=='string'||!value)return value;try{const url=new URL(value.includes('://')?value:'http://'+value);return url.hostname.replace(/^www\\./,'').toLowerCase()}catch{return value.toLowerCase()}}if(id==='number'){if(value===null||value==='')return null;const parsed=Number(value);return Number.isFinite(parsed)?parsed:value}if(id==='boolean'){if(typeof value==='boolean'||value===null)return value;if(typeof value==='string')return ['true','1','yes'].includes(value.toLowerCase());return Boolean(value)}if(id==='yes-no'){if(typeof value==='boolean')return value?'yes':'no';if(typeof value==='string')return ['yes','true','1'].includes(value.toLowerCase());return value}if(id==='iso-date'){const parsed=new Date(value);return Number.isNaN(parsed.getTime())?value:parsed.toISOString()}if(id==='phone')return typeof value==='string'?value.trim().replace(/[^\\d+]/g,''):value;return value}
+    function previewTransform(id,value){if(!id||id==='identity')return value;if(id==='trim')return typeof value==='string'?value.trim():value;if(id==='lowercase')return typeof value==='string'?value.trim().toLowerCase():value;if(id==='domain'){if(typeof value!=='string'||!value)return value;try{const url=new URL(value.includes('://')?value:'http://'+value);return url.hostname.replace(/^www\\./,'').toLowerCase()}catch{return value.toLowerCase()}}if(id==='number'){if(value===null||value==='')return null;const parsed=Number(value);return Number.isFinite(parsed)?parsed:value}if(id==='boolean'){if(typeof value==='boolean'||value===null)return value;if(typeof value==='string')return ['true','1','yes'].includes(value.toLowerCase());return Boolean(value)}if(id==='yes-no'){if(typeof value==='boolean')return value?'yes':'no';if(typeof value==='string')return ['yes','true','1'].includes(value.toLowerCase());return value}if(id==='iso-date'){const parsed=new Date(value);return Number.isNaN(parsed.getTime())?value:parsed.toISOString()}if(id==='date-only'){if(typeof value==='string'&&/^\\d{4}-\\d{2}-\\d{2}$/.test(value))return value;const parsed=new Date(value);return Number.isNaN(parsed.getTime())?value:parsed.toISOString().slice(0,10)}if(id==='epoch-millis'){const parsed=new Date(value);return Number.isNaN(parsed.getTime())?value:typeof value==='number'?parsed.toISOString():parsed.getTime()}if(id==='phone')return typeof value==='string'?value.trim().replace(/[^\\d+]/g,''):value;return value}
     function previewValue(value){return typeof value==='string'?value:JSON.stringify(value)}
     function updateTransformPreview(){
       const sample=$('transform-sample').value;
@@ -473,9 +555,10 @@ export function operationsHtml(): string {
     function compatibleMappingAdditions(sourceMeta,targetMeta,sourceRules,targetRules){const used=new Set([...sourceRules,...targetRules].map(rule=>rule.canonical.toLowerCase())),additions=[];for(const source of sourceMeta.fields){const match=targetMeta.fields.find(target=>!target.readOnly&&(target.name.toLowerCase()===source.name.toLowerCase()||target.label.toLowerCase()===source.label.toLowerCase()));const canonical=source.name.replace(/[^a-zA-Z0-9]/g,'');if(match&&canonical&&!used.has(canonical.toLowerCase())){additions.push({canonical,source:source.name,target:match.name});used.add(canonical.toLowerCase())}}return additions}
     function autoMapCurrentObject(){const state=migrationState.mapping;if(!state)return 0;const additions=compatibleMappingAdditions(state.sourceMeta,state.targetMeta,state.sourceMap.rules,state.targetMap.rules);for(const item of additions){state.canonicals.push(item.canonical);state.sourceMap.rules.push({canonical:item.canonical,native:item.source});state.targetMap.rules.push({canonical:item.canonical,native:item.target})}if(additions.length){state.dirty=true;setDraftStatus(additions.length+' compatible mappings ready to review');renderFieldMappings()}return additions.length}
     $('auto-map').onclick=()=>autoMapCurrentObject();
+    $('remove-invalid-targets').onclick=()=>{const state=migrationState.mapping;if(!state)return;const fields=new Map(state.targetMeta.fields.map(field=>[field.name,field])),targetRules=new Map(state.targetMap.rules.map(rule=>[rule.canonical,rule]));const invalid=state.canonicals.filter(canonical=>{const rule=targetRules.get(canonical);if(!rule)return false;const field=fields.get(rule.native);return !field||field.readOnly||field.calculated||field.createable===false&&field.updateable===false});if(!invalid.length){setDraftStatus('No invalid target mappings found','saved');return}state.dirty=true;closeTransformLab();for(const canonical of invalid){const row=document.querySelector('#field-map-rows tr[data-canonical="'+CSS.escape(canonical)+'"]');if(row)row.querySelector('.target-native').value=''}refreshMappingCoverage();applyMappingFilters();setDraftStatus(invalid.length+' invalid target mapping'+(invalid.length===1?'':'s')+' cleared; review and save')};
     $('auto-map-all').onclick=async()=>{const rows=selectedCatalogRows();if(!rows.length)return;const button=$('auto-map-all'),from=$('mig-from').value,to=from==='salesforce'?'hubspot':'salesforce',current=migrationState.mapping?.type;button.disabled=true;button.textContent='Finding matches…';try{const batch=await Promise.all(rows.map(async row=>{const [sourceMeta,targetMeta,sourceMap,targetMap]=await Promise.all([getMetadata(from,row.source.id),getMetadata(to,row.target.id),api('/api/mappings/'+from+'/'+row.canonicalType),api('/api/mappings/'+to+'/'+row.canonicalType)]);return {row,sourceMap,targetMap,additions:compatibleMappingAdditions(sourceMeta,targetMeta,sourceMap.rules,targetMap.rules)}})),added=batch.reduce((total,item)=>total+item.additions.length,0),summary=batch.filter(item=>item.additions.length).map(item=>item.row.source.label+': '+item.additions.length).join(' · ');if(!added){setDraftStatus('No new exact matches found','saved');return}const confirmed=await requestTypedConfirmation({title:'Review automatic mappings',message:'Found '+added+' exact matches across '+batch.filter(item=>item.additions.length).length+' objects. '+summary+'. Existing mappings and transforms are preserved.',token:'MAP ALL',buttonLabel:'Apply mappings'});if(!confirmed)return;button.textContent='Applying mappings…';for(const item of batch){if(!item.additions.length)continue;await Promise.all([api('/api/mappings/'+from+'/'+item.row.canonicalType,{method:'PUT',body:JSON.stringify({rules:[...item.sourceMap.rules,...item.additions.map(entry=>({canonical:entry.canonical,native:entry.source}))]})}),api('/api/mappings/'+to+'/'+item.row.canonicalType,{method:'PUT',body:JSON.stringify({rules:[...item.targetMap.rules,...item.additions.map(entry=>({canonical:entry.canonical,native:entry.target}))]})})])}migrationState.metadata.clear();markPlanDirty();queuePlanAutosave();await loadCatalog();if(current)await loadFieldWorkspace(current);setDraftStatus(added+' mappings added across selected objects','saved')}catch(e){setDraftStatus(e.message,'error')}finally{button.disabled=false;button.textContent='Auto-map selected objects'}};
     async function saveFieldMappings(reload=true){const state=migrationState.mapping;if(!state)return;const rows=[...$('field-map-rows').querySelectorAll('tr[data-canonical]')];const existingSource=new Map(state.sourceMap.rules.map(r=>[r.canonical,r])),existingTarget=new Map(state.targetMap.rules.map(r=>[r.canonical,r]));const sourceRules=[],targetRules=[];
-      for(const tr of rows){const canonical=tr.querySelector('.canonical').value.trim(),sourceNative=tr.querySelector('.source-native').value,targetNative=tr.querySelector('.target-native').value;if(!canonical||!sourceNative||!targetNative)continue;const oldS=existingSource.get(tr.dataset.canonical)||{},oldT=existingTarget.get(tr.dataset.canonical)||{};sourceRules.push({...oldS,canonical,native:sourceNative,toCanonical:tr.querySelector('.source-to').value,fromCanonical:tr.querySelector('.source-from').value});targetRules.push({...oldT,canonical,native:targetNative,toCanonical:tr.querySelector('.target-to').value,fromCanonical:tr.querySelector('.target-from').value})}
+      for(const tr of rows){const canonical=tr.querySelector('.canonical').value.trim(),sourceNative=tr.querySelector('.source-native').value,targetNative=tr.querySelector('.target-native').value;if(!canonical)continue;const oldS=existingSource.get(tr.dataset.canonical)||{},oldT=existingTarget.get(tr.dataset.canonical)||{};if(sourceNative)sourceRules.push({...oldS,canonical,native:sourceNative,toCanonical:tr.querySelector('.source-to').value,fromCanonical:tr.querySelector('.source-from').value});if(targetNative)targetRules.push({...oldT,canonical,native:targetNative,toCanonical:tr.querySelector('.target-to').value,fromCanonical:tr.querySelector('.target-from').value})}
       const button=$('save-field-map');try{button.disabled=true;button.textContent='Saving…';const results=await Promise.all([api('/api/mappings/'+state.from+'/'+state.type,{method:'PUT',body:JSON.stringify({rules:sourceRules})}),api('/api/mappings/'+state.to+'/'+state.type,{method:'PUT',body:JSON.stringify({rules:targetRules})})]);state.dirty=false;migrationState.metadata.clear();markPlanDirty();queuePlanAutosave();await loadCatalog();if(reload)await loadFieldWorkspace(state.type);button.textContent='Saved ✓';setTimeout(()=>button.textContent='Save mappings',1200);
         if(results.some(r=>r.syncPaused))showNotice('Heads up: '+state.type+' was live-syncing, so saving this mapping change paused both real-time and scheduled sync for it. Review the mapping, then re-enable it from the Sync tab when ready.')
         if(workspaceMode==='sync')await maybeOfferNaturalKeyStep();
@@ -663,11 +746,17 @@ export function operationsHtml(): string {
     function renderMigrationRuns(){const query=$('run-search').value.trim().toLowerCase(),status=$('run-status-filter').value,mode=$('run-mode-filter').value;const entries=migrationState.runs.filter(run=>(!query||(run.id+' '+run.source).toLowerCase().includes(query))&&(!status||run.status===status)&&(!mode||run.mode===mode));$('runs').innerHTML=entries.length?'<table><thead><tr><th>Run</th><th>Mode</th><th>Source</th><th>Status</th><th>Started</th></tr></thead><tbody>'+
       entries.map(x=>'<tr><td><button class="run-link" data-run-id="'+esc(x.id)+'">'+esc(x.id.slice(0,8))+'</button></td><td>'+esc(x.mode)+'</td><td>'+esc(x.source)+'</td><td><span class="pill '+esc(x.status)+'">'+esc(x.status)+'</span></td><td>'+esc(new Date(x.createdAt).toLocaleString())+'</td></tr>').join('')+'</tbody></table><div class="run-detail" id="run-detail"></div>':'<div class="empty history-empty">No migration runs match these filters.</div>';$('runs').querySelectorAll('[data-run-id]').forEach(button=>button.onclick=()=>loadRunDetail(button.dataset.runId))}
     async function loadRunDetail(id){const r=await api('/api/migrations/'+id+'/items?limit=200');$('run-detail').innerHTML='<div class="card-head"><h2>Run '+esc(id.slice(0,8))+'</h2><span class="section-note">'+r.entries.length+' reviewed records</span></div><div class="scroll"><table><thead><tr><th>Action</th><th>Object</th><th>Natural key</th><th>Target</th></tr></thead><tbody>'+r.entries.map(item=>'<tr><td><span class="pill '+esc(item.action)+'">'+esc(item.action)+'</span></td><td>'+esc(item.type)+'</td><td>'+esc(item.naturalKey||'—')+'</td><td>'+esc(item.targetId||'New record')+'</td></tr>').join('')+'</tbody></table></div>'}
-    $('run-search').oninput=renderMigrationRuns;$('run-status-filter').onchange=renderMigrationRuns;$('run-mode-filter').onchange=renderMigrationRuns;$('refresh-runs').onclick=loadRuns;
+    $('run-search').oninput=renderMigrationRuns;$('run-status-filter').onchange=renderMigrationRuns;$('run-mode-filter').onchange=renderMigrationRuns;
+    $('refresh-runs').onclick=async()=>{
+      const btn=$('refresh-runs');if(!btn||btn.disabled)return;
+      const orig=btn.textContent||'Refresh';btn.disabled=true;btn.textContent='Refreshing…';showProgressBar();
+      try{await loadRuns();btn.textContent='Refreshed ✓';btn.classList.add('btn-refreshed');showNotice('Migration run history refreshed.');setTimeout(()=>{btn.textContent=orig;btn.classList.remove('btn-refreshed');btn.disabled=false},1500)}
+      catch(e){showError('Failed to refresh migration runs: '+(e.message||e));btn.textContent=orig;btn.disabled=false}
+      finally{hideProgressBar()}};
 
     let syncConfigState;
     let syncObjectCatalog=[];
-    async function loadSyncWorkspace(){await Promise.all([loadMetrics(),loadSyncSettings(),loadConflicts()])}
+    async function loadSyncWorkspace(){await Promise.all([loadMetrics(),loadSyncSettings(),loadSyncConflicts()])}
     async function loadSyncSettings(){
       const [config,objectMappings]=await Promise.all([api('/api/sync/settings'),api('/api/object-mappings')]);
       syncConfigState=config;syncObjectCatalog=objectMappings.entries;
@@ -912,7 +1001,7 @@ export function operationsHtml(): string {
       $('sync-wizard-label-row').hidden=true;$('sync-wizard-conditions-panel').hidden=true;
       $('sync-wizard-step2-continue').hidden=false;$('sync-wizard-step2-continue').disabled=true;$('sync-wizard-save-conditions').hidden=true;
       $('sync-wizard-edit-objects').hidden=true;$('sync-wizard-save-native-objects').hidden=true;
-      $('mig-from').value='salesforce';await loadCatalog();renderSyncWizardObjectOptions();
+      $('mig-from').value='salesforce';await Promise.all([loadCatalog(),syncConfigState?Promise.resolve():loadSyncSettings()]);renderSyncWizardObjectOptions();
     };
     $('sync-wizard-step2-back').onclick=()=>{$('sync-wizard-step-2').hidden=true;$('sync-wizard-step-1').hidden=false};
     // row.supported only means "an auto-match by name already exists" (Migration's
@@ -923,9 +1012,45 @@ export function operationsHtml(): string {
     // counterpart for (Lead, Case, Campaign, ...). The native id is shown alongside the label
     // to tell apart two objects that happen to share a label (e.g. two objects both labeled
     // "Note").
+    function isStandardTarget(source, target){
+      if(!target||target.custom) return false;
+      const norm = v => String(v||'').toLowerCase().replace(/[^a-z0-9]/g, '').replace(/s$/, '');
+      return norm(target.id) === norm(source.id) || norm(target.label) === norm(source.label);
+    }
+    function isRowEnrolledInSync(row){
+      return Boolean(row.canonicalType && syncConfigState?.objects?.[row.canonicalType]?.enrolledForSync);
+    }
     function renderSyncWizardObjectOptions(){
-      const rows=migrationState.catalog.slice().sort((a,b)=>a.source.label.localeCompare(b.source.label));
-      $('sync-wizard-sf-object').innerHTML='<option value="">Choose an object…</option>'+rows.map(row=>'<option value="'+esc(row.source.id)+'">'+esc(row.source.label)+' ('+esc(row.source.id)+')'+(row.canonicalType?' — already mapped to '+esc(row.target?.label||row.canonicalType):'')+'</option>').join('');
+      const bySource=new Map();
+      for(const row of migrationState.catalog){
+        if(!bySource.has(row.source.id)) bySource.set(row.source.id,[]);
+        bySource.get(row.source.id).push(row);
+      }
+      const sortedSourceIds=[...bySource.keys()].sort((a,b)=>{
+        const labelA=bySource.get(a)[0].source.label;
+        const labelB=bySource.get(b)[0].source.label;
+        return labelA.localeCompare(labelB);
+      });
+      const displayOptions=[];
+      for(const sfId of sortedSourceIds){
+        const rows=bySource.get(sfId);
+        const enrolledRows=rows.filter(isRowEnrolledInSync);
+        if(!enrolledRows.length){
+          // If no mapping is done in Sync, show ONE option without any "already mapped" tag
+          const preferredRow=rows.find(r=>r.mappedFields&&r.mappedFields>0)||rows.find(r=>!isStandardTarget(r.source,r.target))||rows[0];
+          displayOptions.push({value:preferredRow.source.id,label:preferredRow.source.label,targetId:preferredRow.target?.id||'',tag:''});
+        }else if(enrolledRows.length===1){
+          // If exactly one mapping is enrolled in Sync, show that one
+          const r=enrolledRows[0];
+          displayOptions.push({value:r.source.id,label:r.source.label,targetId:r.target?.id||'',tag:' — already mapped to '+esc(r.target?.label||r.canonicalType)});
+        }else{
+          // If multiple mappings are enrolled in Sync, show all of them
+          for(const r of enrolledRows){
+            displayOptions.push({value:r.source.id,label:r.source.label,targetId:r.target?.id||'',tag:' — already mapped to '+esc(r.target?.label||r.canonicalType)});
+          }
+        }
+      }
+      $('sync-wizard-sf-object').innerHTML='<option value="">Choose an object…</option>'+displayOptions.map(opt=>'<option value="'+esc(opt.value)+'" data-target-id="'+esc(opt.targetId)+'">'+esc(opt.label)+' ('+esc(opt.value)+')'+opt.tag+'</option>').join('');
       $('sync-wizard-hs-object').innerHTML='<option value="">Choose an object…</option>'+(migrationState.targets||[]).slice().sort((a,b)=>a.label.localeCompare(b.label)).map(t=>'<option value="'+esc(t.id)+'">'+esc(t.label)+' ('+esc(t.id)+')'+'</option>').join('');
     }
     // Picking objects for a brand-new pairing and re-pointing an already-enrolled object's
@@ -934,8 +1059,15 @@ export function operationsHtml(): string {
     // (it must update the SAME canonical type in place, never create a second one). The selects
     // only ever run one of these two handlers at a time, swapped in when each mode starts.
     function sfObjectChangeForNewPairing(){
-      const row=migrationState.catalog.find(r=>r.source.id===$('sync-wizard-sf-object').value);
-      if(row?.target)$('sync-wizard-hs-object').value=row.target.id;
+      const sfSelect=$('sync-wizard-sf-object');
+      const opt=sfSelect.options[sfSelect.selectedIndex];
+      const targetId=opt?.dataset?.targetId;
+      if(targetId){
+        $('sync-wizard-hs-object').value=targetId;
+      }else{
+        const row=migrationState.catalog.find(r=>r.source.id===sfSelect.value);
+        if(row?.target)$('sync-wizard-hs-object').value=row.target.id;
+      }
       updateSyncWizardObjectState();
     }
     $('sync-wizard-sf-object').onchange=sfObjectChangeForNewPairing;
@@ -961,7 +1093,7 @@ export function operationsHtml(): string {
       const exactRow=findExactCatalogRow(sfId,hsId);
       $('sync-wizard-label-row').hidden=Boolean(exactRow?.canonicalType);
       if(!exactRow?.canonicalType){
-        const alreadyMappedElsewhere=migrationState.catalog.some(r=>r.source.id===sfId&&r.canonicalType);
+        const alreadyMappedElsewhere=migrationState.catalog.some(r=>r.source.id===sfId&&r.canonicalType&&syncConfigState?.objects?.[r.canonicalType]?.enrolledForSync);
         $('sync-wizard-label').value=alreadyMappedElsewhere?sfLabel+' ('+hsLabel+')':sfLabel;
       }
       syncWizardObjectReady();
@@ -1157,17 +1289,22 @@ export function operationsHtml(): string {
       const dismiss=needsAttention?'<button class="danger" data-action="dismissJob" data-arg="'+j.id+'" title="Give up on this permanently -- it will not be retried">Delete</button>':'';
       const actions=(primary||dismiss)?'<div class="row-actions">'+primary+dismiss+'</div>':'';
       return {select,actions}}
-    async function loadConflicts(){const r=await api('/api/sync/jobs?limit=200');const entries=r.entries.filter(job=>job.status==='manual_review'||job.status==='dead_letter');
+    async function loadSyncConflicts(){const r=await api('/api/sync/jobs?limit=200');const entries=r.entries.filter(job=>job.status==='manual_review'||job.status==='dead_letter');
       $('conflicts').innerHTML=entries.length?entries.map(j=>{const c=jobRowCells(j,true);return '<tr>'+c.select+'<td><span class="pill '+j.status+'">'+esc(j.status)+'</span></td><td>'+esc(j.event.system+' '+j.event.type+' '+j.event.changeType)+'</td><td>'+j.attempts+'</td><td>'+esc(j.lastError||'Operator review required')+'</td><td>'+c.actions+'</td></tr>'}).join(''):'<tr><td colspan="6" class="empty">No conflicts or manual reviews waiting.</td></tr>';
       resetBulkBar('conflicts')}
-    $('refresh-conflicts').onclick=loadConflicts;
+    $('refresh-conflicts').onclick=async()=>{
+      const btn=$('refresh-conflicts');if(!btn||btn.disabled)return;
+      const orig=btn.textContent||'Refresh queue';btn.disabled=true;btn.textContent='Refreshing…';showProgressBar();
+      try{await loadSyncConflicts();btn.textContent='Refreshed ✓';btn.classList.add('btn-refreshed');showNotice('Conflicts queue refreshed.');setTimeout(()=>{btn.textContent=orig;btn.classList.remove('btn-refreshed');btn.disabled=false},1500)}
+      catch(e){showError('Failed to refresh conflicts: '+(e.message||e));btn.textContent=orig;btn.disabled=false}
+      finally{hideProgressBar()}};
 
     async function loadJobs(){const f=$('job-filter').value;const r=await api('/api/sync/jobs?limit=200'+(f?'&status='+encodeURIComponent(f):''));
       $('jobs').innerHTML=r.entries.length?r.entries.map(j=>{const c=jobRowCells(j,true);return '<tr>'+c.select+'<td><span class="pill '+j.status+'">'+esc(j.status)+'</span></td><td>'+esc(j.event.system+' '+j.event.type+' '+j.event.changeType)+'<br><span class="muted">'+esc(j.event.sourceId)+'</span></td><td>'+j.attempts+'</td><td>'+esc(j.lastError||'—')+'</td><td>'+c.actions+'</td></tr>'}).join(''):'<tr><td colspan="6" class="empty">No jobs</td></tr>';
       resetBulkBar('jobs')}
-    async function replay(id){await api('/api/sync/jobs/'+id+'/replay',{method:'POST'});await Promise.all([loadJobs(),loadMetrics(),loadConflicts()])}
-    async function approveDelete(id){if(!confirm('Delete/archive the linked record in the other CRM?'))return;await api('/api/sync/jobs/'+id+'/approve-delete',{method:'POST'});await Promise.all([loadJobs(),loadMetrics(),loadConflicts()])}
-    async function dismissJob(id){if(!confirm('Give up on this permanently? It will not be retried, and stays visible in Activity for the record.'))return;await api('/api/sync/jobs/'+id+'/dismiss',{method:'POST'});await Promise.all([loadJobs(),loadMetrics(),loadConflicts()])}
+    async function replay(id){await api('/api/sync/jobs/'+id+'/replay',{method:'POST'});await Promise.all([loadJobs(),loadMetrics(),loadSyncConflicts()])}
+    async function approveDelete(id){if(!confirm('Delete/archive the linked record in the other CRM?'))return;await api('/api/sync/jobs/'+id+'/approve-delete',{method:'POST'});await Promise.all([loadJobs(),loadMetrics(),loadSyncConflicts()])}
+    async function dismissJob(id){if(!confirm('Give up on this permanently? It will not be retried, and stays visible in Activity for the record.'))return;await api('/api/sync/jobs/'+id+'/dismiss',{method:'POST'});await Promise.all([loadJobs(),loadMetrics(),loadSyncConflicts()])}
     window.replay=replay;window.approveDelete=approveDelete;window.dismissJob=dismissJob;$('job-filter').onchange=loadJobs;
 
     // Bulk selection for both the Conflicts card and the Activity tab's Sync jobs table --
@@ -1177,7 +1314,7 @@ export function operationsHtml(): string {
     function selectedJobIds(tbodyId){return [...document.querySelectorAll('#'+tbodyId+' .row-select:checked')].map(el=>el.value)}
     function resetBulkBar(tbodyId){$(bulkTables[tbodyId].selectAll).checked=false;updateBulkBar(tbodyId)}
     function updateBulkBar(tbodyId){const cfg=bulkTables[tbodyId],n=selectedJobIds(tbodyId).length,total=document.querySelectorAll('#'+tbodyId+' .row-select').length;$(cfg.replayBtn).hidden=n===0;$(cfg.deleteBtn).hidden=n===0;$(cfg.replayBtn).textContent='Replay selected ('+n+')';$(cfg.deleteBtn).textContent='Delete selected ('+n+')';$(cfg.selectAll).checked=total>0&&n===total;$(cfg.selectAll).indeterminate=n>0&&n<total}
-    async function bulkRefresh(){await Promise.all([loadJobs(),loadMetrics(),loadConflicts()])}
+    async function bulkRefresh(){await Promise.all([loadJobs(),loadMetrics(),loadSyncConflicts()])}
     Object.entries(bulkTables).forEach(([tbodyId,cfg])=>{
       document.getElementById(tbodyId).addEventListener('change',e=>{if(e.target.classList.contains('row-select'))updateBulkBar(tbodyId)});
       $(cfg.selectAll).onchange=()=>{document.querySelectorAll('#'+tbodyId+' .row-select').forEach(el=>el.checked=$(cfg.selectAll).checked);updateBulkBar(tbodyId)};
@@ -1260,7 +1397,7 @@ export function operationsHtml(): string {
     document.addEventListener('visibilitychange',()=>{if(!document.hidden)loadReadiness()});
     // R10/R13 conflict review: inspect the automatic decision, deliberately keep the other side.
     const SYSTEM_LABEL={salesforce:'Salesforce',hubspot:'HubSpot'};
-    async function loadConflicts(){const c=await api('/api/conflicts?limit=100');
+    async function loadConflictReview(){const c=await api('/api/conflicts?limit=100');
       $('conflict-review').innerHTML=c.entries.length?'<table><thead><tr><th>Record</th><th>Decision</th><th>Changed fields</th><th>Status</th><th></th></tr></thead><tbody>'+c.entries.map(x=>{
         const fields=Object.keys({...x.source.fields,...x.target.fields}).filter(k=>JSON.stringify(x.source.fields[k])!==JSON.stringify(x.target.fields[k]));
         const winner=x.decision&&x.decision.winner;const source=x.source.meta.source;const other=source==='salesforce'?'hubspot':'salesforce';
@@ -1269,9 +1406,66 @@ export function operationsHtml(): string {
         return '<tr data-conflict="'+esc(x.id)+'"><td>'+esc(x.type)+'<br><span class="muted">'+esc(new Date(x.createdAt).toLocaleString())+'</span></td><td>'+esc(x.strategy)+(winner?' → '+esc(SYSTEM_LABEL[winner]||winner):'')+'</td><td>'+diff+'</td><td><span class="pill '+(x.resolutionSource==='manual'?'completed':'ambiguous')+'">'+(x.resolutionSource==='manual'?'resolved by operator':'automatic')+'</span></td><td>'+actions+'</td></tr>'}).join('')+'</tbody></table>':'<div class="empty">No conflicts recorded</div>'}
     async function resolveConflict(arg){const [id,winner]=String(arg).split(':');
       const r=await api('/api/conflicts/'+encodeURIComponent(id)+'/resolve',{method:'POST',body:JSON.stringify({winner})});
-      showNotice('Kept '+SYSTEM_LABEL[winner]+' values for this '+r.type+'.');await loadConflicts()}
+      showNotice('Kept '+SYSTEM_LABEL[winner]+' values for this '+r.type+'.');await loadConflictReview()}
     window.resolveConflict=resolveConflict;
-    async function refreshAll(){await Promise.allSettled([loadRuns(),loadCatalog(),loadSavedPlans(),loadReadiness()]);const view=location.hash.slice(1)||'migration';if(view==='sync')await loadSyncWorkspace();if(view==='activity')await Promise.all([loadJobs(),loadAudit(),loadConflicts()]);if(view==='settings')await loadSettingsWorkspace()}window.refreshAll=refreshAll;refreshAll();
+
+    let isRefreshingAll=false;
+    async function refreshAll(arg, el){
+      if(isRefreshingAll)return;
+      const btn=el||$('header-refresh-btn')||document.querySelector('[data-action="refreshAll"]');
+      const isManual=Boolean(el||arg);
+      const origText=btn?(btn.textContent||'Refresh'):'Refresh';
+      const view=location.hash.slice(1)||'migration';
+      if(isManual&&btn){btn.disabled=true;btn.textContent='Refreshing…';showProgressBar()}
+      isRefreshingAll=true;
+      try{
+        if(view==='sync'){
+          await Promise.allSettled([loadSyncWorkspace(),loadReadiness(),checkForNewSyncErrors()]);
+          if(isManual)showNotice('Sync status, metrics, and webhook health refreshed.');
+        }else if(view==='activity'){
+          await Promise.allSettled([loadJobs(),loadAudit(),loadConflictReview(),loadReadiness(),checkForNewSyncErrors()]);
+          if(isManual)showNotice('Sync jobs, conflicts, and audit trail refreshed.');
+        }else if(view==='settings'){
+          await Promise.allSettled([loadSettingsWorkspace(),loadReadiness()]);
+          if(isManual)showNotice('Settings and workspace overview refreshed.');
+        }else{
+          if(workspaceMode==='sync'){
+            const syncTasks=[loadSyncSettings(),loadCatalog(),loadReadiness()];
+            if(migrationState.mapping?.type)syncTasks.push(loadFieldWorkspace(migrationState.mapping.type));
+            await Promise.allSettled(syncTasks);
+            if(isManual)showNotice('Sync object setup refreshed.');
+          }else{
+            const tasks=[loadRuns(),loadCatalog(),loadSavedPlans(),loadReadiness()];
+            if(migrationState.plan?.id){
+              tasks.push(api('/api/migration-plans/'+migrationState.plan.id).then(plan=>{migrationState.plan=plan;updateMigrationSummary();updateMigrationStepper()}).catch(()=>{}))
+            }
+            if(migrationState.currentStep==='fields'&&migrationState.mapping?.type){
+              tasks.push(loadFieldWorkspace(migrationState.mapping.type).catch(()=>{}))
+            }else if(migrationState.currentStep==='values'&&migrationState.valueContext?.type){
+              tasks.push(loadValuesWorkspace(migrationState.valueContext.type).catch(()=>{}))
+            }
+            await Promise.allSettled(tasks);
+            if(isManual)showNotice('Migration workspace refreshed.');
+          }
+        }
+        if(isManual&&btn){
+          btn.textContent='Refreshed ✓';btn.classList.add('btn-refreshed');
+          setTimeout(()=>{btn.textContent=origText;btn.classList.remove('btn-refreshed');btn.disabled=false},1500);
+        }
+      }catch(err){
+        if(isManual){
+          showError('Refresh encountered an issue: '+(err.message||err));
+          if(btn){btn.textContent=origText;btn.disabled=false}
+        }
+      }finally{
+        isRefreshingAll=false;
+        if(isManual)hideProgressBar();
+      }
+    }
+    window.refreshAll=refreshAll;
+    const headerRefreshBtn=$('header-refresh-btn');
+    if(headerRefreshBtn){headerRefreshBtn.addEventListener('click',e=>{e.preventDefault();refreshAll(null,headerRefreshBtn)})}
+    refreshAll();
   </script>
 </body></html>`;
 }

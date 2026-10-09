@@ -1,7 +1,7 @@
 import os from 'node:os';
 import crypto from 'node:crypto';
 import type { CRMConnector } from '../core/connector.js';
-import type { ChangeEvent, SystemId } from '../core/types.js';
+import type { CanonicalRecord, ChangeEvent, SystemId } from '../core/types.js';
 import { requiresReview, type Reconciler } from './reconciler.js';
 import { logger } from '../logger.js';
 import type {
@@ -37,6 +37,8 @@ export interface SyncEngineOptions {
   /** @deprecated use route(); kept for callers that only discard. */
   shouldProcess?: (event: ChangeEvent) => boolean;
   route?: (event: ChangeEvent) => SyncRoute;
+  /** Record-level identity guard before any reconciliation write. */
+  validateRecord?: (record: CanonicalRecord) => void | Promise<void>;
   /**
    * When true, nothing is claimed until start() is called (the worker process calls it once
    * its connectors are initialized). Otherwise the engine processes as soon as init() runs.
@@ -284,6 +286,7 @@ export class SyncEngine {
       const connector = this.connectors[event.system];
       const record = await connector.read(event.type, event.sourceId);
       if (!record) throw new Error('record vanished before fetch');
+      await this.opts.validateRecord?.(record);
       await this.reconciler.reconcile(record);
       await this.opts.associations?.syncRecord(record);
       fenced(await this.store.complete(job.id, token));

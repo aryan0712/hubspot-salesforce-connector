@@ -20,6 +20,7 @@ import type {
   SystemId,
 } from '../../core/types.js';
 import type { ConfigContext } from '../../core/configContext.js';
+import { isBuiltInObjectPair } from '../../core/defaultObjects.js';
 import { evaluateConditions } from '../../core/syncConfig.js';
 
 /**
@@ -41,6 +42,7 @@ export class MockConnector implements CRMConnector {
   private deletions = new Map<CanonicalType, { sourceId: string; occurredAt: string }[]>();
   private keyIndex = new Map<string, Set<string>>();
   private keyOf = new Map<string, string>();
+  private nativeMetadata = new Map<string, CRMObjectMetadata>();
   private indexedRevision = -1;
 
   private ensureKeyIndex(): void {
@@ -160,6 +162,9 @@ export class MockConnector implements CRMConnector {
   }
 
   async describe(type: CanonicalType): Promise<SchemaField[]> {
+    const nativeId = this.config.nativeObjectName(this.system, type);
+    const metadata = nativeId ? this.nativeMetadata.get(nativeId) : undefined;
+    if (metadata) return metadata.fields.map((field) => ({ ...field }));
     return this.config.fieldRules(this.system, type).map((rule) => ({
       name: rule.native,
       label: rule.native,
@@ -169,22 +174,25 @@ export class MockConnector implements CRMConnector {
   }
 
   async listObjects(): Promise<CRMObjectDescriptor[]> {
-    const names: Record<CanonicalType, { salesforce: string; hubspot: string; label: string }> = {
-      contact: { salesforce: 'Contact', hubspot: 'contacts', label: 'Contact' },
-      company: { salesforce: 'Account', hubspot: 'companies', label: 'Company' },
-      deal: { salesforce: 'Opportunity', hubspot: 'deals', label: 'Deal' },
-    };
-    const objects: CRMObjectDescriptor[] = (Object.keys(names) as CanonicalType[]).map((type) => ({
-      id: names[type]![this.system],
-      label: names[type]!.label,
-      pluralLabel: `${names[type]!.label}s`,
-      custom: false,
-      queryable: true,
-      createable: true,
-      updateable: true,
-      deletable: true,
-      canonicalType: type,
+    const registered: CRMObjectDescriptor[] = this.config.listCanonicalObjects()
+      .filter((registration) => Boolean(this.config.nativeObjectName(this.system, registration.canonicalObject)))
+      .map((registration) => ({
+      ...(this.nativeMetadata.get(this.config.requireNativeObjectName(this.system, registration.canonicalObject))?.object ?? {
+        id: this.config.requireNativeObjectName(this.system, registration.canonicalObject),
+        label: registration.label,
+        pluralLabel: `${registration.label}s`,
+        custom: !isBuiltInObjectPair(registration),
+        queryable: true,
+        createable: true,
+        updateable: true,
+        deletable: true,
+      }),
+      canonicalType: registration.canonicalObject,
     }));
+    const objects = [...registered, ...[...this.nativeMetadata.values()].map((metadata) => ({
+      ...metadata.object,
+      canonicalType: this.config.canonicalObjectFor(this.system, metadata.object.id),
+    }))].filter((object, index, all) => all.findIndex((candidate) => candidate.id === object.id) === index);
     objects.push({
       id: this.system === 'salesforce' ? 'Case' : 'tickets',
       label: 'Ticket',
@@ -201,6 +209,9 @@ export class MockConnector implements CRMConnector {
   async describeObject(objectId: string): Promise<CRMObjectMetadata> {
     const object = (await this.listObjects()).find((candidate) => candidate.id === objectId);
     if (!object) throw new Error(`unknown mock object ${objectId}`);
+    const metadata = this.nativeMetadata.get(objectId);
+    if (metadata) return { object, fields: metadata.fields.map((field) => ({ ...field })),
+      relationships: metadata.relationships.map((relationship) => ({ ...relationship })) };
     return {
       object,
       fields: object.canonicalType ? await this.describe(object.canonicalType) : [],
@@ -208,6 +219,11 @@ export class MockConnector implements CRMConnector {
         ? [{ name: 'company', label: 'Company', targetObjectId: 'company', kind: 'parent' }]
         : [],
     };
+  }
+
+  /** Test/demo helper: add a native object before an operator registers a canonical pair. */
+  defineNativeObject(metadata: CRMObjectMetadata): void {
+    this.nativeMetadata.set(metadata.object.id, structuredClone(metadata));
   }
 
   async listAssociations(
@@ -315,13 +331,21 @@ export class MockConnector implements CRMConnector {
   }
 
   /** The mock usually emits events via onChange; webhook events map through the registry. */
-  async resolveWebhookEvent(event: NativeWebhookEvent): Promise<ChangeEvent | null> {
+  async resolveWebhookEvent(
+    event: NativeWebhookEvent,
+    resolveType?: (nativeObjectId: string, sourceId: string) => Promise<CanonicalType | undefined>,
+  ): Promise<ChangeEvent | null> {
     // HubSpot deliveries name standard objects by type id.
-    const standard: Record<string, string> = { '0-1': 'contact', '0-2': 'company', '0-3': 'deal' };
-    const type =
-      (this.system === 'hubspot' ? standard[event.nativeObject] : undefined) ??
-      this.config.canonicalObjectsFor(this.system, event.nativeObject)[0]?.canonicalObject ??
-      (this.config.isRegisteredCanonicalObject(event.nativeObject) ? event.nativeObject : undefined);
+    const standard: Record<string, string> = {
+      '0-1': 'contacts', '0-2': 'companies', '0-3': 'deals', '0-5': 'tickets',
+    };
+    const nativeObject = (this.system === 'hubspot' ? standard[event.nativeObject] : undefined) ??
+      (this.config.isRegisteredCanonicalObject(event.nativeObject)
+        ? this.config.nativeObjectName(this.system, event.nativeObject) : undefined) ?? event.nativeObject;
+    const candidates = this.config.canonicalObjectsFor(this.system, nativeObject);
+    const type = resolveType
+      ? await resolveType(nativeObject, event.sourceId)
+      : candidates.length === 1 ? candidates[0]!.canonicalObject : undefined;
     if (!type) return null;
     return {
       eventId: event.deliveryId,

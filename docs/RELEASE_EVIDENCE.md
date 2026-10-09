@@ -6,9 +6,10 @@ plan is authoritative for exactly which test file proves which behavior; this do
 gathers the verification commands, current counts, and load/timing results in one place
 for a release or pilot go/no-go conversation.
 
-**Nothing here was verified against the live Salesforce org or HubSpot portal.** Every
-number below comes from mock connectors and isolated, embedded PostgreSQL clusters created
-and destroyed per test run — never the developer's real `data/` state.
+The automated numbers below come from mock connectors and isolated, embedded PostgreSQL
+clusters. Read-only checks against the connected Salesforce and HubSpot accounts on
+2026-09-28 are documented separately in
+[BIDIRECTIONAL_VERIFICATION.md](BIDIRECTIONAL_VERIFICATION.md). No live CRM records were written.
 
 ## How to reproduce this evidence
 
@@ -26,15 +27,16 @@ npm run test:load             # R08 migration throughput (opt-in, ~minutes)
 npm run test:load:webhooks    # R12 webhook acknowledgement latency (opt-in)
 ```
 
-All of the above passed on 2026-09-24 on a development machine (Windows, Node 22).
+The test suite, browser suite, lint, both typechecks, build, demo, and secret scan passed
+on 2026-09-28 (Windows, Node 24). The dependency audit result below is from 2026-09-24.
 
 ## Test counts
 
 | Suite | Command | Result |
 | --- | --- | --- |
-| Unit / integration | `npm test` | 35 files, 314 tests passed, 2 skipped (load tests, gated behind `RUN_LOAD_TESTS=1`) |
-| Browser (real Chrome/Edge) | `npm run test:browser` | 10 tests passed |
-| Load — migration throughput | `npm run test:load:webhooks`* | 21 tests passed (includes the 2 gated above) |
+| Unit / integration | `npm test` | 36 files, 353 tests passed, 2 skipped (load tests, gated behind `RUN_LOAD_TESTS=1`) |
+| Browser (real Chrome/Edge) | `npm run test:browser` | 12 tests passed |
+| Load — webhook ingress | `npm run test:load:webhooks`* | 21 tests passed (includes the 2 gated above) |
 | Static analysis | `npm run lint`, `npm run typecheck`, `npm run typecheck:test` | clean |
 | Secrets | `npm run scan:secrets` | 0 findings across all tracked and new files |
 | Dependency audit | `npm run audit:deps` | 1 moderate advisory (transitive, `qs`), below the high-severity gate |
@@ -126,8 +128,8 @@ step is needed), and the dependency audit.
 
 ## What this evidence does not cover
 
-- Anything requiring the live Salesforce org or HubSpot portal (§3 of `HANDOFF.md`) — no
-  package in this remediation pass touched them.
+- Live CRM write paths and vendor webhook delivery; read-only account checks are reported
+  in [BIDIRECTIONAL_VERIFICATION.md](BIDIRECTIONAL_VERIFICATION.md).
 - A multi-day soak test, chargeback/quota load beyond the R08 numbers above, or
   property-based mapping/hash fuzzing — not built in this pass; see
   [REMEDIATION_PLAN.md](REMEDIATION_PLAN.md) R15's remaining items.
@@ -136,5 +138,4 @@ step is needed), and the dependency audit.
   called out as remaining in R14.
 - R13's remaining items: page scripts are plain external JS, not yet typed TypeScript
   modules; a further ~2,270-line slice of `src/httpApp.ts` (beyond the governance router
-  already extracted to `src/http/`) is not yet split into route modules; browser-level
-  (as opposed to API-level) tests for double execution and failed canaries.
+  already extracted to `src/http/`) is not yet split into route modules.

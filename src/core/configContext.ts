@@ -20,7 +20,8 @@ import {
   validateNaturalKeyFields,
 } from './idMap.js';
 import type { ObjectRegistration } from './objectRegistry.js';
-import { DEFAULT_OBJECTS } from './defaultObjects.js';
+import { DEFAULT_OBJECTS, isBuiltInObjectPair } from './defaultObjects.js';
+import { isNativeObjectId } from './identifiers.js';
 
 /**
  * CONFIGURATION CONTEXT
@@ -135,6 +136,7 @@ export class ConfigContext {
     if (!native) {
       throw new Error(`no ${system} object is registered for canonical object "${type}"`);
     }
+    if (!isNativeObjectId(system, native)) throw new Error(`invalid ${system} object identifier`);
     return native;
   }
 
@@ -210,7 +212,8 @@ export class ConfigContext {
     type: CanonicalType,
     native: Record<string, unknown>,
   ): Record<string, FieldValue> {
-    return translateToCanonical(this.snapshot, system, type, native);
+    return translateToCanonical(this.snapshot, system, type, native,
+      !isBuiltInObjectPair(this.snapshot.objects.get(type)));
   }
 
   fromCanonicalFields(
@@ -218,7 +221,8 @@ export class ConfigContext {
     type: CanonicalType,
     fields: Record<string, FieldValue>,
   ): Record<string, FieldValue> {
-    return translateFromCanonical(this.snapshot, system, type, fields);
+    return translateFromCanonical(this.snapshot, system, type, fields,
+      !isBuiltInObjectPair(this.snapshot.objects.get(type)));
   }
 
   /**
@@ -350,6 +354,12 @@ export function stableJson(value: unknown): string {
 function validateRegistrations(registrations: ObjectRegistration[]): void {
   for (const registration of registrations) {
     if (!registration.canonicalObject.trim()) throw new Error('canonical object name is required');
+    if (registration.salesforceObject && !isNativeObjectId('salesforce', registration.salesforceObject)) {
+      throw new Error('invalid Salesforce object API name');
+    }
+    if (registration.hubspotObject && !isNativeObjectId('hubspot', registration.hubspotObject)) {
+      throw new Error('invalid HubSpot object type ID');
+    }
   }
 }
 

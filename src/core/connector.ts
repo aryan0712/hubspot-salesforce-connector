@@ -141,6 +141,9 @@ export interface CRMConnector {
   /** Discover the broader native object catalog for migration planning. */
   listObjects(): Promise<CRMObjectDescriptor[]>;
 
+  /** Non-fatal discovery limitations to show beside an otherwise usable object catalog. */
+  catalogWarnings?(): string[];
+
   /** Describe one native object without leaking its vendor response shape. */
   describeObject(objectId: string): Promise<CRMObjectMetadata>;
 

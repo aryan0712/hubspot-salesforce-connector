@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { requireRole } from '../../security/access.js';
 import type { CanonicalType, SystemId } from '../../core/types.js';
 import { isAllowedNaturalKeyField } from '../../core/idMap.js';
+import { isNativeObjectId } from '../../core/identifiers.js';
 import { isSystem, type RouteContext } from '../context.js';
 
 /** Mapping Studio: field/value/object mappings, native-object re-pointing, and schema/preflight. */
@@ -80,7 +81,9 @@ export function mappingRoutes(ctx: RouteContext): Router {
     const label = String(req.body?.label ?? '').trim();
     const salesforceObject = String(req.body?.salesforceObject ?? '').trim();
     const hubspotObject = String(req.body?.hubspotObject ?? '').trim();
-    if (!label || label.length > 120 || (!salesforceObject && !hubspotObject)) {
+    if (!label || label.length > 120 || (!salesforceObject && !hubspotObject) ||
+      (salesforceObject && !isNativeObjectId('salesforce', salesforceObject)) ||
+      (hubspotObject && !isNativeObjectId('hubspot', hubspotObject))) {
       return res.status(400).json({ error: 'invalid_object_mapping' });
     }
     const canonicalObject = app.config.slugifyCanonicalObject(label);
@@ -172,7 +175,7 @@ export function mappingRoutes(ctx: RouteContext): Router {
     }
     const salesforceObject = String(req.body?.salesforceObject ?? '').trim();
     const hubspotObject = String(req.body?.hubspotObject ?? '').trim();
-    if (!salesforceObject || !hubspotObject) {
+    if (!isNativeObjectId('salesforce', salesforceObject) || !isNativeObjectId('hubspot', hubspotObject)) {
       return res.status(400).json({ error: 'invalid_native_objects' });
     }
     const registration = await app.objectMappings.setNativeObjects(type, { salesforceObject, hubspotObject });

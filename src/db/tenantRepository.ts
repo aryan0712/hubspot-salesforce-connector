@@ -67,8 +67,8 @@ export class TenantRepository {
             await client.query(
               `INSERT INTO field_mappings(
                  tenant_id, system, object_type, canonical_field, native_field,
-                 to_canonical_transform, read_only, sort_order
-               ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+                 to_canonical_transform, from_canonical_transform, read_only, sort_order
+               ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
                ON CONFLICT (tenant_id, system, object_type, canonical_field) DO NOTHING`,
               [
                 tenantId,
@@ -77,6 +77,7 @@ export class TenantRepository {
                 rule.canonical,
                 rule.native,
                 rule.toCanonical ?? null,
+                rule.fromCanonical ?? null,
                 rule.readOnly ?? false,
                 index,
               ],

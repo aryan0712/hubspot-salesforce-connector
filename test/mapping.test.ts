@@ -56,6 +56,17 @@ describe('field mapping', () => {
     expect(a.domain).toBe(b.domain);
   });
 
+  it('translates deal close dates between Salesforce date-only and HubSpot epoch milliseconds', () => {
+    const hubspotDate = Date.UTC(2026, 5, 1);
+    const canonicalFromHubSpot = config.toCanonicalFields('hubspot', 'deal', { closedate: hubspotDate });
+    expect(canonicalFromHubSpot.closeDate).toBe('2026-06-01');
+    expect(config.fromCanonicalFields('salesforce', 'deal', canonicalFromHubSpot).CloseDate).toBe('2026-06-01');
+
+    const canonicalFromSalesforce = config.toCanonicalFields('salesforce', 'deal', { CloseDate: '2026-06-01' });
+    expect(canonicalFromSalesforce.closeDate).toBe('2026-06-01');
+    expect(config.fromCanonicalFields('hubspot', 'deal', canonicalFromSalesforce).closedate).toBe(hubspotDate);
+  });
+
   it('coerces missing native values to null, not undefined', () => {
     const c = config.toCanonicalFields('hubspot', 'contact', { firstname: 'Ada' });
     expect(c.lastName).toBeNull();

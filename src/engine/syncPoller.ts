@@ -11,6 +11,7 @@ import {
 } from '../core/syncConfig.js';
 import type { ConfigContext } from '../core/configContext.js';
 import type { IdMapStore } from '../core/idMap.js';
+import { resolveCanonicalType } from './typeResolver.js';
 import type { ActivityLog } from '../observability/activity.js';
 import type { SyncEngine } from './syncEngine.js';
 import { logger } from '../logger.js';
@@ -108,11 +109,12 @@ export class SyncPoller {
   private scheduleTick(delayMs: number): void {
     if (this.stopped) return;
     if (this.timer) clearTimeout(this.timer);
-    this.timer = setTimeout(() => void this.tick(), delayMs);
+    this.timer = setTimeout(() => this.tick(), delayMs);
     this.timer.unref?.();
   }
 
   private async tick(): Promise<void> {
+    const polls: Promise<void>[] = [];
     try {
       await this.ensureReady?.();
       const config = this.syncConfig.get();
@@ -123,15 +125,16 @@ export class SyncPoller {
         const due = this.nextDueAt.get(type) ?? 0;
         if (now < due) continue;
         this.nextDueAt.set(type, computeNextDueAt(pollingConfig, now));
-        void this.pollObject(type).catch((err) => {
+        polls.push(this.pollObject(type).then(() => undefined).catch((err) => {
           logger.error({ err, type }, 'scheduled sync poll failed');
-        });
+        }));
       }
     } catch (err) {
       logger.error({ err }, 'scheduled sync tick failed');
     } finally {
       this.scheduleTick(BASE_TICK_MS);
     }
+    await Promise.all(polls);
   }
 
   /**
@@ -221,9 +224,15 @@ export class SyncPoller {
     const events: ChangeEvent[] = [];
     let changed = 0;
     let cursor: string | undefined;
+    const nativeObject = this.config.requireNativeObjectName(system, type);
+    const sharedNativeObject = this.config.canonicalObjectsFor(system, nativeObject)
+      .filter((candidate) => config.objects[candidate.canonicalObject]?.enrolledForSync).length > 1;
     do {
       const page = await connector.list(type, cursor, since, condition);
       for (const record of page.records) {
+        if (sharedNativeObject && await resolveCanonicalType(
+          system, nativeObject, record.meta.sourceId, connector, config, this.config,
+        ) !== type) continue;
         events.push({
           eventId: `poll:${system}:${type}:${record.meta.sourceId}:${record.meta.modifiedAt}`,
           system,
@@ -232,8 +241,8 @@ export class SyncPoller {
           changeType: 'updated',
           occurredAt: record.meta.modifiedAt,
         });
+        changed += 1;
       }
-      changed += page.records.length;
       cursor = page.nextCursor;
     } while (cursor);
 
@@ -241,15 +250,13 @@ export class SyncPoller {
     // field values) -- when this native object also backs other canonical objects, only keep
     // a deletion that the id map actually links to THIS type, since only whichever poll cycle
     // matched the record's condition while it existed could ever have linked it.
-    const nativeObject = this.config.requireNativeObjectName(system, type);
-    const sharedNativeObject = this.config.canonicalObjectsFor(system, nativeObject).length > 1;
     const rawDeletions = await connector.listDeletedSince(type, since);
     const deletions = sharedNativeObject
       ? (
           await Promise.all(
             rawDeletions.map(async (deletion) => {
               const link = await this.idMap?.bySource(system, deletion.sourceId);
-              return link && link.type !== type ? undefined : deletion;
+              return link?.type === type ? deletion : undefined;
             }),
           )
         ).filter((d): d is { sourceId: string; occurredAt: string } => Boolean(d))

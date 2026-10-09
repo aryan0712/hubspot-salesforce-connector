@@ -23,6 +23,7 @@ import type {
   UpsertResult,
 } from '../../core/types.js';
 import type { ConfigContext } from '../../core/configContext.js';
+import { isNativeFieldPath, isNativeObjectId } from '../../core/identifiers.js';
 import { getAccessToken, refreshAfterRejection } from './auth.js';
 import { env } from '../../config/env.js';
 import { logger } from '../../logger.js';
@@ -126,6 +127,10 @@ export class SalesforceConnector implements CRMConnector {
     sourceId: string,
     fields: string[],
   ): Promise<Record<string, unknown> | null> {
+    if (!isNativeObjectId('salesforce', nativeObjectName) ||
+        fields.some((field) => !isNativeFieldPath(field))) {
+      throw new Error('invalid Salesforce object or field identifier');
+    }
     try {
       const selected = [...new Set(['Id', ...fields])];
       const { data } = await this.http.get(
@@ -160,9 +165,14 @@ export class SalesforceConnector implements CRMConnector {
       const field = this.config.nativeField('salesforce', type, criterion.field);
       if (!field || field.includes('.')) return undefined;
       const escaped = escapeSoql(criterion.value);
+      // SOQL Date operands use a bare YYYY-MM-DD literal. The deal's composite
+      // natural key includes CloseDate; quoting it makes Salesforce return INVALID_FIELD.
+      const operand = criterion.field === 'closeDate' && /^\d{4}-\d{2}-\d{2}$/.test(criterion.value)
+        ? criterion.value
+        : `'${escaped}'`;
       return criterion.field === 'domain'
         ? `${field} LIKE '%${escaped}%'`
-        : `${field} = '${escaped}'`;
+        : `${field} = ${operand}`;
     });
     if (predicates.some((predicate) => !predicate)) return [];
     const predicate = predicates.join(' AND ');
@@ -375,10 +385,9 @@ export class SalesforceConnector implements CRMConnector {
     resolveType?: (nativeObjectId: string, sourceId: string) => Promise<CanonicalType | undefined>,
   ): Promise<ChangeEvent | null> {
     const candidates = this.config.canonicalObjectsFor('salesforce', event.nativeObject);
-    const type =
-      candidates.length <= 1
-        ? candidates[0]?.canonicalObject
-        : await resolveType?.(event.nativeObject, event.sourceId);
+    const type = resolveType
+      ? await resolveType(event.nativeObject, event.sourceId)
+      : candidates.length === 1 ? candidates[0]!.canonicalObject : undefined;
     if (!type) return null;
     return {
       eventId: event.deliveryId,

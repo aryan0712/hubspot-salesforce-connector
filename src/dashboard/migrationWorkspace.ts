@@ -145,6 +145,10 @@ export const migrationWorkspaceCss = `
   .mapping-table input,.mapping-table select{min-width:124px}
   .mapping-table tr[hidden]{display:none}.mapping-table .mapping-action{width:82px;min-width:82px;position:sticky;left:0;background:#fff;z-index:1}
   .mapping-table th.mapping-action{background:#fafcfd;z-index:2}
+  .mapping-table th.sortable-th{cursor:pointer;user-select:none;transition:background .12s,color .12s}
+  .mapping-table th.sortable-th:hover{background:#edf3f8;color:var(--orange)}
+  .mapping-table th.sortable-th .sort-icon{display:inline-block;margin-left:5px;font-size:11px;opacity:.45}
+  .mapping-table th.sortable-th.sorted-asc .sort-icon,.mapping-table th.sortable-th.sorted-desc .sort-icon{opacity:1;color:var(--orange);font-weight:700}
   .mapping-remove{padding:7px 9px;background:#fff;border-color:#e5bcb3;color:var(--red)}
   .mapping-remove:hover{background:#fdf1ee;border-color:var(--red);color:var(--red)}
   .mapping-transform{min-width:116px;padding:8px 10px;background:#fff;border-color:#b9cad9;color:var(--text-2);text-align:left}
@@ -414,6 +418,7 @@ export function migrationWorkspaceHtml(): string {
                       <div class="mapping-tools-actions">
                         <button id="auto-map-all" class="secondary">Auto-map selected objects</button>
                         <button id="auto-map" class="secondary">Auto-map this object</button>
+                        <button id="remove-invalid-targets" class="secondary">Remove invalid targets</button>
                         <button id="add-field-mapping" class="secondary">+ Add field</button>
                         <button id="remove-all-fields" class="danger">Remove all</button>
                         <button id="save-field-map">Save mappings</button>
@@ -454,7 +459,7 @@ export function migrationWorkspaceHtml(): string {
                       </div>
                       <div class="transform-lab-actions"><span class="muted" id="transform-help">Transforms run before migration validation and value mapping.</span><button id="reset-transforms" class="secondary">Use identity</button><button id="apply-transforms">Apply transforms</button></div>
                     </section>
-                    <div class="field-layout"><div class="scroll"><table class="mapping-table"><thead><tr><th class="mapping-action">Action</th><th>Source field</th><th>Canonical field</th><th>Transform</th><th>Target field</th></tr></thead><tbody id="field-map-rows"><tr><td colspan="5" class="empty">Choose an object to load its mappings.</td></tr></tbody></table></div></div>
+                    <div class="field-layout"><div class="scroll"><table class="mapping-table"><thead><tr><th class="mapping-action">Action</th><th class="sortable-th" data-sort="source" title="Click to sort by source field">Source field <span class="sort-icon">↕</span></th><th class="sortable-th" data-sort="canonical" title="Click to sort by canonical field">Canonical field <span class="sort-icon">↕</span></th><th>Transform</th><th class="sortable-th" data-sort="target" title="Click to sort by target field">Target field <span class="sort-icon">↕</span></th></tr></thead><tbody id="field-map-rows"><tr><td colspan="5" class="empty">Choose an object to load its mappings.</td></tr></tbody></table></div></div>
                     <datalist id="source-native-datalist"></datalist>
                     <datalist id="target-native-datalist"></datalist>
                   </div>

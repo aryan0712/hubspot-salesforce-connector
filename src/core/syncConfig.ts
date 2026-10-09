@@ -85,10 +85,9 @@ export interface SyncConfigStore {
 }
 
 /**
- * `objects` lists which canonical objects should default to enabled+bidirectional sync —
- * normally every currently-registered object (see core/objectRegistry.ts's
- * listCanonicalObjects()). No object list is hardcoded here; an empty list is valid and
- * simply means nothing syncs until objects are registered.
+ * `objects` lists which canonical objects should default to enabled+bidirectional sync.
+ * The composition root passes only its original built-in pairs; newly registered standard
+ * or custom pairs start paused until an operator reviews their mappings and key.
  */
 export function defaultSyncConfig(
   conflictStrategy: ConflictStrategy,

@@ -86,7 +86,7 @@ export const DEFAULT_OBJECTS: DefaultObject[] = [
         { canonical: 'name', native: 'Name' },
         { canonical: 'amount', native: 'Amount' },
         { canonical: 'stage', native: 'StageName', toCanonical: 'lowercase' },
-        { canonical: 'closeDate', native: 'CloseDate' },
+        { canonical: 'closeDate', native: 'CloseDate', toCanonical: 'date-only', fromCanonical: 'date-only' },
         { canonical: 'pipeline', native: 'RecordTypeId', readOnly: true },
         { canonical: 'ownerId', native: 'OwnerId' },
       ],
@@ -94,10 +94,22 @@ export const DEFAULT_OBJECTS: DefaultObject[] = [
         { canonical: 'name', native: 'dealname' },
         { canonical: 'amount', native: 'amount' },
         { canonical: 'stage', native: 'dealstage', toCanonical: 'lowercase' },
-        { canonical: 'closeDate', native: 'closedate' },
+        { canonical: 'closeDate', native: 'closedate', toCanonical: 'date-only', fromCanonical: 'epoch-millis' },
         { canonical: 'pipeline', native: 'pipeline' },
         { canonical: 'ownerId', native: 'hubspot_owner_id' },
       ],
     },
   },
 ];
+
+/** Initial migration contract: tenant registrations outside these types need stricter gates. */
+export function isBuiltInObjectPair(registration: {
+  canonicalObject: string;
+  salesforceObject?: string;
+  hubspotObject?: string;
+} | undefined): boolean {
+  return Boolean(registration && DEFAULT_OBJECTS.some((object) =>
+    object.canonicalObject === registration.canonicalObject &&
+    object.salesforceObject === registration.salesforceObject &&
+    object.hubspotObject === registration.hubspotObject));
+}

@@ -58,7 +58,7 @@ export function migrationWorkspaceRoutes(ctx: RouteContext): Router {
     const rows = await Promise.all(sources.flatMap((source) => {
       const registrations = app.config.canonicalObjectsFor(from, source.id);
       if (!registrations.length) {
-        const target = targets.find((candidate) =>
+        const target = source.custom ? undefined : targets.find((candidate) =>
           normalized(candidate.id) === normalized(source.id) ||
           normalized(candidate.label) === normalized(source.label));
         return [buildRow(source, target, undefined)];
@@ -69,7 +69,9 @@ export function migrationWorkspaceRoutes(ctx: RouteContext): Router {
         return buildRow(source, target, registration.canonicalObject);
       });
     }));
-    res.json({ from, to, rows, targets, sourceCount: sources.length, targetCount: targets.length });
+    const warnings = [...(app.connectors[from].catalogWarnings?.() ?? []),
+      ...(app.connectors[to].catalogWarnings?.() ?? [])];
+    res.json({ from, to, rows, targets, warnings, sourceCount: sources.length, targetCount: targets.length });
   });
 
   router.get('/api/object-catalog/:system/:objectId', async (req, res) => {

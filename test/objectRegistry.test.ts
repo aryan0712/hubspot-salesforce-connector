@@ -36,6 +36,36 @@ describe('object registry: a native object shared by multiple canonical objects'
     expect(type).toBe('contact');
   });
 
+  it('applies a single enrolled object condition to webhooks and ignores unenrolled siblings', async () => {
+    registry.configureObjectMappings([
+      { canonicalObject: 'company', label: 'Company', salesforceObject: 'Account', hubspotObject: 'companies' },
+      { canonicalObject: 'person_account', label: 'Person Account', salesforceObject: 'Account', hubspotObject: 'contacts' },
+    ]);
+    const config = defaultSyncConfig('last-write-wins', 'salesforce', ['company']);
+    config.objects.company!.conditions = { salesforce: [{ field: 'IsPersonAccount', operator: 'eq', value: false }] };
+    config.objects.person_account = { enabled: false, enrolledForSync: false, direction: 'bidirectional' };
+    expect(await resolveCanonicalType('salesforce', 'Account', 'sf-1',
+      fakeConnector({ IsPersonAccount: false }), config, registry)).toBe('company');
+    expect(await resolveCanonicalType('salesforce', 'Account', 'sf-2',
+      fakeConnector({ IsPersonAccount: true }), config, registry)).toBeUndefined();
+  });
+
+  it('refuses overlapping shared-object conditions and raw-only webhook filters', async () => {
+    registry.configureObjectMappings([
+      { canonicalObject: 'company', label: 'Company', salesforceObject: 'Account', hubspotObject: 'companies' },
+      { canonicalObject: 'person_account', label: 'Person Account', salesforceObject: 'Account', hubspotObject: 'contacts' },
+    ]);
+    const config = defaultSyncConfig('last-write-wins', 'salesforce', ['company', 'person_account']);
+    config.objects.company!.conditions = { salesforce: [{ field: 'Type', operator: 'eq', value: 'Customer' }] };
+    config.objects.person_account!.conditions = { salesforce: [{ field: 'Type', operator: 'eq', value: 'Customer' }] };
+    expect(await resolveCanonicalType('salesforce', 'Account', 'sf-3',
+      fakeConnector({ Type: 'Customer' }), config, registry)).toBeUndefined();
+    config.objects.person_account!.conditions = undefined;
+    config.objects.person_account!.rawCondition = { salesforce: "Type = 'Customer'" };
+    expect(await resolveCanonicalType('salesforce', 'Account', 'sf-4',
+      fakeConnector({ Type: 'Customer' }), config, registry)).toBeUndefined();
+  });
+
   it('disambiguates by evaluating each candidate\'s structured condition against the record', async () => {
     registry.configureObjectMappings([
       { canonicalObject: 'company', label: 'Company', salesforceObject: 'Account', hubspotObject: 'companies' },

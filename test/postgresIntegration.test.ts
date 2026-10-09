@@ -251,4 +251,58 @@ describe('PostgreSQL repositories', () => {
     );
     expect(marker.rowCount).toBe(1);
   });
+
+  it('seeds bidirectional deal date transforms for new tenants', async () => {
+    const config = createDefaultConfigContext('postgres-deal-dates');
+    const mappings = new PostgresMappingStore(database, tenantA, config);
+    await mappings.init();
+
+    expect(mappings.get('salesforce', 'deal')).toContainEqual(expect.objectContaining({
+      canonical: 'closeDate',
+      native: 'CloseDate',
+      toCanonical: 'date-only',
+      fromCanonical: 'date-only',
+    }));
+    expect(mappings.get('hubspot', 'deal')).toContainEqual(expect.objectContaining({
+      canonical: 'closeDate',
+      native: 'closedate',
+      toCanonical: 'date-only',
+      fromCanonical: 'epoch-millis',
+    }));
+  });
+
+  it('backfills existing built-in date mappings without overwriting a customized native field', async () => {
+    await database.tenant(tenantA, async (client) => {
+      await client.query(
+        `UPDATE field_mappings
+         SET to_canonical_transform = NULL, from_canonical_transform = NULL
+         WHERE tenant_id = $1 AND system = 'salesforce' AND object_type = 'deal'
+           AND canonical_field = 'closeDate' AND native_field = 'CloseDate'`,
+        [tenantA],
+      );
+      await client.query(
+        `UPDATE field_mappings
+         SET native_field = 'custom_closedate', to_canonical_transform = NULL, from_canonical_transform = NULL
+         WHERE tenant_id = $1 AND system = 'hubspot' AND object_type = 'deal'
+           AND canonical_field = 'closeDate'`,
+        [tenantA],
+      );
+      await client.query(await fs.readFile(path.resolve('db/migrations/023_bidirectional_deal_dates.sql'), 'utf8'));
+    });
+
+    const config = createDefaultConfigContext('postgres-existing-deal-dates');
+    const mappings = new PostgresMappingStore(database, tenantA, config);
+    await mappings.init();
+    expect(mappings.get('salesforce', 'deal')).toContainEqual(expect.objectContaining({
+      canonical: 'closeDate',
+      toCanonical: 'date-only',
+      fromCanonical: 'date-only',
+    }));
+    expect(mappings.get('hubspot', 'deal')).toContainEqual(expect.objectContaining({
+      canonical: 'closeDate',
+      native: 'custom_closedate',
+      toCanonical: undefined,
+      fromCanonical: undefined,
+    }));
+  });
 });

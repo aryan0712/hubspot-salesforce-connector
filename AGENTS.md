@@ -14,7 +14,7 @@ npm install
 npm run lint              # ESLint (correctness + architectural layer boundaries)
 npm run typecheck         # tsc --noEmit against src/
 npm run typecheck:test    # tsc --noEmit against src/ + test/ (vitest itself does not typecheck)
-npm test                  # vitest run — 35 files / 314 tests, no credentials needed
+npm test                  # vitest run — 36 files / 353 tests, no credentials needed
 npm run test:browser      # real Chrome/Edge against the HTTP app (playwright-core)
 npm run scan:secrets      # tracked/new files for credentials
 npm run demo              # end-to-end demo against in-memory mock CRMs
@@ -119,9 +119,8 @@ or add real workspace members here without being asked.
 
 ## Known gap
 
-Migration execution is intentionally limited to the canonical Contact, Company, and Deal
-objects, even though the migration workspace discovers and displays standard/custom object
-metadata more broadly. Generic custom-object execution needs the planned dynamic
-canonical-object work (see `docs/PRODUCTION_READINESS.md` and the deferred roadmap in
-`docs/REMEDIATION_PLAN.md`). Migration is also intentionally records-only — relationship
-propagation happens only through the separate live-sync engine, never during migration.
+Live custom-object migration remains gated. Sync can process a registered standard/custom
+object pair after the pair, both field mappings, and a shared natural key pass preflight;
+new non-default pairs start paused. Connected-account scopes and permissions still govern
+which objects can actually sync. Migration is records-only; relationship propagation uses
+the separate live-sync engine. See `docs/CUSTOM_OBJECT_REMEDIATION_PLAN.md`.

@@ -223,10 +223,14 @@ describe('operations dashboard', () => {
       'boolean',
       'yes-no',
       'iso-date',
+      'date-only',
+      'epoch-millis',
       'phone',
     ]) {
       expect(html).toContain(`'${transform}'`);
     }
+    expect(html).toContain('id="remove-invalid-targets"');
+    expect(html).toContain('invalid target mapping');
     expect(html).toContain("toCanonical:tr.querySelector('.source-to').value");
     expect(html).toContain("fromCanonical:tr.querySelector('.source-from').value");
     expect(html).toContain("toCanonical:tr.querySelector('.target-to').value");
@@ -349,4 +353,41 @@ describe('operations dashboard', () => {
     expect(html).toContain('id="usage"');
     expect(html).toContain('id="plan-overview"');
   });
+
+  it('provides working refresh buttons with loading indicators and notices across views', () => {
+    const html = operationsHtml();
+    expect(html).toContain('id="refresh-progress"');
+    expect(html).toContain('id="header-refresh-btn"');
+    expect(html).toContain('data-action="refreshAll"');
+    expect(html).toContain('id="refresh-runs"');
+    expect(html).toContain('id="refresh-conflicts"');
+    expect(html).toContain('loadSyncConflicts');
+    expect(html).toContain('loadConflictReview');
+    expect(html).toContain('Sync status, metrics, and webhook health refreshed.');
+    expect(html).toContain('Migration workspace refreshed.');
+    expect(html).toContain('Migration run history refreshed.');
+    expect(html).toContain('Conflicts queue refreshed.');
+    expect(html).toContain('Refreshed ✓');
+  });
+
+  it('provides clickable ascending/descending sorting for Source, Canonical, and Target columns', () => {
+    const html = operationsHtml();
+    expect(html).toContain('data-sort="source"');
+    expect(html).toContain('data-sort="canonical"');
+    expect(html).toContain('data-sort="target"');
+    expect(html).not.toContain('data-sort="transform"');
+    expect(html).toContain('sortFieldMappings');
+    expect(html).toContain('updateFieldSortHeaders');
+    expect(html).toContain('sorted-asc');
+    expect(html).toContain('sorted-desc');
+  });
+
+  it('smartly groups sync wizard objects by mapping status (unmapped, custom, or multiple)', () => {
+    const html = operationsHtml();
+    expect(html).toContain('isRowEnrolledInSync');
+    expect(html).toContain('isStandardTarget');
+    expect(html).toContain('data-target-id');
+    expect(html).toContain('already mapped to');
+  });
 });
+

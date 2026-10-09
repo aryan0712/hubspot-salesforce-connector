@@ -1,4 +1,5 @@
 import type { CanonicalType, FieldValue, SystemId } from './types.js';
+import { isNativeFieldPath } from './identifiers.js';
 
 /**
  * FIELD MAPPING
@@ -26,6 +27,7 @@ export type TransformId =
   | 'yes-no'
   | 'true-false'
   | 'iso-date'
+  | 'date-only'
   | 'epoch-millis'
   | 'phone';
 
@@ -68,10 +70,18 @@ export function validateFieldRules(rules: FieldRule[]): void {
     if (!rule.canonical?.trim() || !rule.native?.trim()) {
       throw new Error('mapping canonical and native names are required');
     }
+    if (!isNativeFieldPath(rule.native)) throw new Error(`invalid native field name: ${rule.native}`);
+    if (rule.toCanonical && !TRANSFORM_IDS.has(rule.toCanonical)) throw new Error(`unknown transform: ${rule.toCanonical}`);
+    if (rule.fromCanonical && !TRANSFORM_IDS.has(rule.fromCanonical)) throw new Error(`unknown transform: ${rule.fromCanonical}`);
     if (seen.has(rule.canonical)) throw new Error(`duplicate canonical field: ${rule.canonical}`);
     seen.add(rule.canonical);
   }
 }
+
+const TRANSFORM_IDS: ReadonlySet<string> = new Set([
+  'identity', 'domain', 'lowercase', 'trim', 'number', 'boolean', 'yes-no',
+  'true-false', 'iso-date', 'date-only', 'epoch-millis', 'phone',
+]);
 
 export function applyFieldRules(
   tables: FieldRuleTables,
@@ -97,17 +107,25 @@ export function translateToCanonical(
   system: SystemId,
   type: CanonicalType,
   native: Record<string, unknown>,
+  strict = false,
 ): Record<string, FieldValue> {
   const out: Record<string, FieldValue> = {};
   for (const rule of config.fieldRules[system][type] ?? []) {
     const raw = getPath(native, rule.native);
+    if (strict && raw !== null && raw !== undefined &&
+        !['string', 'number', 'boolean'].includes(typeof raw)) {
+      throw new Error(`unsupported compound value in ${rule.native}`);
+    }
+    if (strict && typeof raw === 'number' && !Number.isFinite(raw)) {
+      throw new Error(`non-finite number in ${rule.native}`);
+    }
     const value = coerce(raw);
     out[rule.canonical] = toCanonicalValue(
       config.valueMappings,
       system,
       type,
       rule.canonical,
-      transform(rule.toCanonical, value),
+      checkedTransform(rule.toCanonical, value, strict, rule.native),
     );
   }
   return out;
@@ -119,6 +137,7 @@ export function translateFromCanonical(
   system: SystemId,
   type: CanonicalType,
   fields: Record<string, FieldValue>,
+  strict = false,
 ): Record<string, FieldValue> {
   const out: Record<string, FieldValue> = {};
   for (const rule of config.fieldRules[system][type] ?? []) {
@@ -126,9 +145,11 @@ export function translateFromCanonical(
     if (!(rule.canonical in fields)) continue;
     // Native field can be a dotted path on read; on write we only support flat props.
     if (rule.native.includes('.')) continue;
-    out[rule.native] = transform(
+    out[rule.native] = checkedTransform(
       rule.fromCanonical,
       fromCanonicalValue(config.valueMappings, system, type, rule.canonical, fields[rule.canonical] ?? null),
+      strict,
+      rule.native,
     );
   }
   return out;
@@ -165,6 +186,41 @@ function toDomain(v: FieldValue): FieldValue {
  * Deal/opportunity stages differ per portal. This is a placeholder that lower-cases; in
  * practice you'd map each portal's picklist to a shared pipeline model. See ARCHITECTURE.md.
  */
+function checkedTransform(
+  id: TransformId | undefined,
+  value: FieldValue,
+  strict: boolean,
+  field: string,
+): FieldValue {
+  if (strict && typeof value === 'number' && !Number.isFinite(value)) {
+    throw new Error(`non-finite number in ${field}`);
+  }
+  if (!strict || !id || id === 'identity' || value === null) return transform(id, value);
+  if (typeof value === 'string' && value.trim() === '' &&
+      ['number', 'boolean', 'yes-no', 'true-false', 'iso-date', 'date-only', 'epoch-millis'].includes(id)) {
+    return null;
+  }
+  if (id === 'number' && (typeof value === 'boolean' || !Number.isFinite(Number(value)))) {
+    throw new Error(`invalid numeric value in ${field}`);
+  }
+  if (['boolean', 'yes-no', 'true-false'].includes(id)) {
+    const allowed = id === 'true-false' ? ['true', 'false'] : ['true', 'false', 'yes', 'no', '1', '0'];
+    if ((typeof value === 'string' && !allowed.includes(value.toLowerCase())) ||
+        (typeof value === 'number' && (id !== 'boolean' || ![0, 1].includes(value)))) {
+      throw new Error(`invalid boolean value in ${field}`);
+    }
+  }
+  if (['iso-date', 'date-only', 'epoch-millis'].includes(id)) {
+    const date = new Date(value as string | number);
+    if (Number.isNaN(date.getTime()) ||
+        (id === 'date-only' && typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) &&
+          date.toISOString().slice(0, 10) !== value)) {
+      throw new Error(`invalid date value in ${field}`);
+    }
+  }
+  return transform(id, value);
+}
+
 function transform(id: TransformId | undefined, value: FieldValue): FieldValue {
   if (!id || id === 'identity') return identity(value);
   if (id === 'domain') return toDomain(value);
@@ -203,6 +259,12 @@ function transform(id: TransformId | undefined, value: FieldValue): FieldValue {
     if (typeof value !== 'string' && typeof value !== 'number') return value;
     const parsed = new Date(value);
     return Number.isNaN(parsed.getTime()) ? value : parsed.toISOString();
+  }
+  if (id === 'date-only') {
+    if (typeof value !== 'string' && typeof value !== 'number') return value;
+    if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? value : parsed.toISOString().slice(0, 10);
   }
   if (id === 'epoch-millis') {
     // Bidirectional by input type, like yes-no/true-false: a native epoch-ms number becomes

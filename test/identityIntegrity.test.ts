@@ -98,6 +98,35 @@ describe('R05 legacy hash upgrade never triggers writes', () => {
 });
 
 describe('R05 exact company-domain matching', () => {
+  it('normalizes HubSpot epoch deal dates and sends an unquoted Salesforce Date predicate', async () => {
+    const config = createDefaultConfigContext('sf-deal-date');
+    const sf = new SalesforceConnector(config);
+    let soql = '';
+    (sf as unknown as { http: unknown }).http = {
+      get: async (url: string) => {
+        soql = decodeURIComponent(url.slice(url.indexOf('q=') + 2));
+        return {
+          data: {
+            done: true,
+            records: [{ Id: '006A', LastModifiedDate: NEW, Name: 'Launch', CloseDate: '2026-06-01' }],
+          },
+        };
+      },
+    };
+    const queryFor = (closeDate: string) => config.naturalKeyQuery({
+      canonicalId: '', type: 'deal', fields: { name: 'Launch', closeDate },
+      meta: { source: 'hubspot', sourceId: 'x', modifiedAt: NEW },
+    })!;
+    const dateQuery = queryFor('2026-06-01');
+    const epochQuery = queryFor(String(Date.parse('2026-06-01T00:00:00.000Z')));
+    expect(epochQuery.key).toBe(dateQuery.key);
+
+    const matches = await sf.findByNaturalKey('deal', epochQuery);
+    expect(soql).toContain('CloseDate = 2026-06-01');
+    expect(soql).not.toContain("CloseDate = '2026-06-01'");
+    expect(matches.map((record) => record.meta.sourceId)).toEqual(['006A']);
+  });
+
   it('Salesforce verifies broad LIKE candidates against the exact domain', async () => {
     const config = createDefaultConfigContext('sf-domain');
     const sf = new SalesforceConnector(config);
