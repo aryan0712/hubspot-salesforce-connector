@@ -23,8 +23,15 @@ export const dashboardShellCss = `
     -webkit-font-smoothing:antialiased}
   a{color:var(--orange);text-decoration:none}
   a:hover{color:var(--orange-dark);text-decoration:underline}
-  .app-header{min-height:60px;height:auto;background:var(--nav);color:#fff;display:block;padding:0;position:sticky;top:0;z-index:100;box-shadow:0 1px 3px rgba(0,0,0,.12)}
-  .header-inner{width:100%;min-height:60px;max-width:1240px;margin:0 auto;padding:8px 32px;display:flex;align-items:center;justify-content:space-between;gap:12px 24px;flex-wrap:wrap}
+  .app-header{height:60px;background:var(--nav);color:#fff;display:flex;align-items:center;padding:0;position:sticky;top:0;z-index:100;box-shadow:0 1px 3px rgba(0,0,0,.12)}
+  .header-inner{width:100%;height:60px;max-width:1240px;margin:0 auto;padding:0 32px;display:flex;align-items:center;justify-content:space-between;gap:24px;position:relative;flex-wrap:nowrap}
+  .nav-menu-toggle{display:none;flex-direction:column;justify-content:center;align-items:center;gap:4px;width:36px;height:36px;padding:0;border:1px solid rgba(255,255,255,.22);border-radius:7px;background:rgba(255,255,255,.08);color:#fff;cursor:pointer;flex-shrink:0;transition:background .12s,border-color .12s}
+  .nav-menu-toggle:hover{background:rgba(255,255,255,.16);border-color:rgba(255,255,255,.36)}
+  .nav-menu-bar{display:block;width:16px;height:2px;background:#fff;border-radius:2px;transition:transform .16s ease,opacity .16s ease}
+  .app-header.nav-open .nav-menu-toggle{background:rgba(255,255,255,.18);border-color:var(--orange)}
+  .app-header.nav-open .nav-menu-bar:nth-child(1){transform:translateY(6px) rotate(45deg)}
+  .app-header.nav-open .nav-menu-bar:nth-child(2){opacity:0}
+  .app-header.nav-open .nav-menu-bar:nth-child(3){transform:translateY(-6px) rotate(-45deg)}
   .brand{display:inline-flex;align-items:center;gap:10px;color:#fff;font-size:16px;font-weight:600;white-space:nowrap;flex-shrink:0}
   .brand:hover{color:#fff;text-decoration:none}
   .brand-mark{width:26px;height:26px;border-radius:8px;background:var(--orange);display:grid;place-items:center;flex-shrink:0}
@@ -105,17 +112,25 @@ export const dashboardShellCss = `
   ::-webkit-scrollbar-thumb:hover{background:#5c758e}
   *{scrollbar-color:#849bb3 #edf2f7}
   @media(max-width:940px){
-    .header-inner{padding:8px 20px;gap:10px 16px}.header-actions .quiet{display:none}.page{padding:28px 20px 52px}
+    .header-inner{padding:0 20px;gap:16px}.header-actions .quiet{display:none}.page{padding:28px 20px 52px}
     .metric-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
   }
   @media(max-width:860px){
-    .app-header{height:auto}
-    .header-inner{padding:10px 20px;gap:8px 12px}
-    .app-nav{order:3;flex:1 1 100%;width:100%;padding-top:6px;border-top:1px solid rgba(255,255,255,.1)}
-    .header-actions{order:2;margin-left:auto;gap:10px}
+    .header-inner{padding:0 20px;gap:10px;flex-wrap:nowrap}
+    .nav-menu-toggle{display:inline-flex}
+    .brand{cursor:pointer;padding:6px 8px;margin-left:-4px;border-radius:6px;transition:background .12s}
+    .brand:hover{background:rgba(255,255,255,.08)}
+    .brand::after{content:"▾";font-size:11px;color:#b6c2ce;margin-left:-2px;transition:transform .16s ease,color .12s}
+    .app-header.nav-open .brand{background:rgba(255,255,255,.12)}
+    .app-header.nav-open .brand::after{transform:rotate(180deg);color:#fff}
+    .app-nav{display:none;position:absolute;top:calc(100% - 4px);left:16px;min-width:210px;background:#243342;border:1px solid rgba(255,255,255,.16);border-radius:10px;padding:8px;flex-direction:column;align-items:stretch;gap:3px;box-shadow:0 14px 32px rgba(0,0,0,.38);z-index:160;overflow:visible}
+    .app-header.nav-open .app-nav{display:flex}
+    .app-nav a{display:flex;align-items:center;justify-content:space-between;width:100%;padding:10px 14px;font-size:13.5px;border-radius:6px}
+    .app-nav a.active::after{content:"●";font-size:8px;color:var(--orange)}
+    .header-actions{margin-left:auto;gap:10px}
   }
   @media(max-width:680px){
-    .header-inner{padding:10px 16px}
+    .header-inner{padding:0 16px}
     .header-actions .demo-cta{padding:6px 11px;font-size:12px}
     .page{padding:22px 16px 48px}
     .page-heading{align-items:stretch;flex-direction:column;gap:12px;margin-bottom:20px}
@@ -127,8 +142,7 @@ export const dashboardShellCss = `
     .metric-grid{grid-template-columns:1fr}
   }
   @media(max-width:480px){
-    .app-nav{justify-content:space-between;gap:2px}
-    .app-nav a{padding:7px 9px;font-size:12px}
+    .app-nav{left:12px;right:12px;min-width:0}
     .header-actions{gap:8px}
     .header-actions .demo-cta{padding:5px 9px;font-size:11.5px}
     .signout-btn{font-size:12px}
@@ -141,8 +155,9 @@ export function dashboardHeader(active: DashboardSection): string {
 
   return `<header class="app-header">
   <div class="header-inner">
+    <button type="button" class="nav-menu-toggle" id="nav-menu-toggle" aria-label="Toggle navigation menu" aria-expanded="false" aria-controls="app-nav"><span class="nav-menu-bar"></span><span class="nav-menu-bar"></span><span class="nav-menu-bar"></span></button>
     <a class="brand" href="/"><span class="brand-mark"></span><span>crm-sync</span></a>
-    <nav class="app-nav" aria-label="Primary navigation">
+    <nav class="app-nav" id="app-nav" aria-label="Primary navigation">
       ${item('connections', '/', 'Connections')}
       ${item('migration', '/ops#migration', 'Migrate')}
       ${item('sync', '/ops#sync', 'Sync')}

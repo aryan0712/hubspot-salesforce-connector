@@ -471,12 +471,16 @@ describe('operations dashboard', () => {
     expect(html).toContain('placeholder="Select field, picklist value, or enter text…"');
   });
 
-  it('uses responsive header and page-heading styles consistently across all pages', () => {
+  it('uses responsive header and page-heading styles consistently across all pages with a dropdown menu on narrow viewports', () => {
     for (const page of [operationsHtml(), connectionsHtml(), dashboardHtml()]) {
-      expect(page).toContain('.app-header{min-height:60px;height:auto');
-      expect(page).toContain('.header-inner{width:100%;min-height:60px');
-      expect(page).toContain('@media(max-width:860px)');
-      expect(page).toContain('@media(max-width:480px)');
+      expect(page).toContain('id="nav-menu-toggle"');
+      expect(page).toContain('<span class="nav-menu-bar"></span><span class="nav-menu-bar"></span><span class="nav-menu-bar"></span>');
+      expect(page).toContain('.nav-menu-toggle{display:none;');
+      expect(page).toContain('@media(max-width:860px){');
+      expect(page).toContain('.nav-menu-toggle{display:inline-flex}');
+      expect(page).toContain('.app-header.nav-open .app-nav{display:flex}');
+      expect(page).toContain("closest('#nav-menu-toggle')");
+      expect(page).toContain("closest('.app-header .brand')");
       expect(page).not.toContain('header{ background:var(--nav); color:#fff; display:flex');
     }
     expect(operationsHtml()).toContain('.card.builder-header{overflow:visible}');

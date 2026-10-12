@@ -15,8 +15,15 @@ window.fetch=(input,init)=>{init=init||{};const method=String(init.method||'GET'
 if(method!=='GET'&&method!=='HEAD'){const m=document.cookie.match(/(?:^|; )crm_csrf=([^;]*)/);
 if(m){const headers=new Headers(init.headers||{});headers.set('x-csrf-token',decodeURIComponent(m[1]));init=Object.assign({},init,{headers})}}
 return nativeFetch(input,init).then((response)=>{if(response.status===401&&!location.pathname.startsWith('/auth/')){location.href='/auth/login'}return response})};
-document.addEventListener('click',(event)=>{const el=event.target&&event.target.closest?event.target.closest('[data-action]'):null;if(!el)return;
+document.addEventListener('click',(event)=>{const target=event.target&&event.target.closest?event.target:null;const header=document.querySelector('.app-header');
+if(header){const toggleBtn=document.getElementById('nav-menu-toggle');const isCompact=window.matchMedia?window.matchMedia('(max-width: 860px)').matches:window.innerWidth<=860;
+const clickedToggle=target&&target.closest('#nav-menu-toggle');const clickedBrand=isCompact&&target&&target.closest('.app-header .brand');
+if(clickedToggle||clickedBrand){event.preventDefault();const open=header.classList.toggle('nav-open');if(toggleBtn)toggleBtn.setAttribute('aria-expanded',open?'true':'false');return}
+if(header.classList.contains('nav-open')&&(!target||!target.closest('.app-nav')||target.closest('.app-nav a'))){header.classList.remove('nav-open');if(toggleBtn)toggleBtn.setAttribute('aria-expanded','false')}}
+const el=target?target.closest('[data-action]'):null;if(!el)return;
 const fn=window[el.getAttribute('data-action')];if(typeof fn==='function'){event.preventDefault();fn(el.getAttribute('data-arg'),el)}});
+document.addEventListener('keydown',(event)=>{if(event.key==='Escape'){const header=document.querySelector('.app-header.nav-open');if(header){header.classList.remove('nav-open');const toggleBtn=document.getElementById('nav-menu-toggle');if(toggleBtn)toggleBtn.setAttribute('aria-expanded','false')}}});
+window.addEventListener('resize',()=>{const isCompact=window.matchMedia?window.matchMedia('(max-width: 860px)').matches:window.innerWidth<=860;if(!isCompact){const header=document.querySelector('.app-header.nav-open');if(header){header.classList.remove('nav-open');const toggleBtn=document.getElementById('nav-menu-toggle');if(toggleBtn)toggleBtn.setAttribute('aria-expanded','false')}}});
 function region(){let r=document.getElementById('ui-messages');if(!r){r=document.createElement('div');r.id='ui-messages';r.className='ui-messages';
 r.setAttribute('aria-live','polite');r.setAttribute('role','status');document.body.prepend(r)}return r}
 function show(kind,message,requestId,action){const r=region();const box=document.createElement('div');box.className='ui-message ui-'+kind;
