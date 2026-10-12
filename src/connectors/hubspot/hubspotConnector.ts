@@ -96,7 +96,7 @@ export class HubSpotConnector implements CRMConnector {
     this.appSecret = await getAppSecret();
     this.http = axios.create({
       baseURL: 'https://api.hubapi.com',
-      headers: { Authorization: `Bearer ${token}` },
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     });
     this.policy = installHttpPolicy(this.http, {
       requestsPerSecond: env.HUBSPOT_REQUESTS_PER_SECOND,
@@ -387,6 +387,8 @@ export class HubSpotConnector implements CRMConnector {
     if (!association.label) {
       await this.http.put(
         `/crm/v4/objects/${fromObject}/${fromId}/associations/default/${toObject}/${association.toId}`,
+        undefined,
+        { headers: { 'Content-Type': 'application/json' } },
       );
       return;
     }

@@ -109,6 +109,8 @@ export function operationsHtml(): string {
     .metric-btn:hover{background:#fff;border-color:var(--orange);color:var(--text);box-shadow:0 4px 12px rgba(46,63,80,.08)}
     .pill-btn{border:1px solid #e6c875;cursor:pointer;font-family:inherit;padding:4px 8px;transition:background .12s,border-color .12s}
     .pill-btn:hover{background:#ffedb3;border-color:#d4ab3b;color:#6e5108}
+    .pill-btn.dead_letter{border-color:#f3c0b3}
+    .pill-btn.dead_letter:hover{background:#fbdad1;border-color:#e39b88;color:var(--red)}
     .manual-review-modal[hidden]{display:none}.manual-review-modal{position:fixed;inset:0;z-index:1000;display:grid;place-items:center;padding:20px;background:rgba(18,36,52,.56)}
     .manual-review-card{width:min(540px,100%);padding:22px;border:1px solid var(--border);border-radius:12px;background:#fff;box-shadow:0 24px 70px rgba(18,36,52,.25)}
     .manual-review-card h2{margin:0;font-size:19px}.manual-review-card p{margin:8px 0 14px;color:var(--text-2);font-size:13px;line-height:1.55}
@@ -552,8 +554,8 @@ export function operationsHtml(): string {
             valA=(targetBy.get(a)?.native||'').trim().toLowerCase();
             valB=(targetBy.get(b)?.native||'').trim().toLowerCase();
           }else if(fieldSortCol==='sot'){
-            valA=(sourceBy.get(a)?.sourceOfTruth||targetBy.get(a)?.sourceOfTruth||'').trim().toLowerCase();
-            valB=(sourceBy.get(b)?.sourceOfTruth||targetBy.get(b)?.sourceOfTruth||'').trim().toLowerCase();
+            valA=(sourceBy.get(a)?.sourceOfTruth||targetBy.get(a)?.sourceOfTruth||'salesforce').trim().toLowerCase();
+            valB=(sourceBy.get(b)?.sourceOfTruth||targetBy.get(b)?.sourceOfTruth||'salesforce').trim().toLowerCase();
           }
           if(!valA&&valB)return 1;
           if(valA&&!valB)return -1;
@@ -562,12 +564,10 @@ export function operationsHtml(): string {
           return fieldSortAsc?cmp:-cmp;
         });
       }
-      const objectSot=getObjectSot(state.type);
-      const sotLabel=systemLabel(objectSot);
       $('field-map-rows').innerHTML=visible.map(canonical=>{const s=sourceBy.get(canonical)||{},t=targetBy.get(canonical)||{};
         const transforms=[s.toCanonical||'identity',s.fromCanonical||'identity',t.toCanonical||'identity',t.fromCanonical||'identity'];
-        const currentSot=s.sourceOfTruth||t.sourceOfTruth||'';
-        return '<tr data-canonical="'+esc(canonical)+'"><td class="mapping-action"><button class="mapping-remove" data-remove-canonical="'+esc(canonical)+'" aria-label="Remove '+esc(canonical)+' mapping" title="Remove this mapping">Remove</button></td><td><input class="source-native" list="source-native-datalist" value="'+esc(s.native||'')+'" placeholder="— Not mapped —"></td><td><input class="canonical" value="'+esc(canonical)+'"></td><td>'+transformHidden('source-to',transforms[0])+transformHidden('source-from',transforms[1])+transformHidden('target-to',transforms[2])+transformHidden('target-from',transforms[3])+'<button class="mapping-transform" data-transform-canonical="'+esc(canonical)+'">'+esc(transformSummary([transforms[0],transforms[3]]))+'<small>Configure</small></button></td><td><input class="target-native" list="target-native-datalist" value="'+esc(t.native||'')+'" placeholder="— Not mapped —"></td><td><select class="field-sot" data-canonical="'+esc(canonical)+'"><option value="">Default ('+esc(sotLabel)+')</option><option value="salesforce" '+(currentSot==='salesforce'?'selected':'')+'>Salesforce</option><option value="hubspot" '+(currentSot==='hubspot'?'selected':'')+'>HubSpot</option></select></td></tr>'}).join('')||'<tr><td colspan="6" class="empty">No mappings remain. Save to persist this empty mapping set, or undo the removal.</td></tr>';
+        const currentSot=s.sourceOfTruth||t.sourceOfTruth||'salesforce';
+        return '<tr data-canonical="'+esc(canonical)+'"><td class="mapping-action"><button class="mapping-remove" data-remove-canonical="'+esc(canonical)+'" aria-label="Remove '+esc(canonical)+' mapping" title="Remove this mapping">Remove</button></td><td><input class="source-native" list="source-native-datalist" value="'+esc(s.native||'')+'" placeholder="— Not mapped —"></td><td><input class="canonical" value="'+esc(canonical)+'"></td><td>'+transformHidden('source-to',transforms[0])+transformHidden('source-from',transforms[1])+transformHidden('target-to',transforms[2])+transformHidden('target-from',transforms[3])+'<button class="mapping-transform" data-transform-canonical="'+esc(canonical)+'">'+esc(transformSummary([transforms[0],transforms[3]]))+'<small>Configure</small></button></td><td><input class="target-native" list="target-native-datalist" value="'+esc(t.native||'')+'" placeholder="— Not mapped —"></td><td><select class="field-sot" data-canonical="'+esc(canonical)+'"><option value="salesforce" '+(currentSot==='salesforce'?'selected':'')+'>Salesforce</option><option value="hubspot" '+(currentSot==='hubspot'?'selected':'')+'>HubSpot</option><option value="last-write-wins" '+(currentSot==='last-write-wins'?'selected':'')+'>Last write wins</option></select></td></tr>'}).join('')||'<tr><td colspan="6" class="empty">No mappings remain. Save to persist this empty mapping set, or undo the removal.</td></tr>';
       refreshMappingCoverage();updateFieldSortHeaders();$('field-map-notice').hidden=!state.removed.length;$('field-map-notice-text').textContent=state.removed.length+' mapping'+(state.removed.length===1?'':'s')+' marked for removal. Save mappings to apply.';document.querySelectorAll('[data-remove-canonical]').forEach(button=>button.onclick=()=>{state.removed.push(button.dataset.removeCanonical);state.dirty=true;closeTransformLab();renderFieldMappings()});document.querySelectorAll('[data-transform-canonical]').forEach(button=>button.onclick=()=>openTransformLab(button));document.querySelectorAll('#field-map-rows tr[data-canonical] input, #field-map-rows tr[data-canonical] select.field-sot').forEach(control=>{control.oninput=control.onchange=()=>{state.dirty=true;refreshMappingCoverage();applyMappingFilters();setDraftStatus('Mapping changes not saved')}});applyMappingFilters()}
     function refreshMappingCoverage(){const state=migrationState.mapping;if(!state)return;const rows=[...$('field-map-rows').querySelectorAll('tr[data-canonical]')],ready=rows.filter(tr=>tr.querySelector('.source-native').value&&tr.querySelector('.target-native').value).length,total=rows.length,pct=total?Math.round(ready/total*100):0;$('coverage-number').textContent=pct+'%';$('coverage-list').innerHTML='<div><span>Mapped</span><b>'+ready+'</b></div><div><span>Needs review</span><b>'+(total-ready)+'</b></div><div><span>Removed</span><b>'+state.removed.length+'</b></div><div><span>Source fields</span><b>'+state.sourceMeta.fields.length+'</b></div><div><span>Target fields</span><b>'+state.targetMeta.fields.length+'</b></div>';$('summary-coverage').textContent=pct+'%'}
     function applyMappingFilters(){const query=$('field-search').value.trim().toLowerCase(),filter=$('field-filter').value;document.querySelectorAll('#field-map-rows tr[data-canonical]').forEach(tr=>{const source=tr.querySelector('.source-native').value||'',target=tr.querySelector('.target-native').value||'',canonical=tr.querySelector('.canonical').value,sot=tr.querySelector('.field-sot')?.value||'',text=(source+' '+target+' '+canonical+' '+sot).toLowerCase(),ready=tr.querySelector('.source-native').value&&tr.querySelector('.target-native').value,transformed=['source-to','target-from'].some(cls=>tr.querySelector('.'+cls).value!=='identity');tr.hidden=Boolean((query&&!text.includes(query))||(filter==='review'&&ready)||(filter==='transformed'&&!transformed))})}
@@ -824,20 +824,8 @@ export function operationsHtml(): string {
       $('sync-conflict-strategy').value=config.conflictStrategy;$('sync-source-of-truth').value=config.sourceOfTruth;
       renderSyncObjectRows(config);
       $('webhook-health').innerHTML=Object.entries(config.webhooks).map(([system,value])=>'<div class="webhook-card"><div class="webhook-card-head"><b>'+esc(system==='salesforce'?'Salesforce':'HubSpot')+'</b><span class="pill '+(value.connected&&value.signingConfigured?'completed':'ambiguous')+'">'+(value.connected&&value.signingConfigured?'Healthy':'Needs attention')+'</span></div><p>'+esc(value.connected?'Account connected':'Account disconnected')+' · '+esc(value.signingConfigured?'signature verification configured':'signing secret missing')+'</p></div>').join('')}
-    function updateOrgDefaultsInObjectRows(){
-      const orgStrat=$('sync-conflict-strategy').value;
-      const orgSot=$('sync-source-of-truth').value;
-      document.querySelectorAll('[data-object-strategy]').forEach(sel=>{
-        const opt=sel.options[0];
-        if(opt&&opt.value==='')opt.textContent='Inherit org default ('+conflictStrategyLabel(orgStrat)+')';
-      });
-      document.querySelectorAll('[data-object-sot]').forEach(sel=>{
-        const opt=sel.options[0];
-        if(opt&&opt.value==='')opt.textContent='Inherit org default ('+systemLabel(orgSot)+')';
-      });
-    }
-    $('sync-conflict-strategy').onchange=()=>{if(syncConfigState)syncConfigState.conflictStrategy=$('sync-conflict-strategy').value;updateOrgDefaultsInObjectRows()};
-    $('sync-source-of-truth').onchange=()=>{if(syncConfigState)syncConfigState.sourceOfTruth=$('sync-source-of-truth').value;updateOrgDefaultsInObjectRows()};
+    $('sync-conflict-strategy').onchange=()=>{if(syncConfigState)syncConfigState.conflictStrategy=$('sync-conflict-strategy').value};
+    $('sync-source-of-truth').onchange=()=>{if(syncConfigState)syncConfigState.sourceOfTruth=$('sync-source-of-truth').value};
     function minutesToUnit(min){if(min%1440===0)return{value:min/1440,unit:'days'};if(min%60===0)return{value:min/60,unit:'hours'};return{value:min,unit:'minutes'}}
     function unitToMinutes(value,unit){const n=Number(value)||0;return unit==='days'?n*1440:unit==='hours'?n*60:n}
     function pollingStatusText(status){if(!status)return 'No scheduled poll has run yet.';
@@ -953,15 +941,15 @@ export function operationsHtml(): string {
     // and disabled to match, rather than offering a control with no effect.
     function syncObjectRowHtml(obj,config){
       const type=obj.canonicalObject,value=config.objects[type]||{enabled:false,direction:'bidirectional'},polling=config.polling[type]||{enabled:false,intervalMinutes:30},unit=minutesToUnit(polling.intervalMinutes),status=config.pollingStatus&&config.pollingStatus[type];
-      const cronMode=Boolean(polling.cron),dis=value.enabled?'':'disabled';
+      const cronMode=Boolean(polling.cron),dis=value.enabled?'':'disabled',objStrat=value.conflictStrategy||'source-of-truth',objSot=value.sourceOfTruth||'salesforce';
       const pairLabel=capitalizeWord(obj.salesforceObject||'—')+' → '+capitalizeWord(obj.hubspotObject||'—');
       return '<div class="object-sync-row">'
         +'<div class="object-sync-main"><label><input type="checkbox" data-sync-enabled="'+esc(type)+'" '+(value.enabled?'checked':'')+' title="Master switch -- turns sync off entirely, both webhooks and scheduled polling, when unchecked"><b>'+esc(pairLabel)+'</b><span class="muted" style="font-weight:400;font-size:11px"> · Sync enabled</span></label>'
         +'<span class="pill '+(value.enabled?'completed':'queued')+'">'+(value.enabled?'Live':'Paused')+'</span>'
         +'<span class="muted" data-sync-direction-label="'+esc(type)+'">'+esc(directionLabel(value.direction))+'</span></div>'
         +'<div class="object-conflict-row'+(value.enabled?'':' disabled')+'" data-conflict-row="'+esc(type)+'">'
-        +'<label>Conflict strategy: <select data-object-strategy="'+esc(type)+'" '+dis+'><option value="">Inherit org default ('+esc(conflictStrategyLabel(config.conflictStrategy))+')</option><option value="source-of-truth" '+(value.conflictStrategy==='source-of-truth'?'selected':'')+'>Source of truth</option><option value="last-write-wins" '+(value.conflictStrategy==='last-write-wins'?'selected':'')+'>Last write wins</option><option value="field-merge" '+(value.conflictStrategy==='field-merge'?'selected':'')+'>Field merge</option></select></label>'
-        +'<label>Source of truth: <select data-object-sot="'+esc(type)+'" '+dis+'><option value="">Inherit org default ('+esc(systemLabel(config.sourceOfTruth))+')</option><option value="salesforce" '+(value.sourceOfTruth==='salesforce'?'selected':'')+'>Salesforce</option><option value="hubspot" '+(value.sourceOfTruth==='hubspot'?'selected':'')+'>HubSpot</option></select></label></div>'
+        +'<label>Conflict strategy: <select data-object-strategy="'+esc(type)+'" '+dis+'><option value="source-of-truth" '+(objStrat==='source-of-truth'?'selected':'')+'>Source of truth</option><option value="last-write-wins" '+(objStrat==='last-write-wins'?'selected':'')+'>Last write wins</option><option value="field-merge" '+(objStrat==='field-merge'?'selected':'')+'>Field merge</option></select></label>'
+        +'<label>Source of truth: <select data-object-sot="'+esc(type)+'" '+dis+'><option value="salesforce" '+(objSot==='salesforce'?'selected':'')+'>Salesforce</option><option value="hubspot" '+(objSot==='hubspot'?'selected':'')+'>HubSpot</option></select></label></div>'
         +'<div class="object-poll-row'+(value.enabled?'':' disabled')+'" data-poll-row="'+esc(type)+'">'
         +'<label><input type="checkbox" data-poll-enabled="'+esc(type)+'" '+(polling.enabled?'checked':'')+' '+dis+'> Also poll on a schedule</label>'
         +'<select data-poll-mode="'+esc(type)+'" '+dis+'><option value="interval" '+(cronMode?'':'selected')+'>Every…</option><option value="cron" '+(cronMode?'selected':'')+'>Cron schedule</option></select>'
@@ -1403,14 +1391,15 @@ export function operationsHtml(): string {
       return Number.isNaN(d.getTime())?String(raw):d.toLocaleString();
     }
     function jobStatusBadge(j){
-      if(j.status==='manual_review'){
-        return '<button type="button" class="pill manual_review pill-btn" data-action="reviewJob" data-arg="'+esc(j.id)+'" title="Click to review this job">manual_review</button>';
+      const needsAttention=j.status==='dead_letter'||j.status==='manual_review'||j.status==='retry';
+      if(needsAttention){
+        return '<button type="button" class="pill '+esc(j.status)+' pill-btn" data-action="reviewJob" data-arg="'+esc(j.id)+'" title="Click to review this job">'+esc(j.status)+'</button>';
       }
       return '<span class="pill '+esc(j.status)+'">'+esc(j.status)+'</span>';
     }
     function jobRowCells(j,selectable){const needsAttention=j.status==='dead_letter'||j.status==='manual_review'||j.status==='retry';
       const select='<td>'+(selectable&&needsAttention?'<input type="checkbox" class="row-select" value="'+esc(j.id)+'">':'')+'</td>';
-      const reviewBtn=j.status==='manual_review'?'<button class="secondary" type="button" data-action="reviewJob" data-arg="'+esc(j.id)+'">Review</button>':'';
+      const reviewBtn=needsAttention?'<button class="secondary" type="button" data-action="reviewJob" data-arg="'+esc(j.id)+'">Review</button>':'';
       const primary=j.status==='manual_review'&&j.event.changeType==='deleted'?'<button class="danger" data-action="approveDelete" data-arg="'+esc(j.id)+'">Approve delete</button>':needsAttention?'<button data-action="replay" data-arg="'+esc(j.id)+'">Replay</button>':'';
       const dismiss=needsAttention?'<button class="danger" data-action="dismissJob" data-arg="'+esc(j.id)+'" title="Give up on this permanently -- it will not be retried">Delete</button>':'';
       const actions=(reviewBtn||primary||dismiss)?'<div class="row-actions">'+reviewBtn+primary+dismiss+'</div>':'';
