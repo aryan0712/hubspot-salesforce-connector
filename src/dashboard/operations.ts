@@ -19,6 +19,7 @@ export function operationsHtml(): string {
     .layout{display:grid;grid-template-columns:1.15fr .85fr;gap:16px}
     .view{display:none}.view.active{display:block}
     .card{overflow:hidden}
+    .card.builder-header{overflow:visible}
     .card>.card-body{padding:22px 24px}
     .card h2{padding:18px 24px;border-bottom:1px solid #eaeff4}
     .card .toolbar h2{padding:0;border:0}
@@ -60,27 +61,27 @@ export function operationsHtml(): string {
     .object-conflict-row label{margin:0;display:flex;align-items:center;gap:6px;white-space:nowrap}
     .object-conflict-row select{width:auto;padding:3px 8px;font-size:12px}
     .object-conflict-row.disabled{opacity:.5}
-    .object-links-row{display:flex;gap:14px;padding-left:25px}
+    .object-links-row{display:flex;gap:14px;flex-wrap:wrap;padding-left:25px}
     .poll-history{padding:10px 12px 4px 25px;display:flex;flex-direction:column;gap:6px}
     .poll-history-row{display:flex;gap:14px;font-size:12px;color:var(--text-2)}
     .poll-history-row span:first-child{flex:none;width:150px;color:var(--muted)}
     .poll-history-row.error span:last-child{color:var(--red)}
     .row-actions{display:flex;gap:6px;flex-wrap:nowrap;justify-content:flex-end}
     .row-actions button{padding:7px 11px;font-size:12px;white-space:nowrap}
-    .condition-row{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+    .condition-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px}
     .condition-row select{width:auto;flex:1}.condition-row input{flex:1}
     .condition-row button{padding:8px 10px}
     td:has(.row-select),th:has(#conflicts-select-all),th:has(#jobs-select-all){text-align:center}
     .row-select,#conflicts-select-all,#jobs-select-all{width:15px;height:15px;min-height:auto;margin:0}
     .webhook-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
     .webhook-card{padding:16px;border:1px solid var(--border);border-radius:9px;background:#fafcfd}
-    .webhook-card-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px}
+    .webhook-card-head{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:8px}
     .webhook-card p{margin:0;color:var(--muted);font-size:12px}
-    .subtabs{display:flex;gap:8px;padding:14px 20px;border-bottom:1px solid #eaeff4}
+    .subtabs{display:flex;gap:8px;flex-wrap:wrap;padding:14px 20px;border-bottom:1px solid #eaeff4}
     .subtabs button{background:#fff;border-color:var(--border-strong);color:var(--text)}
     .subtabs button.active{background:var(--nav);border-color:var(--nav);color:#fff}
     .activity-panel{display:none}.activity-panel.active{display:block}
-    .ai-summary{display:flex;align-items:flex-start;justify-content:space-between;gap:18px}
+    .ai-summary{display:flex;align-items:flex-start;justify-content:space-between;gap:12px 18px;flex-wrap:wrap}
     .ai-summary p{margin:5px 0 0;color:var(--text-2);font-size:13px}
     .ai-details{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:16px}
     .ai-detail{padding:11px 12px;background:#fafcfd;border:1px solid var(--border);border-radius:6px}
@@ -97,8 +98,8 @@ export function operationsHtml(): string {
     .run-link{background:none;border:0;color:var(--blue);padding:0;font-weight:600}
     .run-detail{margin-top:16px}
     @media(max-width:1050px){.ops-metrics{grid-template-columns:repeat(3,minmax(0,1fr))}}
-    @media(max-width:900px){.layout,.settings-grid,.sync-config-grid{grid-template-columns:1fr}.fields{grid-template-columns:1fr 1fr}}
-    @media(max-width:640px){.ops-metrics,.fields{grid-template-columns:1fr}.toolbar{align-items:stretch}.toolbar>*{width:100%}}
+    @media(max-width:900px){.layout,.settings-grid,.sync-config-grid{grid-template-columns:1fr}.fields{grid-template-columns:1fr 1fr!important}}
+    @media(max-width:640px){.ops-metrics,.fields,.webhook-grid,.ai-details,#usage,.ai-form-row{grid-template-columns:1fr!important}.toolbar{align-items:stretch}.toolbar>*{width:100%}.card h2,.jobs-head,.subtabs{padding:14px 16px}.card>.card-body{padding:16px}}
     .readiness-list{list-style:none;margin:0;padding:0;display:grid;gap:10px}.readiness-list li{line-height:1.5}
     .status-dot.warn{background:#f5b642}.linkbtn{background:none;border:0;color:inherit;font:inherit;font-weight:700;cursor:pointer;padding:0}
     .linkbtn:focus-visible,button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid #53a6ff;outline-offset:2px}

@@ -27,15 +27,6 @@ export function connectionsHtml(): string {
   body{ margin:0; background:var(--canvas); color:var(--text);
     font:400 14px/1.5 "Lexend Deca",-apple-system,BlinkMacSystemFont,"Segoe UI","Helvetica Neue",Arial,sans-serif; }
   a{ color:var(--accent); text-decoration:none; } a:hover{ color:var(--accent-hover); text-decoration:underline; }
-  header{ background:var(--nav); color:#fff; display:flex; align-items:center; gap:12px; padding:0 24px; height:56px; }
-  header .brand{ display:flex; align-items:center; gap:9px; font-weight:600; font-size:16px; }
-  header .sprocket{ width:22px;height:22px;border-radius:50%;background:var(--primary);display:inline-block;
-    position:relative; }
-  header .sprocket::after{ content:""; position:absolute; inset:7px; border-radius:50%; background:var(--nav); }
-  header .sub{ color:#aab7c7; font-size:12px; font-weight:400; margin-left:2px; }
-  header .header-links{ margin-left:auto; display:flex; align-items:center; gap:18px; }
-  header .demo-link{ color:#c3ccd8; font-size:13px; }
-  header .demo-link:hover{ color:#fff; }
   main{ max-width:960px; margin:0 auto; padding:32px 24px 64px; }
   .step{ color:var(--text-2); font-size:12px; font-weight:600; text-transform:uppercase; letter-spacing:.5px; margin:0 0 14px; }
   .grid{ display:grid; gap:20px; grid-template-columns:1fr 1fr; }

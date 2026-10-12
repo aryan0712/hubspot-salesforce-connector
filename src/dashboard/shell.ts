@@ -23,37 +23,40 @@ export const dashboardShellCss = `
     -webkit-font-smoothing:antialiased}
   a{color:var(--orange);text-decoration:none}
   a:hover{color:var(--orange-dark);text-decoration:underline}
-  .app-header{height:60px;background:var(--nav);color:#fff}
-  .header-inner{height:100%;max-width:1240px;margin:0 auto;padding:0 32px;display:flex;align-items:center;gap:28px}
-  .brand{display:flex;align-items:center;gap:10px;color:#fff;font-size:16px;font-weight:600;white-space:nowrap}
+  .app-header{min-height:60px;height:auto;background:var(--nav);color:#fff;display:block;padding:0;position:sticky;top:0;z-index:100;box-shadow:0 1px 3px rgba(0,0,0,.12)}
+  .header-inner{width:100%;min-height:60px;max-width:1240px;margin:0 auto;padding:8px 32px;display:flex;align-items:center;justify-content:space-between;gap:12px 24px;flex-wrap:wrap}
+  .brand{display:inline-flex;align-items:center;gap:10px;color:#fff;font-size:16px;font-weight:600;white-space:nowrap;flex-shrink:0}
   .brand:hover{color:#fff;text-decoration:none}
-  .brand-mark{width:26px;height:26px;border-radius:8px;background:var(--orange);display:grid;place-items:center}
+  .brand-mark{width:26px;height:26px;border-radius:8px;background:var(--orange);display:grid;place-items:center;flex-shrink:0}
   .brand-mark::after{content:"";width:9px;height:9px;border-radius:50%;background:#fff}
-  .app-nav{display:flex;align-items:center;gap:4px;flex:1;min-width:0;overflow-x:auto}
-  .app-nav a{color:#b6c2ce;font-size:13px;font-weight:500;padding:8px 13px;border-radius:6px;white-space:nowrap}
+  .app-nav{display:flex;align-items:center;gap:4px;flex:1 1 auto;min-width:0;overflow-x:auto;scrollbar-width:none;-ms-overflow-style:none}
+  .app-nav::-webkit-scrollbar{display:none}
+  .app-nav a{color:#b6c2ce;font-size:13px;font-weight:500;padding:8px 13px;border-radius:6px;white-space:nowrap;flex-shrink:0;transition:background .12s,color .12s}
   .app-nav a:hover{color:#fff;background:rgba(255,255,255,.1);text-decoration:none}
   .app-nav a.active{color:#fff;background:rgba(255,255,255,.14)}
-  .header-actions{display:flex;align-items:center;gap:14px;white-space:nowrap}
+  .header-actions{display:flex;align-items:center;gap:12px;white-space:nowrap;flex-shrink:0;margin-left:auto}
   .header-actions .quiet{color:#b6c2ce;font-size:13px}
   .header-actions .quiet:hover{color:#fff;text-decoration:none}
-  .signout{margin:0}.signout-btn{background:none;border:0;padding:6px 4px;color:#b6c2ce;font:inherit;font-size:13px;cursor:pointer}
+  .signout{margin:0}.signout-btn{background:none;border:0;padding:6px 6px;color:#b6c2ce;font:inherit;font-size:13px;cursor:pointer;white-space:nowrap}
   .signout-btn:hover{color:#fff}
-  .header-actions .demo-cta{display:inline-flex;background:var(--orange);color:#fff;font-size:13px;font-weight:500;
-    padding:9px 15px;border-radius:6px}
+  .header-actions .demo-cta{display:inline-flex;align-items:center;background:var(--orange);color:#fff;font-size:13px;font-weight:500;
+    padding:8px 14px;border-radius:6px;white-space:nowrap}
   .header-actions .demo-cta:hover{background:var(--orange-hover);color:#fff;text-decoration:none}
   .page{max-width:1240px;margin:0 auto;padding:32px 32px 64px}
-  .page-heading{display:flex;align-items:flex-end;justify-content:space-between;gap:20px;margin-bottom:24px}
+  .page-heading{display:flex;align-items:flex-end;justify-content:space-between;gap:16px 20px;margin-bottom:24px;flex-wrap:wrap}
+  .page-heading>div:first-child{min-width:0;flex:1 1 280px}
   .eyebrow{font-size:12px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin-bottom:6px}
   h1{margin:0;color:var(--text);font-size:28px;line-height:1.2;font-weight:600;letter-spacing:-.02em}
   h2{margin:0;color:var(--text);font-size:16px;font-weight:600}
   .subcopy{margin:7px 0 0;color:var(--muted);font-size:13px}
-  .status-pill{display:flex;align-items:center;gap:9px;background:#fff;border:1px solid var(--border);
-    border-radius:999px;padding:8px 15px;font-size:13px;white-space:nowrap}
-  .status-dot{width:8px;height:8px;border-radius:50%;background:var(--teal);box-shadow:0 0 0 4px rgba(0,163,141,.16)}
+  .status-pill{display:inline-flex;align-items:center;gap:9px;flex-wrap:wrap;max-width:100%;background:#fff;border:1px solid var(--border);
+    border-radius:999px;padding:7px 14px;font-size:13px;white-space:nowrap}
+  .status-pill button.secondary{padding:6px 12px;font-size:12px;border-radius:999px}
+  .status-dot{width:8px;height:8px;border-radius:50%;background:var(--teal);box-shadow:0 0 0 4px rgba(0,163,141,.16);flex-shrink:0}
   .status-dot.off{background:var(--muted);box-shadow:0 0 0 4px rgba(124,152,182,.15)}
   .card,.metric{background:#fff;border:1px solid var(--border);border-radius:12px;box-shadow:var(--shadow)}
   .card{margin-bottom:16px}
-  .card-head{padding:18px 24px;border-bottom:1px solid #eaeff4;display:flex;align-items:center;gap:14px}
+  .card-head{padding:18px 24px;border-bottom:1px solid #eaeff4;display:flex;align-items:center;gap:10px 14px;flex-wrap:wrap}
   .card-body{padding:22px 24px}
   .section-note{margin-left:auto;color:var(--muted);font-size:13px}
   button,.button{border:1px solid var(--orange);border-radius:6px;background:var(--orange);color:#fff;
@@ -102,16 +105,33 @@ export const dashboardShellCss = `
   ::-webkit-scrollbar-thumb:hover{background:#5c758e}
   *{scrollbar-color:#849bb3 #edf2f7}
   @media(max-width:940px){
-    .header-inner{padding:0 20px}.header-actions .quiet{display:none}.page{padding:28px 20px 52px}
+    .header-inner{padding:8px 20px;gap:10px 16px}.header-actions .quiet{display:none}.page{padding:28px 20px 52px}
     .metric-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
   }
-  @media(max-width:680px){
+  @media(max-width:860px){
     .app-header{height:auto}
-    /* Phone: brand + actions on one row, the nav on its own row scrolling inside itself. */
-    .header-inner{min-height:60px;display:grid;grid-template-columns:minmax(0,1fr) auto;padding-top:10px;padding-bottom:10px;gap:10px}
-    .app-nav{grid-column:1 / -1;grid-row:2;min-width:0}.header-actions{grid-column:2;grid-row:1}.header-actions .demo-cta{display:none}
-    .page-heading{align-items:flex-start;flex-direction:column}.status-pill{white-space:normal}
+    .header-inner{padding:10px 20px;gap:8px 12px}
+    .app-nav{order:3;flex:1 1 100%;width:100%;padding-top:6px;border-top:1px solid rgba(255,255,255,.1)}
+    .header-actions{order:2;margin-left:auto;gap:10px}
+  }
+  @media(max-width:680px){
+    .header-inner{padding:10px 16px}
+    .header-actions .demo-cta{padding:6px 11px;font-size:12px}
+    .page{padding:22px 16px 48px}
+    .page-heading{align-items:stretch;flex-direction:column;gap:12px;margin-bottom:20px}
+    .page-heading>div:first-child{flex:none}
+    h1{font-size:24px}
+    .status-pill{width:100%;justify-content:flex-start;border-radius:10px;white-space:normal;padding:9px 13px}
+    .status-pill button.secondary,.status-pill .badge{margin-left:auto}
+    .card-head,.card-body{padding:16px}
     .metric-grid{grid-template-columns:1fr}
+  }
+  @media(max-width:480px){
+    .app-nav{justify-content:space-between;gap:2px}
+    .app-nav a{padding:7px 9px;font-size:12px}
+    .header-actions{gap:8px}
+    .header-actions .demo-cta{padding:5px 9px;font-size:11.5px}
+    .signout-btn{font-size:12px}
   }
 `;
 

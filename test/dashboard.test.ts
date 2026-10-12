@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { operationsHtml } from '../src/dashboard/operations.js';
 import { connectionsHtml } from '../src/dashboard/connections.js';
+import { dashboardHtml } from '../src/dashboard/html.js';
 import { dashboardHeader } from '../src/dashboard/shell.js';
 
 describe('operations dashboard', () => {
@@ -468,6 +469,17 @@ describe('operations dashboard', () => {
     expect(html).toContain('encodeSourceNative');
     expect(html).toContain('displaySourceNative');
     expect(html).toContain('placeholder="Select field, picklist value, or enter text…"');
+  });
+
+  it('uses responsive header and page-heading styles consistently across all pages', () => {
+    for (const page of [operationsHtml(), connectionsHtml(), dashboardHtml()]) {
+      expect(page).toContain('.app-header{min-height:60px;height:auto');
+      expect(page).toContain('.header-inner{width:100%;min-height:60px');
+      expect(page).toContain('@media(max-width:860px)');
+      expect(page).toContain('@media(max-width:480px)');
+      expect(page).not.toContain('header{ background:var(--nav); color:#fff; display:flex');
+    }
+    expect(operationsHtml()).toContain('.card.builder-header{overflow:visible}');
   });
 });
 

@@ -6,21 +6,21 @@ export const migrationWorkspaceCss = `
   .migrate-tab.active{background:#fff;border-color:#fff;color:var(--text);box-shadow:0 1px 3px rgba(46,63,80,.13)}
   .migrate-tab-count{display:inline-flex;justify-content:center;min-width:20px;margin-left:6px;padding:1px 6px;border-radius:999px;background:#e5ebf0;color:var(--text-2);font-size:10px}
   .migrate-section{display:none}.migrate-section.active{display:flex;flex-direction:column;gap:16px}
-  .builder-header{display:flex;align-items:center;gap:20px;padding:18px 20px}
-  .builder-heading{min-width:0;margin-right:auto}
+  .builder-header{position:relative;overflow:visible;display:flex;align-items:center;gap:14px 20px;padding:18px 20px;flex-wrap:wrap}
+  .builder-heading{min-width:220px;flex:1 1 260px;margin-right:auto}
   .builder-kicker{font-size:11px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:var(--orange)}
-  .builder-heading h2{padding:0;border:0;margin:3px 0 4px;font-size:20px}
-  .draft-state{display:flex;align-items:center;gap:7px;color:var(--muted);font-size:12px}
-  .draft-state::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--amber)}
+  .builder-heading h2{padding:0;border:0;margin:3px 0 4px;font-size:20px;line-height:1.25;overflow-wrap:anywhere}
+  .draft-state{display:flex;align-items:center;gap:7px;color:var(--muted);font-size:12px;flex-wrap:wrap}
+  .draft-state::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--amber);flex-shrink:0}
   .draft-state.saved::before{background:var(--teal)}.draft-state.error::before{background:var(--red)}
   .builder-summary{position:relative}
   .builder-summary>summary{list-style:none;cursor:pointer;border:1px solid var(--border-strong);border-radius:8px;
-    padding:9px 12px;color:var(--text-2);font-size:13px;font-weight:600;background:#fff}
+    padding:9px 12px;color:var(--text-2);font-size:13px;font-weight:600;background:#fff;white-space:nowrap}
   .builder-summary>summary::-webkit-details-marker{display:none}
   .builder-summary[open]>summary{background:#fafcfd}
   .builder-header-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
   .builder-header-actions button{padding:9px 12px}
-  .builder-summary-panel{position:absolute;right:0;top:46px;z-index:20;width:min(620px,calc(100vw - 48px));
+  .builder-summary-panel{position:absolute;right:0;top:calc(100% + 6px);z-index:20;width:min(620px,calc(100vw - 32px));
     padding:18px;background:#fff;border:1px solid var(--border);border-radius:10px;box-shadow:0 14px 40px rgba(31,45,61,.16)}
   .summary-title{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:12px}
   .summary-rows{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
@@ -32,8 +32,8 @@ export const migrationWorkspaceCss = `
   .plan-item:last-child{border-bottom:0}.plan-item:hover .plan-name{color:var(--orange)}
   .plan-name{display:flex;justify-content:space-between;gap:8px;color:var(--text);font-weight:600;font-size:13px}
   .plan-meta{color:var(--muted);font-size:11px;margin-top:3px}
-  .library-head{padding:22px 24px;display:flex;align-items:flex-start;gap:16px;border-bottom:1px solid #eaeff4}
-  .library-head>div{margin-right:auto}.library-head h2{padding:0;border:0;font-size:20px}
+  .library-head{padding:22px 24px;display:flex;align-items:flex-start;gap:12px 16px;flex-wrap:wrap;border-bottom:1px solid #eaeff4}
+  .library-head>div{min-width:200px;flex:1 1 240px;margin-right:auto}.library-head h2{padding:0;border:0;font-size:20px}
   .library-head p{margin:5px 0 0;color:var(--muted);font-size:13px}
   .plan-library{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;padding:20px 24px}
   .plan-library .plan-item{padding:16px;border:1px solid var(--border);border-radius:9px;background:#fafcfd}
@@ -59,7 +59,7 @@ export const migrationWorkspaceCss = `
   .builder-stage{min-width:0}.workspace-panel{display:none}.workspace-panel.active{display:block}
   .step-card{overflow:hidden}
   .step-intro{padding:22px 24px 18px;border-bottom:1px solid #eaeff4}
-  .step-intro-row{display:flex;align-items:flex-start;gap:16px}.step-intro-row>div{margin-right:auto}
+  .step-intro-row{display:flex;align-items:flex-start;gap:12px 16px;flex-wrap:wrap}.step-intro-row>div:first-child{min-width:220px;flex:1 1 280px;margin-right:auto}
   .step-eyebrow{color:var(--orange);font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase}
   .step-intro h2{padding:0;border:0;margin:4px 0 5px;font-size:21px}
   .step-intro p{margin:0;color:var(--text-2);font-size:13px;line-height:1.5;max-width:720px}
@@ -89,7 +89,7 @@ export const migrationWorkspaceCss = `
   .readiness{display:flex;align-items:center;gap:7px}.mini-dot{width:7px;height:7px;border-radius:50%;background:var(--teal)}
   .mini-dot.warning{background:var(--amber)}.mini-dot.off{background:var(--muted)}
   .object-detail{border-top:1px solid #eaeff4;background:#fafcfd;padding:18px 20px}
-  .detail-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:14px}
+  .detail-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px 16px;flex-wrap:wrap;margin-bottom:14px}
   .detail-meta{display:flex;gap:8px;flex-wrap:wrap;margin-top:7px}
   .manual-target{margin-bottom:14px;padding:14px 16px;border:1px solid #f3d5cc;border-radius:9px;background:#fff8f5}
   .manual-target b{display:block;font-size:13px;color:var(--text)}.manual-target p{margin:4px 0 12px;color:var(--text-2);font-size:12px}
@@ -126,8 +126,8 @@ export const migrationWorkspaceCss = `
   .mapping-object-item b{font-size:12px}.mapping-object-item small{margin-top:3px;color:var(--muted);font-size:10px}
   .mapping-object-status{display:flex;align-items:center;gap:6px;font-size:10px;white-space:nowrap}
   .mapping-object-status .mini-dot{flex:none}.mapping-object-empty{padding:18px 10px;color:var(--muted);font-size:11px;text-align:center}
-  .field-workspace-main{min-width:0}.field-current-head{display:flex;align-items:center;gap:10px;padding:12px 20px;border-bottom:1px solid var(--border)}
-  .field-current-head>div{margin-right:auto}.field-current-head span,.field-current-head b{display:block}.field-current-head span{color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.06em}.field-current-head b{margin-top:2px;font-size:14px}
+  .field-workspace-main{min-width:0}.field-current-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:12px 20px;border-bottom:1px solid var(--border)}
+  .field-current-head>div{min-width:0;margin-right:auto}.field-current-head span,.field-current-head b{display:block}.field-current-head span{color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.06em}.field-current-head b{margin-top:2px;font-size:14px;overflow-wrap:anywhere}
   #field-object{display:none}.object-position{color:var(--muted);font-size:11px;white-space:nowrap}
   .mapping-tools{display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:12px 20px;border-bottom:1px solid #eaeff4;background:#fafcfd}
   .mapping-tools input{width:min(270px,100%)}
@@ -167,8 +167,8 @@ export const migrationWorkspaceCss = `
   .mapping-change-notice[hidden]{display:none}.mapping-change-notice button{margin-left:auto;padding:7px 10px}
   .transform-lab{border-bottom:1px solid #cbd9e5;background:#f5f9fc}
   .transform-lab[hidden]{display:none}
-  .transform-lab-head{display:flex;align-items:flex-start;gap:14px;padding:17px 20px;border-bottom:1px solid #dce7ef}
-  .transform-lab-head>div{margin-right:auto}.transform-lab-head h3{margin:2px 0 4px;font-size:16px}
+  .transform-lab-head{display:flex;align-items:flex-start;gap:12px 14px;flex-wrap:wrap;padding:17px 20px;border-bottom:1px solid #dce7ef}
+  .transform-lab-head>div{min-width:200px;flex:1 1 240px;margin-right:auto}.transform-lab-head h3{margin:2px 0 4px;font-size:16px}
   .transform-lab-head p{margin:0;color:var(--text-2);font-size:12px}.transform-lab-head button{padding:7px 10px}
   .transform-paths{display:grid;grid-template-columns:minmax(0,1fr);gap:14px;padding:16px 20px}
   .transform-path{padding:14px;background:#fff;border:1px solid var(--border);border-radius:9px}
@@ -182,7 +182,7 @@ export const migrationWorkspaceCss = `
   .transform-preview-card{padding:13px 14px;border:1px solid #d7e4ee;border-radius:9px;background:#fff}
   .transform-preview-card span{display:block;color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.06em}
   .transform-preview-card code{display:block;margin-top:5px;color:var(--text);font-size:12px;overflow-wrap:anywhere}
-  .transform-lab-actions{display:flex;align-items:center;gap:10px;padding:13px 20px;border-top:1px solid #dce7ef}
+  .transform-lab-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:13px 20px;border-top:1px solid #dce7ef}
   .transform-lab-actions .muted{margin-right:auto}
 
   .natural-key-grid{display:grid;grid-template-columns:1fr;gap:16px}
@@ -207,7 +207,7 @@ export const migrationWorkspaceCss = `
   .advanced-key-field{display:flex;align-items:center;gap:7px;padding:8px 9px;border:1px solid var(--border);border-radius:7px;background:#fff;font-size:11px}
   .advanced-key-field input{width:14px;height:14px;min-height:auto;accent-color:var(--orange)}
   .identity-warning{margin-top:11px;padding:10px 12px;border-left:3px solid var(--amber);border-radius:5px;background:#fff8e7;color:#76581a;font-size:11px;line-height:1.45}
-  .identity-warning.safe{border-color:var(--teal);background:#eef9f7;color:#24645b}.identity-actions{display:flex;align-items:center;gap:10px;margin-top:13px}.identity-actions span{margin-right:auto;color:var(--muted);font-size:11px}
+  .identity-warning.safe{border-color:var(--teal);background:#eef9f7;color:#24645b}.identity-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:13px}.identity-actions span{margin-right:auto;color:var(--muted);font-size:11px}
   .preflight-summary{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;padding:18px 20px}
   .check-stat{border:1px solid var(--border);border-radius:9px;padding:14px;background:#fafcfd}
   .check-stat b{display:block;font-size:24px}.check-stat span{color:var(--muted);font-size:12px}
@@ -218,6 +218,14 @@ export const migrationWorkspaceCss = `
   .issue-context,.issue-message{min-width:0}.issue-object{display:block;color:var(--text);font-size:13px;line-height:1.35;text-transform:capitalize}
   .issue-field{display:inline-block;margin-top:4px;padding:2px 7px;border-radius:5px;background:#fff2ec;color:var(--orange-dark);font:11px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;overflow-wrap:anywhere}
   #field-map-rows tr.highlight-row{background:#fff2ec;transition:background 2s ease}
+  .source-picker-menu{position:fixed;z-index:950;max-height:340px;overflow-y:auto;background:#fff;border:1px solid #cbd6e2;border-radius:10px;box-shadow:0 16px 38px rgba(18,36,52,.18);padding:4px 0}
+  .source-picker-menu[hidden]{display:none}
+  .source-picker-heading{position:sticky;top:0;z-index:2;padding:7px 14px 5px;background:#f4f7fa;border-top:1px solid #e6edf3;border-bottom:1px solid #e6edf3;color:#516f90;font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase}
+  .source-picker-heading:first-child{border-top:0}
+  .source-picker-item{display:block;width:100%;padding:8px 14px;border:0;background:transparent;text-align:left;cursor:pointer;font:inherit}
+  .source-picker-item:hover,.source-picker-item.active{background:#eef5fb}
+  .source-picker-item b{display:block;color:var(--text);font-size:13px;font-weight:600;line-height:1.35}
+  .source-picker-item span{display:block;margin-top:2px;color:var(--muted);font-size:12px;line-height:1.35}
   .issue-code{display:block;margin-top:4px;font:11px/1.35 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--muted);overflow-wrap:anywhere;word-break:break-word}
   .issue-message{color:var(--text);font-size:13px;line-height:1.5;overflow-wrap:anywhere}
   .preflight-blocked{margin:18px 20px;padding:18px;border:1px solid #f3d5cc;border-radius:9px;background:#fff8f5}
@@ -225,7 +233,7 @@ export const migrationWorkspaceCss = `
   .preflight-blocked .button{display:inline-flex}
   .copilot-panel{margin:0 20px 18px;border:1px solid #d8e3ef;border-radius:10px;background:#f8fbff;overflow:hidden}
   .copilot-panel[hidden]{display:none}
-  .copilot-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;padding:17px 18px;border-bottom:1px solid #e4edf5}
+  .copilot-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px 16px;flex-wrap:wrap;padding:17px 18px;border-bottom:1px solid #e4edf5}
   .copilot-kicker{color:var(--blue);font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase}
   .copilot-head h3{margin:3px 0 5px;font-size:16px}.copilot-head p{margin:0;color:var(--text-2);font-size:13px;line-height:1.5}
   .copilot-privacy{display:flex;gap:14px;flex-wrap:wrap;padding:10px 18px;background:#fff;color:var(--muted);font-size:11px}
@@ -241,11 +249,11 @@ export const migrationWorkspaceCss = `
   .preview-actions{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:10px;padding:16px 20px;border-bottom:1px solid #eaeff4}
   .preview-action{padding:12px;border:1px solid var(--border);border-radius:9px;background:#fafcfd}
   .preview-action b{display:block;font-size:21px}.preview-action span{font-size:11px;color:var(--muted);text-transform:capitalize}
-  .execution-safety{display:flex;align-items:flex-start;gap:10px;padding:14px 20px;background:var(--nav);color:#fff}
+  .execution-safety{display:flex;align-items:flex-start;gap:10px;flex-wrap:wrap;padding:14px 20px;background:var(--nav);color:#fff}
   .execution-safety p{margin:0;color:#c5d0da;font-size:12px;line-height:1.5}.execution-safety b{white-space:nowrap}
   .test-record-controls{display:grid;grid-template-columns:minmax(160px,.55fr) minmax(260px,1.45fr);gap:12px;padding:18px 20px;border-bottom:1px solid #eaeff4;background:#fafcfd}
   .batch-migrate{padding:18px 20px;border-bottom:1px solid #eaeff4;background:#fafcfd}
-  .batch-migrate-head{display:flex;align-items:center;gap:14px}.batch-migrate-head>div{margin-right:auto}
+  .batch-migrate-head{display:flex;align-items:center;gap:12px 14px;flex-wrap:wrap}.batch-migrate-head>div{min-width:200px;flex:1 1 240px;margin-right:auto}
   .batch-migrate-head p{margin:4px 0 0;color:var(--muted);font-size:12px}.batch-migrate-head label{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-2)}
   .batch-migrate-head input{width:80px}
   .batch-result{margin-top:14px;padding:14px 16px;border-radius:8px;background:#eef9f7;border:1px solid #ccebe6;font-size:13px;line-height:1.6}
@@ -260,7 +268,7 @@ export const migrationWorkspaceCss = `
   .fix-result ul{margin:8px 0 0;padding-left:18px}.fix-result li{margin-top:2px}
   .test-record-preview{padding:18px 20px;border-bottom:1px solid #eaeff4}
   .test-record-preview[hidden],.test-record-result[hidden],.full-migration[hidden]{display:none}
-  .test-record-head{display:flex;align-items:center;gap:12px;margin-bottom:14px}.test-record-head b{margin-right:auto}
+  .test-record-head{display:flex;align-items:center;gap:10px 12px;flex-wrap:wrap;margin-bottom:14px}.test-record-head b{margin-right:auto}
   .test-record-fields{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
   .test-field{padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:#fafcfd;min-width:0}
   .test-field span,.test-field b{display:block}.test-field span{color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.05em}
@@ -268,8 +276,8 @@ export const migrationWorkspaceCss = `
   .test-record-result{display:flex;align-items:flex-start;gap:12px;padding:16px 20px;background:#eef9f7;border-bottom:1px solid #ccebe6}
   .test-record-result .result-icon{display:grid;place-items:center;width:28px;height:28px;flex:none;border-radius:50%;background:var(--teal);color:#fff;font-weight:700}
   .test-record-result b,.test-record-result span{display:block}.test-record-result span{margin-top:3px;color:var(--text-2);font-size:12px}
-  .full-migration{border-top:8px solid var(--canvas)}.full-migration-head{display:flex;align-items:flex-start;gap:14px;padding:18px 20px;border-bottom:1px solid #eaeff4}
-  .full-migration-head>div{margin-right:auto}.full-migration-head h3{margin:0;font-size:16px}.full-migration-head p{margin:4px 0 0;color:var(--muted);font-size:12px}
+  .full-migration{border-top:8px solid var(--canvas)}.full-migration-head{display:flex;align-items:flex-start;gap:12px 14px;flex-wrap:wrap;padding:18px 20px;border-bottom:1px solid #eaeff4}
+  .full-migration-head>div{min-width:200px;flex:1 1 240px;margin-right:auto}.full-migration-head h3{margin:0;font-size:16px}.full-migration-head p{margin:4px 0 0;color:var(--muted);font-size:12px}
   .typed-confirmation[hidden]{display:none}.typed-confirmation{position:fixed;inset:0;z-index:1000;display:grid;place-items:center;padding:20px;background:rgba(18,36,52,.56)}
   .typed-confirmation-card{width:min(440px,100%);padding:22px;border:1px solid var(--border);border-radius:12px;background:#fff;box-shadow:0 24px 70px rgba(18,36,52,.25)}
   .typed-confirmation-card h2{margin:0;font-size:19px}.typed-confirmation-card p{margin:8px 0 18px;color:var(--text-2);font-size:13px;line-height:1.55}
@@ -283,20 +291,26 @@ export const migrationWorkspaceCss = `
     .field-workspace-shell{grid-template-columns:190px minmax(0,1fr)}
   }
   @media(max-width:760px){
-    .builder-header{align-items:flex-start;flex-wrap:wrap}.builder-header-actions{width:100%}.builder-summary{margin-left:auto}
+    .builder-header{align-items:flex-start;flex-wrap:wrap;padding:14px 16px;gap:12px}
+    .builder-header-actions{width:auto;flex:1 1 auto}
+    .builder-summary{position:static;margin-left:auto}
+    .builder-summary-panel{left:12px;right:12px;top:calc(100% + 6px);width:auto}
+    .step-intro,.library-head{padding:16px}
     .summary-rows{grid-template-columns:repeat(2,minmax(0,1fr))}
-    .plan-bar{grid-template-columns:1fr}.scope-options,.direction-preview,.natural-key-grid,.transform-paths,.transform-preview-row,.readiness-panel{grid-template-columns:1fr}
+    .plan-bar{grid-template-columns:1fr;padding:16px}.scope-options,.direction-preview,.natural-key-grid,.transform-paths,.transform-preview-row,.readiness-panel{grid-template-columns:1fr}
     .direction-preview{display:flex;align-items:stretch}.direction-system{flex:1}.direction-arrow{align-self:center}
     .coverage-card{grid-template-columns:1fr;gap:14px}.coverage-list{grid-template-columns:repeat(3,minmax(0,1fr));gap:10px 0}
     .coverage-list div:nth-child(3n+1){border-left:0;padding-left:0}
     .metadata-grid,.readiness-checks,.test-record-fields{grid-template-columns:repeat(2,1fr)}.preview-actions{grid-template-columns:repeat(3,1fr)}
     .test-record-controls{grid-template-columns:1fr}.field-workspace-shell{grid-template-columns:1fr}.mapping-object-sidebar{border-right:0;border-bottom:1px solid var(--border)}
     .mapping-object-queue{display:grid;grid-template-columns:repeat(3,minmax(140px,1fr));overflow-x:auto}.mapping-queue-tools{display:grid;grid-template-columns:1fr 160px;gap:8px}.mapping-queue-tools select{margin-top:0}
-    .plan-library{grid-template-columns:1fr}.history-toolbar{grid-template-columns:1fr 1fr}.history-toolbar input{grid-column:1/-1}
+    .plan-library{grid-template-columns:1fr;padding:16px}.history-toolbar{grid-template-columns:1fr 1fr;padding:14px 16px}.history-toolbar input{grid-column:1/-1}
     .issue-row{grid-template-columns:80px minmax(0,1fr);gap:12px}.issue-message{grid-column:1/-1;padding-top:2px}
-    .step-footer{flex-wrap:wrap}.step-footer-note{width:100%}
+    .step-footer{flex-wrap:wrap;padding:12px 16px}.step-footer-note{width:100%}
   }
   @media(max-width:520px){
+    .builder-header-actions{width:100%}.builder-header-actions button{flex:1 1 auto;text-align:center}
+    .builder-summary{width:100%;margin-left:0}.builder-summary>summary{display:block;width:100%;text-align:center}
     .summary-rows,.scope-options,.readiness-checks{grid-template-columns:1fr}.summary-actions{flex-direction:column}
     .coverage-list{grid-template-columns:repeat(2,minmax(0,1fr))}
     .coverage-list div:nth-child(3n+1){border-left:1px solid var(--border);padding-left:14px}
@@ -351,7 +365,6 @@ export function migrationWorkspaceHtml(): string {
           <div class="builder-header-actions" id="builder-header-actions">
             <button class="secondary" data-migrate-open="plans">Open plans</button>
             <button class="secondary" id="latest-run-shortcut" data-migrate-open="runs">View run history</button>
-            <button class="secondary" id="back-to-sync" hidden>← Back to Sync</button>
           </div>
           <details class="builder-summary">
             <summary>Plan summary</summary>
@@ -407,71 +420,6 @@ export function migrationWorkspaceHtml(): string {
                 <div class="scroll"><table class="catalog-table"><thead><tr><th>Use</th><th>Source object</th><th>Target binding</th><th>Type</th><th>Fields</th><th>Readiness</th></tr></thead><tbody id="object-rows"><tr><td colspan="6" class="empty">Discovering CRM objects…</td></tr></tbody></table></div>
                 <div class="object-detail" id="object-detail"><div class="empty">Select an object to inspect its metadata.</div></div>
                 ${footer('Only selected objects are included in validation and preview.', { step: 'scope', label: 'Direction' }, { step: 'fields', label: 'Map fields', save: true })}
-              </div>
-            </section>
-
-            <section class="workspace-panel" id="workspace-fields">
-              <div class="card step-card">
-                <div class="step-intro"><div class="step-intro-row"><div><div class="step-eyebrow" id="fields-step-eyebrow">Step 3 of 6</div><h2 id="fields-step-title">Map and transform fields</h2><p>Work through every selected object. Your object queue shows what is complete, what needs review, and what has not been started.</p></div><div class="field-progress"><b id="field-progress-count">0 of 0 objects complete</b><span id="field-progress-detail">Choose an object to begin.</span></div></div></div>
-                <div class="field-workspace-shell">
-                  <aside class="mapping-object-sidebar" aria-label="Selected objects">
-                    <div class="mapping-queue-tools"><input id="field-object-search" type="search" placeholder="Find an object"><select id="field-object-filter"><option value="all">All selected</option><option value="review">Needs mapping</option><option value="complete">Complete</option></select></div>
-                    <div class="mapping-object-queue" id="field-object-queue"></div>
-                  </aside>
-                  <div class="field-workspace-main">
-                    <div class="field-current-head"><div><span>Current object</span><b id="field-current-name">Choose an object</b></div><span id="field-object-position" class="object-position"></span><select id="field-object" aria-hidden="true"></select></div>
-                    <div class="mapping-tools">
-                      <input id="field-search" type="search" placeholder="Search source, canonical, or target">
-                      <select id="field-filter"><option value="all">All mappings</option><option value="review">Needs review</option><option value="transformed">Has transforms</option></select>
-                      <div class="mapping-tools-actions">
-                        <button id="auto-map-all" class="secondary">Auto-map selected objects</button>
-                        <button id="auto-map" class="secondary">Auto-map this object</button>
-                        <button id="add-field-mapping" class="secondary">+ Add field</button>
-                        <button id="remove-all-fields" class="danger">Remove all</button>
-                        <button id="save-field-map">Save mappings</button>
-                      </div>
-                    </div>
-                    <div class="mapping-change-notice" id="field-map-notice" hidden><span id="field-map-notice-text"></span><button id="undo-field-removal" class="secondary">Undo last removal</button></div>
-                    <div class="card identity-card" id="sync-wizard-natural-key" hidden style="margin-top:14px"><div class="card-body">
-                      <div class="step-eyebrow">Sync setup · last step</div><h3 style="margin:4px 0 10px">How should matching records be recognized?</h3>
-                      <p class="subcopy" style="margin:0 0 12px">Choose a stable field both sides share, so a record already in both systems gets linked instead of duplicated.</p>
-                      <div class="identity-options" id="sync-wizard-key-options"></div>
-                      <div class="advanced-key-fields" id="sync-wizard-key-fields"></div>
-                      <div class="identity-warning" id="sync-wizard-key-warning"></div>
-                      <div class="identity-actions"><span id="sync-wizard-key-summary"></span>
-                        <button class="secondary" id="sync-wizard-key-skip" type="button">Skip for now</button>
-                        <button id="sync-wizard-key-save" type="button">Save matching rule &amp; finish</button>
-                      </div>
-                    </div></div>
-                    <aside class="coverage-card" aria-label="Mapping coverage">
-                      <div class="coverage-overview"><div class="summary-title">Core mapping coverage</div><div class="coverage-number" id="coverage-number">—</div></div>
-                      <div class="coverage-list" id="coverage-list"></div>
-                    </aside>
-                    <section class="transform-lab" id="transform-lab" aria-live="polite" hidden>
-                      <div class="transform-lab-head"><div><div class="step-eyebrow">Transform lab</div><h3 id="transform-field-name">Field transform</h3><p id="transform-field-path">Configure normalization for this migration.</p></div><button id="close-transform-lab" class="secondary" aria-label="Close transform lab">Close</button></div>
-                      <div class="transform-paths">
-                        <div class="transform-path"><div class="transform-path-title"><span>Forward</span> Source → Canonical → Target</div><div class="transform-controls"><label>Normalize source value<select id="transform-source-to"></select></label><span class="path-arrow">→</span><label>Format destination value<select id="transform-target-from"></select></label></div></div>
-                        <div class="transform-path"><div class="transform-path-title"><span>Reverse</span> Target → Canonical → Source</div><div class="transform-controls"><label>Normalize target value<select id="transform-target-to"></select></label><span class="path-arrow">→</span><label>Format source value<select id="transform-source-from"></select></label></div></div>
-                      </div>
-                      <p class="transform-lab-note">Sync runs both ways, so both paths need to agree — e.g. a Yes/No field needs the boolean↔string transform configured on <b>both</b> the forward and reverse path, or a change made in the target CRM won't convert back correctly.</p>
-                      <div class="transform-preview">
-                        <div class="transform-preview-row">
-                          <label>Test a source value (forward)<input id="transform-sample" placeholder="e.g. false"></label>
-                          <div class="transform-preview-card"><span>Written to target as</span><code id="transform-forward-result">Enter a sample value</code></div>
-                        </div>
-                        <div class="transform-preview-row">
-                          <label>Test a target value (reverse)<input id="transform-sample-reverse" placeholder="e.g. yes"></label>
-                          <div class="transform-preview-card"><span>Written to source as</span><code id="transform-reverse-result">Enter a sample value</code></div>
-                        </div>
-                      </div>
-                      <div class="transform-lab-actions"><span class="muted" id="transform-help">Transforms run before migration validation and value mapping.</span><button id="reset-transforms" class="secondary">Use identity</button><button id="apply-transforms">Apply transforms</button></div>
-                    </section>
-                    <div class="field-layout"><div class="scroll"><table class="mapping-table"><thead><tr><th class="mapping-action">Action</th><th class="sortable-th" data-sort="source" title="Click to sort by source field">Source field <span class="sort-icon">↕</span></th><th class="sortable-th" data-sort="canonical" title="Click to sort by canonical field">Canonical field <span class="sort-icon">↕</span></th><th>Transform</th><th class="sortable-th" data-sort="target" title="Click to sort by target field">Target field <span class="sort-icon">↕</span></th><th class="sortable-th" data-sort="sot" title="Click to sort by source of truth">Source of truth <span class="sort-icon">↕</span></th></tr></thead><tbody id="field-map-rows"><tr><td colspan="6" class="empty">Choose an object to load its mappings.</td></tr></tbody></table></div></div>
-                    <datalist id="source-native-datalist"></datalist>
-                    <datalist id="target-native-datalist"></datalist>
-                  </div>
-                </div>
-                <div class="step-footer"><span class="step-footer-note">Changes are saved when you switch objects.</span><button class="secondary" data-go-step="objects">← Objects</button><button id="save-next-field-object" class="secondary">Save & next object →</button><button class="next-step" data-go-step="values">Values & keys →</button></div>
               </div>
             </section>
 
@@ -551,20 +499,103 @@ export function migrationWorkspaceHtml(): string {
             <div id="runs" class="scroll"></div>
           </div>
         </section>
-        <section class="typed-confirmation" id="typed-confirmation" role="dialog" aria-modal="true" aria-labelledby="typed-confirm-title" hidden>
-          <div class="typed-confirmation-card">
-            <h2 id="typed-confirm-title">Confirm CRM write</h2>
-            <p id="typed-confirm-message"></p>
-            <label>Type <code id="typed-confirm-token"></code> to continue
-              <input id="typed-confirm-input" type="text" autocomplete="off" spellcheck="false">
-            </label>
-            <span class="typed-confirm-error" id="typed-confirm-error" hidden>Type it exactly as shown, then try again.</span>
-            <div class="typed-confirmation-actions">
-              <button class="secondary" id="typed-confirm-cancel">Cancel</button>
-              <button class="danger" id="typed-confirm-submit">Confirm</button>
+      </div>
+    </section>
+
+    <section class="view" id="view-field-mapping" aria-label="Field mapping">
+      <div class="migration-workspace">
+        <header class="card builder-header" id="field-mapping-header">
+          <div class="builder-heading">
+            <div class="builder-kicker" id="field-mapping-kicker">Guided migration · Step 3 of 6</div>
+            <h2 id="field-mapping-title">Map and transform fields</h2>
+            <div class="draft-state" id="field-mapping-draft-state"><span id="field-mapping-autosave-status">Changes are saved per object</span></div>
+          </div>
+          <div class="builder-header-actions" id="field-mapping-header-actions">
+            <button class="secondary" id="back-to-migration" type="button">← Back to Migrate</button>
+            <button class="secondary" id="back-to-sync" type="button" hidden>← Back to Sync</button>
+          </div>
+        </header>
+
+        <section class="workspace-panel active" id="workspace-fields">
+          <div class="card step-card">
+            <div class="step-intro"><div class="step-intro-row"><div><div class="step-eyebrow" id="fields-step-eyebrow">Step 3 of 6</div><h2 id="fields-step-title">Map and transform fields</h2><p>Work through every selected object. Your object queue shows what is complete, what needs review, and what has not been started.</p></div><div class="field-progress"><b id="field-progress-count">0 of 0 objects complete</b><span id="field-progress-detail">Choose an object to begin.</span></div></div></div>
+            <div class="field-workspace-shell">
+              <aside class="mapping-object-sidebar" aria-label="Selected objects">
+                <div class="mapping-queue-tools"><input id="field-object-search" type="search" placeholder="Find an object"><select id="field-object-filter"><option value="all">All selected</option><option value="review">Needs mapping</option><option value="complete">Complete</option></select></div>
+                <div class="mapping-object-queue" id="field-object-queue"></div>
+              </aside>
+              <div class="field-workspace-main">
+                <div class="field-current-head"><div><span>Current object</span><b id="field-current-name">Choose an object</b></div><span id="field-object-position" class="object-position"></span><select id="field-object" aria-hidden="true"></select></div>
+                <div class="mapping-tools">
+                  <input id="field-search" type="search" placeholder="Search source, canonical, or target">
+                  <select id="field-filter"><option value="all">All mappings</option><option value="review">Needs review</option><option value="transformed">Has transforms</option></select>
+                  <div class="mapping-tools-actions">
+                    <button id="auto-map-all" class="secondary">Auto-map selected objects</button>
+                    <button id="auto-map" class="secondary">Auto-map this object</button>
+                    <button id="add-field-mapping" class="secondary">+ Add field</button>
+                    <button id="remove-all-fields" class="danger">Remove all</button>
+                    <button id="save-field-map">Save mappings</button>
+                  </div>
+                </div>
+                <div class="mapping-change-notice" id="field-map-notice" hidden><span id="field-map-notice-text"></span><button id="undo-field-removal" class="secondary">Undo last removal</button></div>
+                <div class="card identity-card" id="sync-wizard-natural-key" hidden style="margin-top:14px"><div class="card-body">
+                  <div class="step-eyebrow">Sync setup · last step</div><h3 style="margin:4px 0 10px">How should matching records be recognized?</h3>
+                  <p class="subcopy" style="margin:0 0 12px">Choose a stable field both sides share, so a record already in both systems gets linked instead of duplicated.</p>
+                  <div class="identity-options" id="sync-wizard-key-options"></div>
+                  <div class="advanced-key-fields" id="sync-wizard-key-fields"></div>
+                  <div class="identity-warning" id="sync-wizard-key-warning"></div>
+                  <div class="identity-actions"><span id="sync-wizard-key-summary"></span>
+                    <button class="secondary" id="sync-wizard-key-skip" type="button">Skip for now</button>
+                    <button id="sync-wizard-key-save" type="button">Save matching rule &amp; finish</button>
+                  </div>
+                </div></div>
+                <aside class="coverage-card" aria-label="Mapping coverage">
+                  <div class="coverage-overview"><div class="summary-title">Core mapping coverage</div><div class="coverage-number" id="coverage-number">—</div></div>
+                  <div class="coverage-list" id="coverage-list"></div>
+                </aside>
+                <section class="transform-lab" id="transform-lab" aria-live="polite" hidden>
+                  <div class="transform-lab-head"><div><div class="step-eyebrow">Transform lab</div><h3 id="transform-field-name">Field transform</h3><p id="transform-field-path">Configure normalization for this migration.</p></div><button id="close-transform-lab" class="secondary" aria-label="Close transform lab">Close</button></div>
+                  <div class="transform-paths">
+                    <div class="transform-path"><div class="transform-path-title"><span>Forward</span> Source → Canonical → Target</div><div class="transform-controls"><label>Normalize source value<select id="transform-source-to"></select></label><span class="path-arrow">→</span><label>Format destination value<select id="transform-target-from"></select></label></div></div>
+                    <div class="transform-path"><div class="transform-path-title"><span>Reverse</span> Target → Canonical → Source</div><div class="transform-controls"><label>Normalize target value<select id="transform-target-to"></select></label><span class="path-arrow">→</span><label>Format source value<select id="transform-source-from"></select></label></div></div>
+                  </div>
+                  <p class="transform-lab-note">Sync runs both ways, so both paths need to agree — e.g. a Yes/No field needs the boolean↔string transform configured on <b>both</b> the forward and reverse path, or a change made in the target CRM won't convert back correctly.</p>
+                  <div class="transform-preview">
+                    <div class="transform-preview-row">
+                      <label>Test a source value (forward)<input id="transform-sample" placeholder="e.g. false"></label>
+                      <div class="transform-preview-card"><span>Written to target as</span><code id="transform-forward-result">Enter a sample value</code></div>
+                    </div>
+                    <div class="transform-preview-row">
+                      <label>Test a target value (reverse)<input id="transform-sample-reverse" placeholder="e.g. yes"></label>
+                      <div class="transform-preview-card"><span>Written to source as</span><code id="transform-reverse-result">Enter a sample value</code></div>
+                    </div>
+                  </div>
+                  <div class="transform-lab-actions"><span class="muted" id="transform-help">Transforms run before migration validation and value mapping.</span><button id="reset-transforms" class="secondary">Use identity</button><button id="apply-transforms">Apply transforms</button></div>
+                </section>
+                <div class="field-layout"><div class="scroll"><table class="mapping-table"><thead><tr><th class="mapping-action">Action</th><th class="sortable-th" data-sort="source" title="Click to sort by source field"><span id="source-field-th-label">Source field (Salesforce)</span> <span class="sort-icon">↕</span></th><th class="sortable-th" data-sort="canonical" title="Click to sort by canonical field">Canonical field <span class="sort-icon">↕</span></th><th>Transform</th><th class="sortable-th" data-sort="target" title="Click to sort by target field"><span id="target-field-th-label">Target field (HubSpot)</span> <span class="sort-icon">↕</span></th><th class="sortable-th" data-sort="sot" title="Click to sort by source of truth">Source of truth <span class="sort-icon">↕</span></th></tr></thead><tbody id="field-map-rows"><tr><td colspan="6" class="empty">Choose an object to load its mappings.</td></tr></tbody></table></div></div>
+                <datalist id="source-native-datalist"></datalist>
+                <datalist id="target-native-datalist"></datalist>
+                <div id="source-picker-menu" class="source-picker-menu" role="listbox" hidden></div>
+              </div>
             </div>
+            <div class="step-footer"><span class="step-footer-note">Changes are saved when you switch objects.</span><button class="secondary" data-go-step="objects">← Objects</button><button id="save-next-field-object" class="secondary">Save & next object →</button><button class="next-step" data-go-step="values">Values & keys →</button></div>
           </div>
         </section>
+      </div>
+    </section>
+
+    <section class="typed-confirmation" id="typed-confirmation" role="dialog" aria-modal="true" aria-labelledby="typed-confirm-title" hidden>
+      <div class="typed-confirmation-card">
+        <h2 id="typed-confirm-title">Confirm CRM write</h2>
+        <p id="typed-confirm-message"></p>
+        <label>Type <code id="typed-confirm-token"></code> to continue
+          <input id="typed-confirm-input" type="text" autocomplete="off" spellcheck="false">
+        </label>
+        <span class="typed-confirm-error" id="typed-confirm-error" hidden>Type it exactly as shown, then try again.</span>
+        <div class="typed-confirmation-actions">
+          <button class="secondary" id="typed-confirm-cancel">Cancel</button>
+          <button class="danger" id="typed-confirm-submit">Confirm</button>
+        </div>
       </div>
     </section>`;
 }

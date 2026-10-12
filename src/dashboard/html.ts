@@ -25,13 +25,6 @@ export function dashboardHtml(): string {
   body{ margin:0; background:var(--canvas); color:var(--text);
     font:400 14px/1.5 "Lexend Deca",-apple-system,BlinkMacSystemFont,"Segoe UI","Helvetica Neue",Arial,sans-serif; }
   a{ color:var(--accent); text-decoration:none; } a:hover{ text-decoration:underline; }
-  header{ background:var(--nav); color:#fff; display:flex; align-items:center; gap:12px; padding:0 24px; height:56px; }
-  header .brand{ display:flex; align-items:center; gap:9px; font-weight:600; font-size:16px; }
-  header .sprocket{ width:22px;height:22px;border-radius:50%;background:var(--primary);display:inline-block;position:relative; }
-  header .sprocket::after{ content:""; position:absolute; inset:7px; border-radius:50%; background:var(--nav); }
-  header .sub{ color:#aab7c7; font-size:12px; font-weight:400; }
-  header .right{ margin-left:auto; display:flex; align-items:center; gap:16px; }
-  header .right a{ color:#c3ccd8; font-size:13px; } header .right a:hover{ color:#fff; }
   .badge{ padding:4px 10px; border-radius:3px; font-size:11px; font-weight:600; letter-spacing:.3px; }
   .badge.demo{ background:#fdf3e0; color:#b3721a; } .badge.live{ background:#e0f7f2; color:#00806f; }
   main{ max-width:1040px; margin:0 auto; padding:32px 24px 64px; }
