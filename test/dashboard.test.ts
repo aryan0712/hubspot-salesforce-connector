@@ -428,5 +428,12 @@ describe('operations dashboard', () => {
     expect(html).toContain("'#field-mapping/'+mode+(objectType?'/'+encodeURIComponent(objectType):'')");
     expect(html).toContain("const navView=view==='field-mapping'?(workspaceMode==='sync'?'sync':'migration'):view;");
   });
+
+  it('shows button saving state, progress bar, and overhead notice when saving sync policy or field mappings', () => {
+    const html = operationsHtml();
+    expect(html).toContain("button.textContent='Saving policy…'");
+    expect(html).toContain("showNotice('Sync policy saved. Webhooks use this immediately; scheduled sync within one interval.')");
+    expect(html).toContain("showNotice('Field mappings saved.')");
+  });
 });
 
