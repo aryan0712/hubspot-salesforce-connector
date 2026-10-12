@@ -163,6 +163,10 @@ describe('PostgreSQL repositories', () => {
     expect(claimed[0]).toMatchObject({ attempts: 1, status: 'processing' });
     await jobs.complete(claimed[0]!.id);
     expect(await jobs.stats()).toMatchObject({ completed: 1, queued: 0 });
+    const completedJobs = await jobs.list(10, 'completed');
+    expect(completedJobs).toHaveLength(1);
+    expect(await jobs.list(10, 'manual_review')).toHaveLength(0);
+    expect(await jobs.list(10, 'completed', { createdAt: completedJobs[0]!.createdAt, id: completedJobs[0]!.id })).toHaveLength(0);
 
     const plans = new PostgresMigrationPlanStore(database, tenantA);
     const migrations = new PostgresMigrationStore(database, tenantA);

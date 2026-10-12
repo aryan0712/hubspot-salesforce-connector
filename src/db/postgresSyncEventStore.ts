@@ -188,11 +188,11 @@ export class PostgresSyncEventStore implements SyncEventStore {
       let statusClause = '';
       if (status) {
         params.push(status);
-        statusClause += ` AND status = ${params.length}`;
+        statusClause += ` AND status = $${params.length}`;
       }
       if (before) {
         params.push(before.createdAt, before.id);
-        statusClause += ` AND (created_at, id) < (${params.length - 1}::timestamptz, ${params.length}::uuid)`;
+        statusClause += ` AND (created_at, id) < ($${params.length - 1}::timestamptz, $${params.length}::uuid)`;
       }
       const result = await client.query<JobRow>(
         `SELECT id, vendor_event_id, system, object_type, source_id, change_type,

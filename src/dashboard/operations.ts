@@ -105,6 +105,18 @@ export function operationsHtml(): string {
     .refresh-progress{position:fixed;top:0;left:0;right:0;height:3px;background:linear-gradient(90deg,var(--orange),var(--blue),var(--teal));background-size:200% 100%;animation:refresh-slide 1s linear infinite;z-index:9999}
     @keyframes refresh-slide{0%{background-position:200% 0}100%{background-position:-200% 0}}
     .btn-refreshed{border-color:var(--teal)!important;color:var(--teal)!important}
+    .metric-btn{text-align:left;cursor:pointer;transition:border-color .15s,box-shadow .15s}
+    .metric-btn:hover{background:#fff;border-color:var(--orange);color:var(--text);box-shadow:0 4px 12px rgba(46,63,80,.08)}
+    .pill-btn{border:1px solid #e6c875;cursor:pointer;font-family:inherit;padding:4px 8px;transition:background .12s,border-color .12s}
+    .pill-btn:hover{background:#ffedb3;border-color:#d4ab3b;color:#6e5108}
+    .manual-review-modal[hidden]{display:none}.manual-review-modal{position:fixed;inset:0;z-index:1000;display:grid;place-items:center;padding:20px;background:rgba(18,36,52,.56)}
+    .manual-review-card{width:min(540px,100%);padding:22px;border:1px solid var(--border);border-radius:12px;background:#fff;box-shadow:0 24px 70px rgba(18,36,52,.25)}
+    .manual-review-card h2{margin:0;font-size:19px}.manual-review-card p{margin:8px 0 14px;color:var(--text-2);font-size:13px;line-height:1.55}
+    .manual-review-meta{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:12px 0;padding:12px;background:#fafcfd;border:1px solid var(--border);border-radius:8px;font-size:12px}
+    .manual-review-meta div span{display:block;color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.05em}
+    .manual-review-meta div b{display:block;margin-top:2px;color:var(--text);overflow-wrap:anywhere}
+    .manual-review-reason{padding:12px;background:#fff8f5;border:1px solid #f3d5cc;border-radius:8px;color:#8d4935;font-size:12px;line-height:1.5;overflow-wrap:anywhere;margin-bottom:16px}
+    .manual-review-actions{display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap;margin-top:16px}
   </style>
 </head>
 <body>
@@ -207,7 +219,7 @@ export function operationsHtml(): string {
         <button class="secondary" id="conflicts-replay-selected" type="button" hidden>Replay selected</button>
         <button class="danger" id="conflicts-delete-selected" type="button" hidden>Delete selected</button>
         <button class="secondary" id="refresh-conflicts">Refresh queue</button></div>
-        <div class="scroll"><table><thead><tr><th style="width:36px"><input type="checkbox" id="conflicts-select-all"></th><th>Status</th><th>Event</th><th>Attempts</th><th>Reason</th><th></th></tr></thead><tbody id="conflicts"></tbody></table></div>
+        <div class="scroll"><table><thead><tr><th style="width:36px"><input type="checkbox" id="conflicts-select-all"></th><th>Status</th><th>Date &amp; time</th><th>Event</th><th>Attempts</th><th>Reason</th><th></th></tr></thead><tbody id="conflicts"></tbody></table></div>
       </div>
     </section>
 
@@ -219,7 +231,7 @@ export function operationsHtml(): string {
             <button class="secondary" id="jobs-replay-selected" type="button" hidden>Replay selected</button>
             <button class="danger" id="jobs-delete-selected" type="button" hidden>Delete selected</button>
             <select id="job-filter"><option value="">All statuses</option><option>queued</option><option>retry</option><option>dead_letter</option><option>manual_review</option><option>completed</option><option>dismissed</option></select></div>
-          <div class="scroll"><table><thead><tr><th style="width:36px"><input type="checkbox" id="jobs-select-all"></th><th>Status</th><th>Event</th><th>Attempts</th><th>Error</th><th></th></tr></thead><tbody id="jobs"></tbody></table></div>
+          <div class="scroll"><table><thead><tr><th style="width:36px"><input type="checkbox" id="jobs-select-all"></th><th>Status</th><th>Date &amp; time</th><th>Event</th><th>Attempts</th><th>Error</th><th></th></tr></thead><tbody id="jobs"></tbody></table></div>
         </div>
         <div class="activity-panel" id="activity-conflicts"><div class="card-body">
           <p class="muted">Each conflict was resolved automatically by the sync policy. Review it, and if the other side should have won, keep that side's recorded values instead.</p>
@@ -244,6 +256,18 @@ export function operationsHtml(): string {
           </div>
         </div><div class="scroll"><table><thead><tr><th>Name</th><th>Prefix</th><th>Role</th><th>Last used</th><th></th></tr></thead><tbody id="api-keys"></tbody></table></div></div>
         <div class="card"><h2>Team</h2><div class="scroll"><table><thead><tr><th>Member</th><th>Role</th><th>Added</th></tr></thead><tbody id="team"></tbody></table></div></div>
+      </div>
+    </section>
+    <section class="manual-review-modal" id="manual-review-modal" role="dialog" aria-modal="true" aria-labelledby="manual-review-title" hidden>
+      <div class="manual-review-card">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px">
+          <h2 id="manual-review-title">Manual review</h2>
+          <span class="pill manual_review" id="manual-review-status">manual_review</span>
+        </div>
+        <p id="manual-review-subtitle">This sync job was paused so an operator can review the issue before retrying or dismissing it.</p>
+        <div class="manual-review-meta" id="manual-review-meta"></div>
+        <div class="manual-review-reason" id="manual-review-reason"></div>
+        <div class="manual-review-actions" id="manual-review-actions"></div>
       </div>
     </section>
   </main>
@@ -302,10 +326,12 @@ export function operationsHtml(): string {
     document.querySelectorAll('.app-nav a[href^="/ops#"]').forEach(a=>a.onclick=e=>{e.preventDefault();workspaceMode='migration';const view=a.getAttribute('href').split('#')[1];history.replaceState(null,'','#'+view);selectView(view)});
     window.addEventListener('hashchange',()=>selectView(location.hash.slice(1)));
     selectView(location.hash.slice(1));
-    function metric(label,value,cls=''){return '<div class="metric"><span>'+esc(label)+'</span><b class="'+cls+'">'+esc(value)+'</b></div>'}
+    function metric(label,value,cls='',filter=''){if(filter)return '<button type="button" class="metric metric-btn" data-action="filterJobsByStatus" data-arg="'+esc(filter)+'"><span>'+esc(label)+'</span><b class="'+cls+'">'+esc(value)+'</b></button>';return '<div class="metric"><span>'+esc(label)+'</span><b class="'+cls+'">'+esc(value)+'</b></div>'}
+    function filterJobsByStatus(status){history.replaceState(null,'','#activity');selectView('activity');document.querySelectorAll('[data-activity-tab]').forEach(item=>item.classList.toggle('active',item.dataset.activityTab==='jobs'));document.querySelectorAll('.activity-panel').forEach(panel=>panel.classList.toggle('active',panel.id==='activity-jobs'));$('job-filter').value=status||'';loadJobs()}
+    window.filterJobsByStatus=filterJobsByStatus;
     async function loadMetrics(){const [s,q]=await Promise.all([api('/api/status'),api('/api/sync/stats')]);$('metrics').innerHTML=
-      metric('Ready',s.ready?'Yes':'No',s.ready?'create':'error')+metric('Queued',q.queued)+metric('Retrying',q.retry,'retry')+
-      metric('Manual review',q.manualReview,'ambiguous')+metric('Dead letter',q.deadLetter,'dead_letter')+metric('Synced',s.stats.synced)}
+      metric('Ready',s.ready?'Yes':'No',s.ready?'create':'error')+metric('Queued',q.queued,'','queued')+metric('Retrying',q.retry,'retry','retry')+
+      metric('Manual review',q.manualReview,'ambiguous','manual_review')+metric('Dead letter',q.deadLetter,'dead_letter','dead_letter')+metric('Synced',s.stats.synced)}
     const migrationState={plan:null,dirty:true,catalog:[],catalogError:null,targets:[],selected:new Set(),selectionInitialized:false,selectedRow:null,metadata:new Map(),mapping:null,fieldLoadToken:0,valueLoadToken:0,preflight:null,copilot:null,preview:null,canaryPreview:null,canaryVerified:false,currentStep:'scope',visited:new Set(['scope']),transformRow:null,savedPlans:[],runs:[]};
     const migrationSteps=['scope','objects','fields','values','validate','preview'];
     const transformIds=['identity','domain','lowercase','trim','number','boolean','yes-no','true-false','iso-date','epoch-millis','phone'];
@@ -1368,14 +1394,29 @@ export function operationsHtml(): string {
         finally{button.disabled=false;button.textContent='Save matching rule & finish'}
       };
     }
+    const cachedSyncJobs=new Map();
+    function rememberJobs(entries){for(const j of entries||[])cachedSyncJobs.set(j.id,j)}
+    function formatJobDateTime(j){
+      const raw=j&&(j.createdAt||(j.event&&j.event.occurredAt));
+      if(!raw)return '—';
+      const d=new Date(raw);
+      return Number.isNaN(d.getTime())?String(raw):d.toLocaleString();
+    }
+    function jobStatusBadge(j){
+      if(j.status==='manual_review'){
+        return '<button type="button" class="pill manual_review pill-btn" data-action="reviewJob" data-arg="'+esc(j.id)+'" title="Click to review this job">manual_review</button>';
+      }
+      return '<span class="pill '+esc(j.status)+'">'+esc(j.status)+'</span>';
+    }
     function jobRowCells(j,selectable){const needsAttention=j.status==='dead_letter'||j.status==='manual_review'||j.status==='retry';
-      const select='<td>'+(selectable&&needsAttention?'<input type="checkbox" class="row-select" value="'+j.id+'">':'')+'</td>';
-      const primary=j.status==='manual_review'&&j.event.changeType==='deleted'?'<button class="danger" data-action="approveDelete" data-arg="'+j.id+'">Approve delete</button>':needsAttention?'<button data-action="replay" data-arg="'+j.id+'">Replay</button>':'';
-      const dismiss=needsAttention?'<button class="danger" data-action="dismissJob" data-arg="'+j.id+'" title="Give up on this permanently -- it will not be retried">Delete</button>':'';
-      const actions=(primary||dismiss)?'<div class="row-actions">'+primary+dismiss+'</div>':'';
+      const select='<td>'+(selectable&&needsAttention?'<input type="checkbox" class="row-select" value="'+esc(j.id)+'">':'')+'</td>';
+      const reviewBtn=j.status==='manual_review'?'<button class="secondary" type="button" data-action="reviewJob" data-arg="'+esc(j.id)+'">Review</button>':'';
+      const primary=j.status==='manual_review'&&j.event.changeType==='deleted'?'<button class="danger" data-action="approveDelete" data-arg="'+esc(j.id)+'">Approve delete</button>':needsAttention?'<button data-action="replay" data-arg="'+esc(j.id)+'">Replay</button>':'';
+      const dismiss=needsAttention?'<button class="danger" data-action="dismissJob" data-arg="'+esc(j.id)+'" title="Give up on this permanently -- it will not be retried">Delete</button>':'';
+      const actions=(reviewBtn||primary||dismiss)?'<div class="row-actions">'+reviewBtn+primary+dismiss+'</div>':'';
       return {select,actions}}
-    async function loadSyncConflicts(){const r=await api('/api/sync/jobs?limit=200');const entries=r.entries.filter(job=>job.status==='manual_review'||job.status==='dead_letter');
-      $('conflicts').innerHTML=entries.length?entries.map(j=>{const c=jobRowCells(j,true);return '<tr>'+c.select+'<td><span class="pill '+j.status+'">'+esc(j.status)+'</span></td><td>'+esc(j.event.system+' '+j.event.type+' '+j.event.changeType)+'</td><td>'+j.attempts+'</td><td>'+esc(j.lastError||'Operator review required')+'</td><td>'+c.actions+'</td></tr>'}).join(''):'<tr><td colspan="6" class="empty">No conflicts or manual reviews waiting.</td></tr>';
+    async function loadSyncConflicts(){const r=await api('/api/sync/jobs?limit=200');rememberJobs(r.entries);const entries=r.entries.filter(job=>job.status==='manual_review'||job.status==='dead_letter');
+      $('conflicts').innerHTML=entries.length?entries.map(j=>{const c=jobRowCells(j,true);return '<tr>'+c.select+'<td>'+jobStatusBadge(j)+'</td><td class="muted" style="white-space:nowrap">'+esc(formatJobDateTime(j))+'</td><td>'+esc(j.event.system+' '+j.event.type+' '+j.event.changeType)+'<br><span class="muted">'+esc(j.event.sourceId)+'</span></td><td>'+j.attempts+'</td><td>'+esc(j.lastError||'Operator review required')+'</td><td>'+c.actions+'</td></tr>'}).join(''):'<tr><td colspan="7" class="empty">No conflicts or manual reviews waiting.</td></tr>';
       resetBulkBar('conflicts')}
     $('refresh-conflicts').onclick=async()=>{
       const btn=$('refresh-conflicts');if(!btn||btn.disabled)return;
@@ -1384,13 +1425,81 @@ export function operationsHtml(): string {
       catch(e){showError('Failed to refresh conflicts: '+(e.message||e));btn.textContent=orig;btn.disabled=false}
       finally{hideProgressBar()}};
 
-    async function loadJobs(){const f=$('job-filter').value;const r=await api('/api/sync/jobs?limit=200'+(f?'&status='+encodeURIComponent(f):''));
-      $('jobs').innerHTML=r.entries.length?r.entries.map(j=>{const c=jobRowCells(j,true);return '<tr>'+c.select+'<td><span class="pill '+j.status+'">'+esc(j.status)+'</span></td><td>'+esc(j.event.system+' '+j.event.type+' '+j.event.changeType)+'<br><span class="muted">'+esc(j.event.sourceId)+'</span></td><td>'+j.attempts+'</td><td>'+esc(j.lastError||'—')+'</td><td>'+c.actions+'</td></tr>'}).join(''):'<tr><td colspan="6" class="empty">No jobs</td></tr>';
+    async function loadJobs(){const f=$('job-filter').value;const r=await api('/api/sync/jobs?limit=200'+(f?'&status='+encodeURIComponent(f):''));rememberJobs(r.entries);
+      $('jobs').innerHTML=r.entries.length?r.entries.map(j=>{const c=jobRowCells(j,true);return '<tr>'+c.select+'<td>'+jobStatusBadge(j)+'</td><td class="muted" style="white-space:nowrap">'+esc(formatJobDateTime(j))+'</td><td>'+esc(j.event.system+' '+j.event.type+' '+j.event.changeType)+'<br><span class="muted">'+esc(j.event.sourceId)+'</span></td><td>'+j.attempts+'</td><td>'+esc(j.lastError||'—')+'</td><td>'+c.actions+'</td></tr>'}).join(''):'<tr><td colspan="7" class="empty">No jobs</td></tr>';
       resetBulkBar('jobs')}
-    async function replay(id){await api('/api/sync/jobs/'+id+'/replay',{method:'POST'});await Promise.all([loadJobs(),loadMetrics(),loadSyncConflicts()])}
-    async function approveDelete(id){if(!confirm('Delete/archive the linked record in the other CRM?'))return;await api('/api/sync/jobs/'+id+'/approve-delete',{method:'POST'});await Promise.all([loadJobs(),loadMetrics(),loadSyncConflicts()])}
-    async function dismissJob(id){if(!confirm('Give up on this permanently? It will not be retried, and stays visible in Activity for the record.'))return;await api('/api/sync/jobs/'+id+'/dismiss',{method:'POST'});await Promise.all([loadJobs(),loadMetrics(),loadSyncConflicts()])}
-    window.replay=replay;window.approveDelete=approveDelete;window.dismissJob=dismissJob;$('job-filter').onchange=loadJobs;
+    function closeReviewModal(){const m=$('manual-review-modal');if(m)m.hidden=true}
+    function reviewJob(id){
+      const j=cachedSyncJobs.get(id);
+      const modal=$('manual-review-modal');
+      if(!j||!modal)return;
+      const sysLabel=j.event.system==='salesforce'?'Salesforce':'HubSpot';
+      const targetLabel=j.event.system==='salesforce'?'HubSpot':'Salesforce';
+      $('manual-review-status').textContent=j.status;
+      $('manual-review-status').className='pill '+j.status;
+      $('manual-review-meta').innerHTML=
+        '<div><span>Source → Target</span><b>'+esc(sysLabel+' → '+targetLabel)+'</b></div>'+
+        '<div><span>Object &amp; event</span><b>'+esc(j.event.type+' · '+j.event.changeType)+'</b></div>'+
+        '<div><span>Source record ID</span><b><code>'+esc(j.event.sourceId)+'</code></b></div>'+
+        '<div><span>Date &amp; time</span><b>'+esc(formatJobDateTime(j))+'</b></div>'+
+        '<div><span>Attempts</span><b>'+esc(j.attempts)+'</b></div>'+
+        '<div><span>Job ID</span><b><code>'+esc(j.id.slice(0,8))+'</code></b></div>';
+      $('manual-review-reason').textContent=j.lastError||'Operator review required before proceeding.';
+      const isDelete=j.status==='manual_review'&&j.event.changeType==='deleted';
+      $('manual-review-actions').innerHTML=
+        '<button class="secondary" type="button" data-action="closeReviewModal">Close</button>'+
+        '<button class="secondary" type="button" data-action="reviewMapFields" data-arg="'+esc(j.event.type)+'">Edit field mappings</button>'+
+        (isDelete?'<button class="danger" type="button" data-action="approveDeleteFromModal" data-arg="'+esc(j.id)+'">Approve delete</button>':'')+
+        '<button type="button" data-action="replayFromModal" data-arg="'+esc(j.id)+'">Replay sync job</button>'+
+        '<button class="danger" type="button" data-action="dismissFromModal" data-arg="'+esc(j.id)+'">Delete job</button>';
+      modal.hidden=false;
+    }
+    async function replay(id,el){
+      if(el){el.disabled=true;el.textContent='Replaying…'}
+      showProgressBar();
+      try{
+        await api('/api/sync/jobs/'+id+'/replay',{method:'POST'});
+        showNotice('Sync job queued for replay.');
+        await Promise.all([loadJobs(),loadMetrics(),loadSyncConflicts()]);
+        setTimeout(()=>{Promise.allSettled([loadJobs(),loadMetrics(),loadSyncConflicts()])},1200);
+      }finally{
+        hideProgressBar();
+        if(el&&el.isConnected){el.disabled=false;el.textContent='Replay'}
+      }
+    }
+    async function approveDelete(id,el){
+      if(!confirm('Delete/archive the linked record in the other CRM?'))return;
+      if(el){el.disabled=true;el.textContent='Approving…'}
+      showProgressBar();
+      try{
+        await api('/api/sync/jobs/'+id+'/approve-delete',{method:'POST'});
+        showNotice('Deletion approved and propagated.');
+        await Promise.all([loadJobs(),loadMetrics(),loadSyncConflicts()]);
+      }finally{
+        hideProgressBar();
+        if(el&&el.isConnected){el.disabled=false;el.textContent='Approve delete'}
+      }
+    }
+    async function dismissJob(id,el){
+      if(!confirm('Give up on this permanently? It will not be retried, and stays visible in Activity for the record.'))return;
+      if(el){el.disabled=true;el.textContent='Deleting…'}
+      showProgressBar();
+      try{
+        await api('/api/sync/jobs/'+id+'/dismiss',{method:'POST'});
+        showNotice('Sync job dismissed.');
+        await Promise.all([loadJobs(),loadMetrics(),loadSyncConflicts()]);
+      }finally{
+        hideProgressBar();
+        if(el&&el.isConnected){el.disabled=false;el.textContent='Delete'}
+      }
+    }
+    window.replay=replay;window.approveDelete=approveDelete;window.dismissJob=dismissJob;
+    window.reviewJob=reviewJob;window.closeReviewModal=closeReviewModal;
+    window.reviewMapFields=type=>{closeReviewModal();goMapFields(type)};
+    window.replayFromModal=async(id,el)=>{await replay(id,el);closeReviewModal()};
+    window.approveDeleteFromModal=async(id,el)=>{await approveDelete(id,el);closeReviewModal()};
+    window.dismissFromModal=async(id,el)=>{await dismissJob(id,el);closeReviewModal()};
+    $('job-filter').onchange=loadJobs;
 
     // Bulk selection for both the Conflicts card and the Activity tab's Sync jobs table --
     // one row checkbox per selectable row, a header "select all", and Replay/Delete selected
@@ -1415,6 +1524,7 @@ export function operationsHtml(): string {
     // the stats endpoint -- not the full jobs/conflicts tables -- catches a new failure within
     // one tick and surfaces it immediately as a banner, without a new push/SSE subsystem.
     let lastKnownSyncStats=null;
+    let lastErrorBannerFilter='dead_letter';
     async function checkForNewSyncErrors(){
       const activeView=document.querySelector('.view.active')?.id;
       if(activeView!=='view-sync'&&activeView!=='view-activity')return;
@@ -1427,6 +1537,7 @@ export function operationsHtml(): string {
           const parts=[];
           if(newDead)parts.push(newDead+' new dead-letter error'+(newDead===1?'':'s'));
           if(newManual)parts.push(newManual+' new manual review'+(newManual===1?'':'s'));
+          lastErrorBannerFilter=newManual&&!newDead?'manual_review':newDead&&!newManual?'dead_letter':'';
           $('live-error-banner-text').textContent=parts.join(' and ')+' just now.';
           $('live-error-banner').hidden=false;
         }
@@ -1434,7 +1545,7 @@ export function operationsHtml(): string {
       lastKnownSyncStats=stats;
     }
     $('live-error-banner-dismiss').onclick=()=>{$('live-error-banner').hidden=true};
-    $('live-error-banner-view').onclick=()=>{$('live-error-banner').hidden=true;history.replaceState(null,'','#activity');selectView('activity');$('job-filter').value='dead_letter';loadJobs()};
+    $('live-error-banner-view').onclick=()=>{$('live-error-banner').hidden=true;filterJobsByStatus(lastErrorBannerFilter)};
     checkForNewSyncErrors();
     setInterval(()=>{if(!document.hidden)checkForNewSyncErrors()},10000);
     document.addEventListener('visibilitychange',()=>{if(!document.hidden)checkForNewSyncErrors()});

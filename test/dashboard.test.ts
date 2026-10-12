@@ -398,6 +398,15 @@ describe('operations dashboard', () => {
     expect(html).toContain('data-conflict-row');
     expect(html).toContain('class="field-sot"');
   });
-});
 
+  it('shows a Date & time column in Activity sync jobs and provides working manual review controls', () => {
+    const html = operationsHtml();
+    expect(html).toContain('<th>Status</th><th>Date &amp; time</th><th>Event</th>');
+    expect(html).toContain('formatJobDateTime');
+    expect(html).toContain('id="manual-review-modal"');
+    expect(html).toContain('data-action="reviewJob"');
+    expect(html).toContain('data-action="filterJobsByStatus"');
+    expect(html).toContain('window.reviewJob=reviewJob');
+  });
+});
 
