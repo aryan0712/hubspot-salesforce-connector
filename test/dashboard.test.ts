@@ -397,16 +397,36 @@ describe('operations dashboard', () => {
     expect(html).toContain('data-object-sot');
     expect(html).toContain('data-conflict-row');
     expect(html).toContain('class="field-sot"');
+    expect(html).toContain("const currentSot=s.sourceOfTruth||t.sourceOfTruth||'salesforce';");
+    expect(html).toContain('<option value="last-write-wins" \'+(currentSot===\'last-write-wins\'?\'selected\':\'\')+\'>Last write wins</option>');
+    expect(html).not.toContain('Default (\'+esc(sotLabel)+\')');
+    expect(html).not.toContain('Inherit org default');
   });
 
   it('shows a Date & time column in Activity sync jobs and provides working manual review controls', () => {
     const html = operationsHtml();
     expect(html).toContain('<th>Status</th><th>Date &amp; time</th><th>Event</th>');
     expect(html).toContain('formatJobDateTime');
+    expect(html).toContain('extractErrorFieldHint');
+    expect(html).toContain('formatJobErrorCell');
     expect(html).toContain('id="manual-review-modal"');
     expect(html).toContain('data-action="reviewJob"');
     expect(html).toContain('data-action="filterJobsByStatus"');
     expect(html).toContain('window.reviewJob=reviewJob');
+  });
+
+  it('renders a standalone Field Mapping page shared by Migrate and Sync that preserves the originating tab on reload', () => {
+    const html = operationsHtml();
+    expect(html).toContain('id="view-field-mapping"');
+    expect(html).toContain('id="field-mapping-header"');
+    expect(html).toContain('id="back-to-migration"');
+    expect(html).toContain('id="back-to-sync"');
+    expect(html).toContain('parseHashRoute');
+    expect(html).toContain('fieldMappingHash');
+    expect(html).toContain('openFieldMappingPage');
+    expect(html).toContain('loadFieldMappingWorkspace');
+    expect(html).toContain("'#field-mapping/'+mode+(objectType?'/'+encodeURIComponent(objectType):'')");
+    expect(html).toContain("const navView=view==='field-mapping'?(workspaceMode==='sync'?'sync':'migration'):view;");
   });
 });
 

@@ -24,7 +24,18 @@ export function describeError(err: unknown): string {
 interface HubSpotFieldError {
   message?: string;
   code?: string;
-  context?: { propertyName?: string[] };
+  name?: string;
+  context?: {
+    propertyName?: string[];
+    missingRequiredProperty?: string[];
+    invalidPropertyName?: string[];
+  };
+}
+
+interface SalesforceErrorItem {
+  message?: string;
+  errorCode?: string;
+  fields?: string[];
 }
 
 export interface DuplicateValueConflict {
@@ -83,26 +94,160 @@ export function friendlyErrorMessage(err: unknown, targetSystemLabel = 'the targ
     return err instanceof Error ? err.message : String(err);
   }
   const status = err.response?.status;
-  const data = err.response?.data as { errors?: HubSpotFieldError[] } | undefined;
+  const rawData = err.response?.data;
 
   const duplicate = extractDuplicateValueConflict(err);
   if (duplicate) {
     return `Can't set "${duplicate.property}" to "${duplicate.value}" -- another record (${duplicate.conflictingId}) in ${targetSystemLabel} already has that value. Merge or update the duplicate there, then replay this sync.`;
   }
 
-  const fieldErrors = Array.isArray(data?.errors) ? data!.errors : undefined;
-  if (fieldErrors?.length) {
-    const first = fieldErrors[0]!;
-    const field = first.context?.propertyName?.[0];
-    const detail = humanizeVendorMessage(first.message ?? '', field, status, targetSystemLabel);
-    const more = fieldErrors.length > 1 ? ` (+${fieldErrors.length - 1} more field${fieldErrors.length - 1 === 1 ? '' : 's'} with issues)` : '';
-    return detail + more;
+  // Salesforce error shape: [{ message, errorCode, fields?: string[] }, ...]
+  if (Array.isArray(rawData) && rawData.length > 0) {
+    const sfItems = rawData.filter((item): item is SalesforceErrorItem => Boolean(item && typeof item === 'object'));
+    if (sfItems.length > 0) {
+      const formatted = sfItems.slice(0, 3).map((item) => {
+        const msg = typeof item.message === 'string' ? item.message : '';
+        const fields = extractSalesforceFields(item);
+        return humanizeVendorMessage(msg, fields.length ? fields.join(', ') : undefined, status, targetSystemLabel);
+      });
+      return appendRequestContext(formatted.join(' · '), err);
+    }
   }
 
-  const vendorMessage = extractVendorErrorMessage(err.response?.data);
-  if (vendorMessage) return humanizeVendorMessage(vendorMessage, undefined, status, targetSystemLabel);
+  const data = rawData as { errors?: HubSpotFieldError[] } | undefined;
+  const fieldErrors = Array.isArray(data?.errors) ? data!.errors : undefined;
+  if (fieldErrors?.length) {
+    const formatted = fieldErrors.slice(0, 3).map((item) => {
+      const field =
+        item.context?.propertyName?.[0] ??
+        item.context?.missingRequiredProperty?.[0] ??
+        item.context?.invalidPropertyName?.[0] ??
+        item.name;
+      return humanizeVendorMessage(item.message ?? '', field, status, targetSystemLabel);
+    });
+    const moreCount = fieldErrors.length - formatted.length;
+    const more = moreCount > 0 ? ` (+${moreCount} more field${moreCount === 1 ? '' : 's'} with issues)` : '';
+    return appendRequestContext(formatted.join(' · ') + more, err);
+  }
 
-  return httpStatusFallback(status, targetSystemLabel);
+  const vendorMessage = extractVendorErrorMessage(rawData);
+  if (vendorMessage) {
+    const embedded = parseEmbeddedHubSpotPropertyErrors(vendorMessage, status, targetSystemLabel);
+    if (embedded) return appendRequestContext(embedded, err);
+    const inferredField = inferFieldFromMessage(vendorMessage);
+    return appendRequestContext(humanizeVendorMessage(vendorMessage, inferredField, status, targetSystemLabel), err);
+  }
+
+  return appendRequestContext(httpStatusFallback(status, targetSystemLabel), err);
+}
+
+function extractSalesforceFields(item: SalesforceErrorItem): string[] {
+  if (Array.isArray(item.fields)) {
+    const explicit = item.fields.filter((f): f is string => typeof f === 'string' && f.trim().length > 0);
+    if (explicit.length > 0) return explicit;
+  }
+  const inferred = item.message ? inferFieldFromMessage(item.message) : undefined;
+  return inferred ? [inferred] : [];
+}
+
+function inferFieldFromMessage(message: string): string | undefined {
+  // HubSpot: "Invalid names: [Other]" or "Invalid names: [Foo, Bar]"
+  const invalidNames = message.match(/Invalid names:\s*\[([^\]]+)\]/i);
+  if (invalidNames?.[1]) return invalidNames[1].trim();
+
+  // HubSpot: "Property \"foo\" does not exist" or "Provided property [foo] does not exist"
+  const propNotExist = message.match(/(?:Property|propertyName)\s*[=:"[\s]+([A-Za-z0-9_.-]+)["\]\s]+does not exist/i);
+  if (propNotExist?.[1]) return propNotExist[1].trim();
+
+  // Salesforce SOQL: "No such column 'Foo__c' on entity 'Contact'"
+  const noSuchCol = message.match(/No such column '([^']+)'/i);
+  if (noSuchCol?.[1]) return noSuchCol[1].trim();
+
+  // Salesforce: "Required fields are missing: [LastName]"
+  const reqMissing = message.match(/Required fields are missing:\s*\[([^\]]+)\]/i);
+  if (reqMissing?.[1]) return reqMissing[1].trim();
+
+  // Salesforce: "Unable to create/update fields: Foo__c, Bar__c."
+  const unableFields = message.match(/Unable to create\/update fields:\s*([^\n.]+)/i);
+  if (unableFields?.[1]) return unableFields[1].trim();
+
+  return undefined;
+}
+
+function parseEmbeddedHubSpotPropertyErrors(
+  message: string,
+  status: number | undefined,
+  targetSystemLabel: string,
+): string | undefined {
+  const match = message.match(/Property values were not valid:\s*(\[[\s\S]*\])/i);
+  if (!match?.[1]) return undefined;
+  try {
+    const parsed = JSON.parse(match[1]) as { name?: string; message?: string; error?: string }[];
+    if (!Array.isArray(parsed) || parsed.length === 0) return undefined;
+    const parts = parsed.slice(0, 3).map((entry) =>
+      humanizeVendorMessage(entry.message ?? entry.error ?? 'invalid value', entry.name, status, targetSystemLabel),
+    );
+    const more = parsed.length > 3 ? ` (+${parsed.length - 3} more field${parsed.length - 3 === 1 ? '' : 's'} with issues)` : '';
+    return parts.join(' · ') + more;
+  } catch {
+    return undefined;
+  }
+}
+
+function appendRequestContext(formatted: string, err: unknown): string {
+  // If a specific field is already identified in the message, no extra fallback is needed.
+  if (/\bField(?:s)?\s+"/i.test(formatted) || /^Can't set "/i.test(formatted) || /^Skipped: missing required value for /i.test(formatted)) {
+    return formatted;
+  }
+  if (!axios.isAxiosError(err) || !err.config) return formatted;
+
+  const url = err.config.url ?? '';
+  const assocMatch =
+    url.match(/\/objects\/([^/]+)\/[^/]+\/associations\/(?:default\/)?([^/?]+)/i) ??
+    url.match(/\/associations\/([^/]+)\/([^/?]+)/i);
+  if (assocMatch?.[1] && assocMatch?.[2]) {
+    return `${formatted} (while syncing relationship: ${assocMatch[1]} → ${assocMatch[2]})`;
+  }
+
+  const fields = extractSentPayloadFields(err.config.data);
+  if (fields.length > 0) {
+    const listed = fields.slice(0, 8).join(', ') + (fields.length > 8 ? `, +${fields.length - 8} more` : '');
+    return `${formatted} (fields in request: ${listed})`;
+  }
+  return formatted;
+}
+
+function extractSentPayloadFields(rawData: unknown): string[] {
+  if (!rawData) return [];
+  let parsed: unknown = rawData;
+  if (typeof rawData === 'string') {
+    try {
+      parsed = JSON.parse(rawData);
+    } catch {
+      return [];
+    }
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return [];
+  const obj = parsed as Record<string, unknown>;
+  // HubSpot create/update payload: { properties: { name: "...", domain: "..." } }
+  if (obj.properties && typeof obj.properties === 'object' && !Array.isArray(obj.properties)) {
+    return Object.keys(obj.properties as Record<string, unknown>);
+  }
+  // HubSpot search payload: { filterGroups: [{ filters: [{ propertyName: "..." }] }] }
+  if (Array.isArray(obj.filterGroups)) {
+    const props = new Set<string>();
+    for (const group of obj.filterGroups) {
+      const filters = (group as { filters?: { propertyName?: string }[] })?.filters;
+      if (Array.isArray(filters)) {
+        for (const f of filters) {
+          if (typeof f?.propertyName === 'string' && f.propertyName) props.add(f.propertyName);
+        }
+      }
+    }
+    return [...props];
+  }
+  // Salesforce create/update payload: { Name: "...", Phone: "..." }
+  return Object.keys(obj);
 }
 
 function humanizeVendorMessage(
@@ -117,12 +262,18 @@ function humanizeVendorMessage(
     return `The record could not be found in ${targetSystemLabel} -- it may have been deleted there, or the link between the two systems is stale.`;
   }
 
+  const prefix = field
+    ? field.includes(',')
+      ? `Fields "${field}" in ${targetSystemLabel}`
+      : `Field "${field}" in ${targetSystemLabel}`
+    : undefined;
+
   // "X was not one of the allowed options: [...]" / "X was not a valid long/integer/number"
   if (/was not one of the allowed options|was not a valid (long|integer|number)/i.test(trimmed)) {
-    return field ? `Field "${field}" in ${targetSystemLabel}: ${trimmed}` : `${targetSystemLabel}: ${trimmed}`;
+    return prefix ? `${prefix}: ${trimmed}` : `${targetSystemLabel}: ${trimmed}`;
   }
 
-  return field ? `Field "${field}" in ${targetSystemLabel}: ${trimmed}` : trimmed;
+  return prefix ? `${prefix}: ${trimmed}` : trimmed;
 }
 
 function httpStatusFallback(status: number | undefined, targetSystemLabel: string): string {
@@ -146,3 +297,4 @@ function httpStatusFallback(status: number | undefined, targetSystemLabel: strin
       return status ? `Request to ${targetSystemLabel} failed (HTTP ${status}).` : `Request to ${targetSystemLabel} failed.`;
   }
 }
+
