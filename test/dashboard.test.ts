@@ -429,11 +429,47 @@ describe('operations dashboard', () => {
     expect(html).toContain("const navView=view==='field-mapping'?(workspaceMode==='sync'?'sync':'migration'):view;");
   });
 
-  it('shows button saving state, progress bar, and overhead notice when saving sync policy or field mappings', () => {
+  it('shows button saving state, progress bar, overhead notice, and red sync-paused warning when saving sync policy or field mappings', () => {
     const html = operationsHtml();
     expect(html).toContain("button.textContent='Saving policy…'");
     expect(html).toContain("showNotice('Sync policy saved. Webhooks use this immediately; scheduled sync within one interval.')");
     expect(html).toContain("showNotice('Field mappings saved.')");
+    expect(html).toContain('window.showWarning=');
+    expect(html).toContain('.ui-warning');
+    expect(html).toContain('⚠ SYNC PAUSED');
+    expect(html).toContain('showSyncPausedWarning');
+    expect(html).toContain("label:'Open Sync tab →'");
+  });
+
+  it('reverses Source and Target columns for HubSpot to Salesforce and labels headings with CRM names in brackets', () => {
+    const html = operationsHtml();
+    expect(html).toContain('<span id="source-field-th-label">Source field (Salesforce)</span>');
+    expect(html).toContain('<span id="target-field-th-label">Target field (HubSpot)</span>');
+    expect(html).toContain('updateFieldMappingDirectionHeaders');
+    expect(html).toContain("'Source field ('+fromLabel+')'");
+    expect(html).toContain("'Target field ('+toLabel+')'");
+    expect(html).toContain('getFieldMappingDirection');
+    expect(html).toContain('resolveRowEndpoints');
+    expect(html).toContain("dir==='hubspot_to_salesforce'?'hubspot':'salesforce'");
+  });
+
+  it('allows entering text values and selecting Picklist (Salesforce) or Dropdown (HubSpot) values in the Source field list with section headings', () => {
+    const html = operationsHtml();
+    expect(html).toContain('id="source-picker-menu"');
+    expect(html).toContain('source-picker-heading');
+    expect(html).toContain('buildSourcePickerGroups');
+    expect(html).toContain('openSourcePicker');
+    expect(html).toContain("'Field list ('+sysLabel+')'");
+    expect(html).toContain("(sys==='salesforce'?'Picklist values':'Dropdown values')+' ('+sysLabel+')'");
+    expect(html).toContain('sourceDatalistOptions');
+    expect(html).toContain('picklistOptionLabel');
+    expect(html).toContain("'Picklist (Salesforce)'");
+    expect(html).toContain("'Dropdown (HubSpot)'");
+    expect(html).toContain('encodeSourceNative');
+    expect(html).toContain('displaySourceNative');
+    expect(html).toContain('placeholder="Select field, picklist value, or enter text…"');
   });
 });
+
+
 

@@ -294,6 +294,8 @@ export function operationsHtml(): string {
         if(objectType!==undefined)sessionStorage.setItem('crm_sync_field_mapping_object',objectType||'');
       }catch{}
     }
+    function getStoredMigrationFrom(){try{const v=sessionStorage.getItem('crm_sync_migration_from')||'';return v==='hubspot'||v==='salesforce'?v:''}catch{return ''}}
+    function setStoredMigrationFrom(from){try{if(from==='hubspot'||from==='salesforce')sessionStorage.setItem('crm_sync_migration_from',from)}catch{}}
     function fieldMappingHash(origin,objectType){
       const mode=origin==='sync'?'sync':'migration';
       return '#field-mapping/'+mode+(objectType?'/'+encodeURIComponent(objectType):'');
@@ -359,7 +361,7 @@ export function operationsHtml(): string {
       if(view==='field-mapping')applyWorkspaceMode();
       if(opts.skipLoad)return;
       if(view==='field-mapping')loadFieldMappingWorkspace(route.objectType);
-      if(view==='migration'&&!migrationState.catalog.length){loadCatalog();loadSavedPlans();loadRuns()}
+      if(view==='migration'&&(!migrationState.catalog.length||migrationState.catalogSource!==$('mig-from').value)){loadCatalog($('mig-from').value);loadSavedPlans();loadRuns()}
       if(view==='sync')loadSyncWorkspace();if(view==='activity'){loadJobs();loadAudit();loadConflicts()}if(view==='settings')loadSettingsWorkspace();
       if(view==='sync'||view==='activity')checkForNewSyncErrors();
     }
@@ -380,6 +382,7 @@ export function operationsHtml(): string {
       selectView(view);
     });
     window.addEventListener('hashchange',()=>selectView(location.hash.slice(1)));
+    const initialMigFrom=getStoredMigrationFrom();if(initialMigFrom&&$('mig-from'))$('mig-from').value=initialMigFrom;
     selectView(location.hash.slice(1),{skipLoad:true});
     function metric(label,value,cls='',filter=''){if(filter)return '<button type="button" class="metric metric-btn" data-action="filterJobsByStatus" data-arg="'+esc(filter)+'"><span>'+esc(label)+'</span><b class="'+cls+'">'+esc(value)+'</b></button>';return '<div class="metric"><span>'+esc(label)+'</span><b class="'+cls+'">'+esc(value)+'</b></div>'}
     function filterJobsByStatus(status){history.replaceState(null,'','#activity');selectView('activity');document.querySelectorAll('[data-activity-tab]').forEach(item=>item.classList.toggle('active',item.dataset.activityTab==='jobs'));document.querySelectorAll('.activity-panel').forEach(panel=>panel.classList.toggle('active',panel.id==='activity-jobs'));$('job-filter').value=status||'';loadJobs()}
@@ -387,7 +390,7 @@ export function operationsHtml(): string {
     async function loadMetrics(){const [s,q]=await Promise.all([api('/api/status'),api('/api/sync/stats')]);$('metrics').innerHTML=
       metric('Ready',s.ready?'Yes':'No',s.ready?'create':'error')+metric('Queued',q.queued,'','queued')+metric('Retrying',q.retry,'retry','retry')+
       metric('Manual review',q.manualReview,'ambiguous','manual_review')+metric('Dead letter',q.deadLetter,'dead_letter','dead_letter')+metric('Synced',s.stats.synced)}
-    const migrationState={plan:null,dirty:true,catalog:[],catalogError:null,targets:[],selected:new Set(),selectionInitialized:false,selectedRow:null,metadata:new Map(),mapping:null,fieldLoadToken:0,valueLoadToken:0,preflight:null,copilot:null,preview:null,canaryPreview:null,canaryVerified:false,currentStep:'scope',lastPanelStep:'scope',visited:new Set(['scope']),transformRow:null,savedPlans:[],runs:[]};
+    const migrationState={plan:null,dirty:true,catalog:[],catalogSource:null,catalogError:null,targets:[],selected:new Set(),selectionInitialized:false,selectedRow:null,metadata:new Map(),mapping:null,fieldLoadToken:0,valueLoadToken:0,preflight:null,copilot:null,preview:null,canaryPreview:null,canaryVerified:false,currentStep:'scope',lastPanelStep:'scope',visited:new Set(['scope']),transformRow:null,savedPlans:[],runs:[]};
     const migrationSteps=['scope','objects','fields','values','validate','preview'];
     const transformIds=['identity','domain','lowercase','trim','number','boolean','yes-no','true-false','iso-date','epoch-millis','phone'];
     const transformMeta={
@@ -407,7 +410,12 @@ export function operationsHtml(): string {
     function migrationBody(){return {name:$('plan-name').value.trim(),source:$('mig-from').value,types:[...migrationState.selected],limitPerType:Number($('mig-limit').value)||undefined,config:{objectSettings:Object.fromEntries([...migrationState.selected].map(type=>[type,{included:true}]))}}}
     function resetCopilot(){migrationState.copilot=null;$('ask-copilot').disabled=!migrationState.preflight;$('ask-copilot').textContent='Ask Copilot';$('copilot-panel').hidden=true;$('copilot-panel').innerHTML=''}
     function setDraftStatus(text,state=''){$('autosave-status').textContent=text;$('draft-state').className='draft-state'+(state?' '+state:'');if($('field-mapping-autosave-status'))$('field-mapping-autosave-status').textContent=text;if($('field-mapping-draft-state'))$('field-mapping-draft-state').className='draft-state'+(state?' '+state:'')}
-    function updateDirectionPreview(){const from=$('mig-from').value==='salesforce'?'Salesforce':'HubSpot';$('direction-source-name').textContent=from;$('direction-target-name').textContent=from==='Salesforce'?'HubSpot':'Salesforce'}
+    function systemLabel(sys){return sys==='salesforce'?'Salesforce':sys==='hubspot'?'HubSpot':sys||'Salesforce'}
+    function updateFieldMappingDirectionHeaders(from,to){
+      if($('source-field-th-label'))$('source-field-th-label').textContent='Source field ('+systemLabel(from)+')';
+      if($('target-field-th-label'))$('target-field-th-label').textContent='Target field ('+systemLabel(to)+')';
+    }
+    function updateDirectionPreview(){const from=$('mig-from').value==='salesforce'?'Salesforce':'HubSpot';$('direction-source-name').textContent=from;$('direction-target-name').textContent=from==='Salesforce'?'HubSpot':'Salesforce';if(workspaceMode!=='sync'&&!migrationState.mapping){const sysFrom=$('mig-from').value==='hubspot'?'hubspot':'salesforce';updateFieldMappingDirectionHeaders(sysFrom,sysFrom==='salesforce'?'hubspot':'salesforce')}}
     function updateDeletePlanButton(){const btn=$('delete-current-plan');if(!btn)return;if(!migrationState.plan){btn.hidden=true;return}btn.hidden=false;const isExecuting=Boolean(migrationState.plan.status==='executing'||migrationState.plan.activeExecutionId);btn.disabled=isExecuting;btn.title=isExecuting?'Cannot delete an executing plan':''}
     function markPlanDirty(){migrationState.dirty=true;migrationState.preflight=null;migrationState.preview=null;migrationState.canaryPreview=null;migrationState.canaryVerified=false;resetCopilot();$('execute').disabled=true;$('execute-canary').disabled=true;$('test-record-preview').hidden=true;$('test-record-result').hidden=true;$('full-migration').hidden=true;$('summary-preflight').textContent='Not run';$('summary-preview').textContent='Required';setDraftStatus('Unsaved changes');updateMigrationSummary();updateMigrationStepper()}
     async function savePlan(refreshPlans=true){const body=migrationBody();if(!body.name||!body.types.length)throw new Error('Choose at least one supported object and name the plan');
@@ -419,7 +427,7 @@ export function operationsHtml(): string {
     $('save-plan').onclick=async()=>{try{$('save-plan').disabled=true;await savePlan();$('save-plan').textContent='Saved ✓';setTimeout(()=>$('save-plan').textContent='Save now',1200)}catch(e){setDraftStatus(e.message,'error');showError(e.message,e.requestId)}finally{$('save-plan').disabled=false}};
     if($('delete-current-plan'))$('delete-current-plan').onclick=()=>{if(!migrationState.plan)return;deleteSavedPlan(migrationState.plan.id)};
     ['plan-name','mig-limit'].forEach(id=>$(id).addEventListener(id==='plan-name'?'input':'change',()=>{markPlanDirty();queuePlanAutosave()}));
-    $('mig-from').onchange=async()=>{migrationState.plan=null;migrationState.selected=new Set();migrationState.selectionInitialized=false;updateDirectionPreview();markPlanDirty();await loadCatalog();queuePlanAutosave()};
+    $('mig-from').onchange=async()=>{setStoredMigrationFrom($('mig-from').value);migrationState.plan=null;migrationState.mapping=null;migrationState.selected=new Set();migrationState.selectionInitialized=false;updateDirectionPreview();markPlanDirty();await loadCatalog($('mig-from').value);queuePlanAutosave()};
 
     document.querySelectorAll('.workspace-step').forEach(button=>button.onclick=()=>goMigrationStep(button.dataset.step,button.dataset.step!=='scope'&&migrationState.currentStep==='scope'));
     document.querySelectorAll('[data-go-step]').forEach(button=>button.onclick=()=>goMigrationStep(button.dataset.goStep,button.dataset.saveBefore==='true'));
@@ -436,37 +444,32 @@ export function operationsHtml(): string {
     document.querySelectorAll('[data-migrate-tab]').forEach(button=>button.onclick=()=>selectMigrateTab(button.dataset.migrateTab));
     document.querySelectorAll('[data-migrate-open]').forEach(button=>button.onclick=()=>selectMigrateTab(button.dataset.migrateOpen));
 
-    // The page's own unconditional refreshAll() (fired once at load, regardless of which tab
-    // is active) and goMapFields()'s ensureCatalogForSyncObject() can both decide to call this
-    // within the same second -- e.g. clicking "Map fields" on the Sync tab shortly after the
-    // page loads. Two overlapping fetches used to each independently overwrite
-    // migrationState.catalog and call refreshObjectSelectors() when they resolved, and
-    // whichever one settled LAST (not necessarily the one that started last) won -- so a
-    // click's own careful sequencing could still get its selects reset out from under it right
-    // after by the other call's turn. Single-flighting the promise means every caller in the
-    // same window shares one fetch and one consistent set of renders after it, in-order.
-    let catalogLoadPromise=null;
-    function loadCatalog(){
-      if(catalogLoadPromise)return catalogLoadPromise;
-      catalogLoadPromise=loadCatalogNow().finally(()=>{catalogLoadPromise=null});
-      return catalogLoadPromise;
+    let catalogLoadPromise=null,catalogLoadSource=null,catalogLoadToken=0;
+    function loadCatalog(explicitSource){
+      const desiredSource=explicitSource||$('mig-from').value||'salesforce';
+      if(catalogLoadPromise&&catalogLoadSource===desiredSource)return catalogLoadPromise;
+      catalogLoadSource=desiredSource;
+      const token=++catalogLoadToken;
+      const p=loadCatalogNow(desiredSource,token).finally(()=>{if(catalogLoadPromise===p){catalogLoadPromise=null;catalogLoadSource=null}});
+      catalogLoadPromise=p;
+      return p;
     }
-    async function loadCatalogNow(){const source=$('mig-from').value;$('object-rows').innerHTML='<tr><td colspan="6" class="empty">Discovering CRM objects…</td></tr>';
-      try{const result=await api('/api/object-catalog?from='+encodeURIComponent(source));migrationState.catalog=result.rows;migrationState.catalogError=null;migrationState.targets=result.targets||[];
-        if(!migrationState.selectionInitialized){migrationState.selected=new Set(result.rows.filter(row=>row.registered).map(row=>row.canonicalType));migrationState.selectionInitialized=true}
+    async function loadCatalogNow(source,token){source=source||$('mig-from').value||'salesforce';$('object-rows').innerHTML='<tr><td colspan="6" class="empty">Discovering CRM objects…</td></tr>';
+      try{const result=await api('/api/object-catalog?from='+encodeURIComponent(source));if(token&&token!==catalogLoadToken)return;const catFrom=result.from||source;migrationState.catalogSource=catFrom;migrationState.catalog=(result.rows||[]).map(r=>({...r,_sfObj:catFrom==='salesforce'?r.source:r.target,_hsObj:catFrom==='hubspot'?r.source:r.target}));migrationState.catalogError=null;migrationState.targets=result.targets||[];
+        if(!migrationState.selectionInitialized){migrationState.selected=new Set(migrationState.catalog.filter(row=>row.registered).map(row=>row.canonicalType));migrationState.selectionInitialized=true}
         renderCatalog();refreshObjectSelectors();updateMigrationSummary()}
       // Kept separate from "filter matched nothing" (renderCatalog's own empty state) so a
       // real fetch failure -- most commonly an expired CRM connection -- stays visible and
       // actionable instead of silently turning into a misleading "no objects match this view"
       // the next time renderCatalog() runs (e.g. when the filter dropdown changes).
-      catch(e){migrationState.catalog=[];migrationState.catalogError={message:e.message,actionUrl:e.actionUrl};renderCatalog()}}
+      catch(e){if(token&&token!==catalogLoadToken)return;migrationState.catalog=[];migrationState.catalogError={message:e.message,actionUrl:e.actionUrl};renderCatalog()}}
     // Shared by the catalog checkbox and the manual target picker: registers row.source paired
     // with whatever row.target currently is (auto-matched or manually chosen) as a canonical object.
     async function registerCatalogMapping(row){const from=$('mig-from').value,to=from==='salesforce'?'hubspot':'salesforce',body={label:row.source.label};body[from+'Object']=row.source.id;if(row.target)body[to+'Object']=row.target.id;
       const registration=await api('/api/object-mappings',{method:'POST',body:JSON.stringify(body)});row.canonicalType=registration.canonicalObject;row.registered=true;migrationState.metadata.clear();return registration}
     async function confirmManualTarget(row){const select=$('manual-target'),targetId=select&&select.value;if(!targetId)return;const target=(migrationState.targets||[]).find(t=>t.id===targetId);if(!target)return;
       const button=$('manual-target-confirm');button.disabled=true;button.textContent='Mapping…';
-      try{row.target=target;row.supported=true;await registerCatalogMapping(row);migrationState.selected.add(row.canonicalType);markPlanDirty();renderCatalog();refreshObjectSelectors();queuePlanAutosave();await selectCatalogRow(row)}
+      try{const catFrom=migrationState.catalogSource||$('mig-from').value||'salesforce';row.target=target;row.supported=true;row._sfObj=catFrom==='salesforce'?row.source:target;row._hsObj=catFrom==='hubspot'?row.source:target;await registerCatalogMapping(row);migrationState.selected.add(row.canonicalType);markPlanDirty();renderCatalog();refreshObjectSelectors();queuePlanAutosave();await selectCatalogRow(row)}
       catch(err){setDraftStatus(err.message,'error')}
       finally{const btn=$('manual-target-confirm');if(btn){btn.disabled=false;btn.textContent='Map to this object'}}}
     function renderCatalog(){if(migrationState.catalogError){const err=migrationState.catalogError;
@@ -508,6 +511,36 @@ export function operationsHtml(): string {
       const open=$('open-object-fields');if(open)open.onclick=()=>{openFieldMappingPage('migration',row.canonicalType)}
       const manualConfirm=$('manual-target-confirm');if(manualConfirm)manualConfirm.onclick=()=>confirmManualTarget(row)}
 
+    function getFieldMappingDirection(type){
+      if(workspaceMode==='sync'){
+        const t=type||$('field-object').value||migrationState.mapping?.type;
+        const dir=(t&&syncConfigState?.objects?.[t]?.direction)||(typeof syncWizard!=='undefined'&&syncWizard.active&&syncWizard.type===t?syncWizard.direction:null)||'bidirectional';
+        const from=dir==='hubspot_to_salesforce'?'hubspot':'salesforce';
+        return {from,to:from==='salesforce'?'hubspot':'salesforce'};
+      }
+      const from=$('mig-from').value==='hubspot'?'hubspot':'salesforce';
+      return {from,to:from==='salesforce'?'hubspot':'salesforce'};
+    }
+    function resolveRowEndpoints(row,type){
+      if(!row)return {from:'salesforce',to:'hubspot',sourceObj:null,targetObj:null};
+      const {from,to}=getFieldMappingDirection(type||row.canonicalType);
+      const catFrom=migrationState.catalogSource||'salesforce';
+      const sfObj=row._sfObj||(catFrom==='salesforce'?row.source:row.target);
+      const hsObj=row._hsObj||(catFrom==='hubspot'?row.source:row.target);
+      const sourceObj=from==='salesforce'?sfObj:hsObj;
+      const targetObj=from==='salesforce'?hsObj:sfObj;
+      return {from,to,sourceObj,targetObj};
+    }
+    function updateFieldMappingDirectionHeaders(from,to){
+      const fromLabel=from==='hubspot'?'HubSpot':'Salesforce';
+      const toLabel=to==='salesforce'?'Salesforce':'HubSpot';
+      const srcTh=$('source-field-th-label');if(srcTh)srcTh.textContent='Source field ('+fromLabel+')';
+      const tgtTh=$('target-field-th-label');if(tgtTh)tgtTh.textContent='Target field ('+toLabel+')';
+      const srcToLbl=$('transform-source-to-label');if(srcToLbl)srcToLbl.textContent=fromLabel+' → Canonical';
+      const tgtFromLbl=$('transform-target-from-label');if(tgtFromLbl)tgtFromLbl.textContent='Canonical → '+toLabel;
+      const tgtToLbl=$('transform-target-to-label');if(tgtToLbl)tgtToLbl.textContent=toLabel+' → Canonical';
+      const srcFromLbl=$('transform-source-from-label');if(srcFromLbl)srcFromLbl.textContent='Canonical → '+fromLabel;
+    }
     function selectedCatalogRows(){return migrationState.catalog.filter(row=>row.canonicalType&&migrationState.selected.has(row.canonicalType)&&row.supported)}
     // In Sync mode the Fields step must only ever show the object(s) actually enrolled for
     // sync -- not whatever happens to be selected in a Migration draft -- so this diverges
@@ -515,10 +548,10 @@ export function operationsHtml(): string {
     // second, unrelated meaning.
     function fieldQueueRows(){if(workspaceMode!=='sync')return selectedCatalogRows();return migrationState.catalog.filter(row=>row.canonicalType&&row.supported&&syncConfigState?.objects?.[row.canonicalType]?.enrolledForSync)}
     function mappingObjectState(row){if(!row.totalMappedFields||!row.mappedFields)return {key:'review',label:'Not started',dot:'off'};if(row.mappedFields<row.totalMappedFields)return {key:'review',label:'Needs review',dot:'warning'};return {key:'complete',label:'Complete',dot:''}}
-    function renderFieldObjectQueue(){const rows=fieldQueueRows(),query=$('field-object-search').value.trim().toLowerCase(),filter=$('field-object-filter').value,current=$('field-object').value||migrationState.mapping?.type;const visible=rows.filter(row=>{const state=mappingObjectState(row),text=(row.source.label+' '+row.target.label+' '+row.canonicalType).toLowerCase();return (!query||text.includes(query))&&(filter==='all'||state.key===filter)});$('field-object-queue').innerHTML=visible.length?visible.map(row=>{const state=mappingObjectState(row);return '<button class="mapping-object-item '+(row.canonicalType===current?'active':'')+'" data-field-object="'+row.canonicalType+'"><span><b>'+esc(row.source.label)+' → '+esc(row.target.label)+'</b><small>'+row.mappedFields+' of '+row.totalMappedFields+' fields mapped</small></span><span class="mapping-object-status"><span class="mini-dot '+state.dot+'"></span>'+state.label+'</span></button>'}).join(''):'<div class="mapping-object-empty">No selected objects match this view.</div>';$('field-object-queue').querySelectorAll('[data-field-object]').forEach(button=>button.onclick=()=>openFieldObject(button.dataset.fieldObject));const complete=rows.filter(row=>mappingObjectState(row).key==='complete').length,needsReview=rows.length-complete;$('field-progress-count').textContent=complete+' of '+rows.length+' objects complete';$('field-progress-detail').textContent=needsReview?needsReview+' object'+(needsReview===1?'':'s')+' still need mapping review.':'Every selected object is ready for preflight.'}
-    function renderValueObjectTabs(){const rows=selectedCatalogRows(),current=$('value-object').value;$('value-object-tabs').innerHTML=rows.length?rows.map((row,index)=>'<button class="value-object-tab '+(row.canonicalType===current?'active':'')+'" type="button" role="tab" aria-selected="'+(row.canonicalType===current)+'" data-value-object="'+row.canonicalType+'"><span class="value-object-tab-index">'+(index+1)+'</span><span><b>'+esc(row.source.label)+'</b><small>to '+esc(row.target.label)+'</small></span></button>').join(''):'<div class="mapping-object-empty">Select at least one supported object first.</div>';$('value-object-tabs').querySelectorAll('[data-value-object]').forEach(button=>button.onclick=()=>openValueObject(button.dataset.valueObject))}
-    function refreshObjectSelectors(){const currentField=$('field-object').value,currentValue=$('value-object').value,rows=fieldQueueRows(),options=rows.map(row=>'<option value="'+row.canonicalType+'">'+esc(row.source.label)+' → '+esc(row.target.label)+'</option>').join('');$('field-object').innerHTML=options;$('value-object').innerHTML=workspaceMode==='sync'?options:selectedCatalogRows().map(row=>'<option value="'+row.canonicalType+'">'+esc(row.source.label)+' → '+esc(row.target.label)+'</option>').join('');if(rows.some(row=>row.canonicalType===currentField))$('field-object').value=currentField;if(rows.some(row=>row.canonicalType===currentValue))$('value-object').value=currentValue;renderValueObjectTabs();$('object-selection-count').textContent=migrationState.selected.size+' selected';updateFieldObjectPosition();renderFieldObjectQueue();updateMigrationSummary();updateMigrationStepper()}
-    async function openFieldObject(type){if(!type)return;if(document.querySelector('.view.active')?.id==='view-field-mapping'){setStoredFieldMappingOrigin(workspaceMode,type);const hash=fieldMappingHash(workspaceMode,type);if(location.hash!==hash)history.replaceState(null,'',hash)}if(migrationState.mapping?.type===type)return;try{if(migrationState.mapping?.dirty)await saveFieldMappings(false);$('field-object').value=type;await loadFieldWorkspace(type)}catch(e){setDraftStatus(e.message,'error')}}
+    function renderFieldObjectQueue(){const rows=fieldQueueRows(),query=$('field-object-search').value.trim().toLowerCase(),filter=$('field-object-filter').value,current=$('field-object').value||migrationState.mapping?.type;const visible=rows.filter(row=>{const state=mappingObjectState(row),{sourceObj,targetObj}=resolveRowEndpoints(row,row.canonicalType),text=((sourceObj?.label||row.source.label)+' '+(targetObj?.label||row.target?.label||'')+' '+row.canonicalType).toLowerCase();return (!query||text.includes(query))&&(filter==='all'||state.key===filter)});$('field-object-queue').innerHTML=visible.length?visible.map(row=>{const state=mappingObjectState(row),{sourceObj,targetObj}=resolveRowEndpoints(row,row.canonicalType);return '<button class="mapping-object-item '+(row.canonicalType===current?'active':'')+'" data-field-object="'+row.canonicalType+'"><span><b>'+esc((sourceObj||row.source).label)+' → '+esc((targetObj||row.target).label)+'</b><small>'+row.mappedFields+' of '+row.totalMappedFields+' fields mapped</small></span><span class="mapping-object-status"><span class="mini-dot '+state.dot+'"></span>'+state.label+'</span></button>'}).join(''):'<div class="mapping-object-empty">No selected objects match this view.</div>';$('field-object-queue').querySelectorAll('[data-field-object]').forEach(button=>button.onclick=()=>openFieldObject(button.dataset.fieldObject));const complete=rows.filter(row=>mappingObjectState(row).key==='complete').length,needsReview=rows.length-complete;$('field-progress-count').textContent=complete+' of '+rows.length+' objects complete';$('field-progress-detail').textContent=needsReview?needsReview+' object'+(needsReview===1?'':'s')+' still need mapping review.':'Every selected object is ready for preflight.'}
+    function renderValueObjectTabs(){const rows=selectedCatalogRows(),current=$('value-object').value;$('value-object-tabs').innerHTML=rows.length?rows.map((row,index)=>{const {sourceObj,targetObj}=resolveRowEndpoints(row,row.canonicalType);return '<button class="value-object-tab '+(row.canonicalType===current?'active':'')+'" type="button" role="tab" aria-selected="'+(row.canonicalType===current)+'" data-value-object="'+row.canonicalType+'"><span class="value-object-tab-index">'+(index+1)+'</span><span><b>'+esc((sourceObj||row.source).label)+'</b><small>to '+esc((targetObj||row.target).label)+'</small></span></button>'}).join(''):'<div class="mapping-object-empty">Select at least one supported object first.</div>';$('value-object-tabs').querySelectorAll('[data-value-object]').forEach(button=>button.onclick=()=>openValueObject(button.dataset.valueObject))}
+    function refreshObjectSelectors(){const currentField=$('field-object').value,currentValue=$('value-object').value,rows=fieldQueueRows(),options=rows.map(row=>{const {sourceObj,targetObj}=resolveRowEndpoints(row,row.canonicalType);return '<option value="'+row.canonicalType+'">'+esc((sourceObj||row.source).label)+' → '+esc((targetObj||row.target).label)+'</option>'}).join('');$('field-object').innerHTML=options;$('value-object').innerHTML=workspaceMode==='sync'?options:selectedCatalogRows().map(row=>{const {sourceObj,targetObj}=resolveRowEndpoints(row,row.canonicalType);return '<option value="'+row.canonicalType+'">'+esc((sourceObj||row.source).label)+' → '+esc((targetObj||row.target).label)+'</option>'}).join('');if(rows.some(row=>row.canonicalType===currentField))$('field-object').value=currentField;if(rows.some(row=>row.canonicalType===currentValue))$('value-object').value=currentValue;renderValueObjectTabs();$('object-selection-count').textContent=migrationState.selected.size+' selected';updateFieldObjectPosition();renderFieldObjectQueue();updateMigrationSummary();updateMigrationStepper()}
+    async function openFieldObject(type){if(!type)return;if(document.querySelector('.view.active')?.id==='view-field-mapping'){setStoredFieldMappingOrigin(workspaceMode,type);const hash=fieldMappingHash(workspaceMode,type);if(location.hash!==hash)history.replaceState(null,'',hash)}const {from}=getFieldMappingDirection(type);if(migrationState.mapping?.type===type&&migrationState.mapping?.from===from)return;try{if(migrationState.mapping?.dirty)await saveFieldMappings(false);$('field-object').value=type;await loadFieldWorkspace(type)}catch(e){setDraftStatus(e.message,'error')}}
     function openValueObject(type){if(!type||migrationState.valueContext?.type===type)return;$('value-object').value=type;renderValueObjectTabs();loadValuesWorkspace(type)}
     $('field-object').onchange=()=>openFieldObject($('field-object').value);$('field-object-search').oninput=renderFieldObjectQueue;$('field-object-filter').onchange=renderFieldObjectQueue;
     // Built ONCE per render and shared via <datalist> across every row's <input>, instead of
@@ -526,15 +559,156 @@ export function operationsHtml(): string {
     // repeating that list per row multiplied into hundreds of thousands of DOM nodes and froze
     // the tab. A shared datalist keeps the option data in the DOM exactly once.
     function datalistOptions(fields){return fields.map(field=>'<option value="'+esc(field.name)+'">'+esc(field.label)+' · '+esc(field.name)+'</option>').join('')}
+    const LITERAL_FIELD_PREFIX='literal:';
+    function isLiteralRuleNative(native){
+      if(!native)return false;
+      if(native.startsWith(LITERAL_FIELD_PREFIX))return true;
+      const trimmed=native.trim();
+      return (trimmed.length>=2&&trimmed.startsWith('"')&&trimmed.endsWith('"'))||(trimmed.length>=2&&trimmed.startsWith("'")&&trimmed.endsWith("'"));
+    }
+    function parseLiteralRuleNative(native){
+      if(!native)return undefined;
+      if(native.startsWith(LITERAL_FIELD_PREFIX))return native.slice(LITERAL_FIELD_PREFIX.length);
+      const trimmed=native.trim();
+      if((trimmed.length>=2&&trimmed.startsWith('"')&&trimmed.endsWith('"'))||(trimmed.length>=2&&trimmed.startsWith("'")&&trimmed.endsWith("'")))return trimmed.slice(1,-1);
+      return undefined;
+    }
+    function isKnownSourceField(value,sourceMeta){
+      if(!value||!sourceMeta?.fields)return false;
+      const trimmed=value.trim();
+      if(!trimmed||isLiteralRuleNative(trimmed))return false;
+      const root=trimmed.split('.')[0];
+      return sourceMeta.fields.some(f=>f.name===trimmed||f.name===root)||Boolean(sourceMeta.relationships?.some(r=>r.name===root||r.label===root));
+    }
+    function displaySourceNative(native,sourceMeta){
+      if(!native)return '';
+      const literal=parseLiteralRuleNative(native);
+      if(literal===undefined)return native;
+      return isKnownSourceField(literal,sourceMeta)?'"'+literal+'"':literal;
+    }
+    function encodeSourceNative(inputValue,sourceMeta){
+      const raw=String(inputValue||'');
+      if(!raw.trim())return '';
+      const explicitLiteral=parseLiteralRuleNative(raw);
+      if(explicitLiteral!==undefined)return LITERAL_FIELD_PREFIX+explicitLiteral;
+      if(isKnownSourceField(raw.trim(),sourceMeta))return raw.trim();
+      return LITERAL_FIELD_PREFIX+raw;
+    }
+    function picklistOptionLabel(system,fieldLabel,opt){
+      const kind=system==='salesforce'?'Picklist (Salesforce)':'Dropdown (HubSpot)';
+      return kind+' · '+fieldLabel+': '+opt.label+(opt.value!==opt.label?' · '+opt.value:'');
+    }
+    function buildSourcePickerGroups(state){
+      if(!state?.sourceMeta?.fields)return {sysLabel:'Salesforce',fieldHeading:'Field list (Salesforce)',picklistHeading:'Picklist values (Salesforce)',fields:[],picklists:[]};
+      const sys=state.from==='hubspot'?'hubspot':'salesforce';
+      const sysLabel=sys==='salesforce'?'Salesforce':'HubSpot';
+      const fieldHeading='Field list ('+sysLabel+')';
+      const picklistHeading=(sys==='salesforce'?'Picklist values':'Dropdown values')+' ('+sysLabel+')';
+      const fieldNames=new Set(state.sourceMeta.fields.map(f=>f.name));
+      const fields=state.sourceMeta.fields.map(field=>({
+        value:field.name,
+        title:field.name,
+        subtitle:field.label+' · '+field.name,
+        search:(field.name+' '+field.label).toLowerCase(),
+      }));
+      const picklists=[];
+      const seenValues=new Set();
+      for(const field of state.sourceMeta.fields){
+        if(!field.options?.length)continue;
+        for(const opt of field.options){
+          if(!opt?.value)continue;
+          const val=fieldNames.has(opt.value)?'"'+opt.value+'"':opt.value;
+          const key=field.name+':'+val;
+          if(seenValues.has(key)||picklists.length>=800)continue;
+          seenValues.add(key);
+          const subtitle=picklistOptionLabel(sys,field.label,opt);
+          picklists.push({
+            value:val,
+            title:opt.value,
+            subtitle,
+            search:(opt.value+' '+opt.label+' '+field.label+' '+field.name+' '+subtitle).toLowerCase(),
+          });
+        }
+      }
+      return {sysLabel,fieldHeading,picklistHeading,fields,picklists};
+    }
+    function sourceDatalistOptions(state){
+      const {fieldHeading,picklistHeading,fields,picklists}=buildSourcePickerGroups(state);
+      const out=[];
+      if(fields.length){
+        out.push('<optgroup label="'+esc(fieldHeading)+'">'+fields.map(item=>'<option value="'+esc(item.value)+'">'+esc(item.subtitle)+'</option>').join('')+'</optgroup>');
+      }
+      if(picklists.length){
+        out.push('<optgroup label="'+esc(picklistHeading)+'">'+picklists.map(item=>'<option value="'+esc(item.value)+'">'+esc(item.subtitle)+'</option>').join('')+'</optgroup>');
+      }
+      return out.join('');
+    }
+    let activeSourceInput=null;
+    function positionSourcePickerMenu(input){
+      const menu=$('source-picker-menu');
+      if(!menu||!input||menu.hidden)return;
+      const rect=input.getBoundingClientRect();
+      if(rect.bottom<0||rect.top>window.innerHeight){closeSourcePicker();return}
+      const spaceBelow=window.innerHeight-rect.bottom-12;
+      const maxH=Math.max(180,Math.min(340,spaceBelow>160?spaceBelow:rect.top-12));
+      menu.style.width=Math.max(rect.width,320)+'px';
+      menu.style.maxHeight=maxH+'px';
+      menu.style.left=Math.min(rect.left,window.innerWidth-Math.max(rect.width,320)-12)+'px';
+      menu.style.top=(spaceBelow>160?(rect.bottom+4):(rect.top-maxH-4))+'px';
+    }
+    function closeSourcePicker(){
+      const menu=$('source-picker-menu');
+      if(menu)menu.hidden=true;
+      activeSourceInput=null;
+    }
+    function openSourcePicker(input,filterByQuery){
+      const state=migrationState.mapping,menu=$('source-picker-menu');
+      if(!state||!menu||!input)return;
+      activeSourceInput=input;
+      const {fieldHeading,picklistHeading,fields,picklists}=buildSourcePickerGroups(state);
+      const rawQuery=input.value.trim();
+      const q=filterByQuery?rawQuery.toLowerCase():'';
+      const matchedFields=q?fields.filter(item=>item.search.includes(q)):fields;
+      const matchedPicklists=q?picklists.filter(item=>item.search.includes(q)):picklists;
+      const sections=[];
+      if(rawQuery&&!fields.some(f=>f.value===rawQuery)&&!picklists.some(p=>p.value===rawQuery)){
+        sections.push('<div class="source-picker-heading">Text value</div><button type="button" class="source-picker-item" data-picker-value="'+esc(rawQuery)+'"><b>'+esc(rawQuery)+'</b><span>Use as custom text value</span></button>');
+      }
+      if(matchedFields.length){
+        sections.push('<div class="source-picker-heading">'+esc(fieldHeading)+'</div>'+matchedFields.slice(0,250).map(item=>'<button type="button" class="source-picker-item" data-picker-value="'+esc(item.value)+'"><b>'+esc(item.title)+'</b><span>'+esc(item.subtitle)+'</span></button>').join(''));
+      }
+      if(matchedPicklists.length){
+        sections.push('<div class="source-picker-heading">'+esc(picklistHeading)+'</div>'+matchedPicklists.slice(0,300).map(item=>'<button type="button" class="source-picker-item" data-picker-value="'+esc(item.value)+'"><b>'+esc(item.title)+'</b><span>'+esc(item.subtitle)+'</span></button>').join(''));
+      }
+      if(!sections.length){
+        menu.hidden=true;return;
+      }
+      menu.innerHTML=sections.join('');
+      menu.hidden=false;
+      positionSourcePickerMenu(input);
+      menu.querySelectorAll('[data-picker-value]').forEach(btn=>{
+        btn.onmousedown=e=>{
+          e.preventDefault();
+          input.value=btn.dataset.pickerValue;
+          if(typeof input.onchange==='function')input.onchange();
+          closeSourcePicker();
+        };
+      });
+    }
+    window.addEventListener('scroll',()=>{if(activeSourceInput)positionSourcePickerMenu(activeSourceInput)},true);
+    window.addEventListener('resize',()=>{if(activeSourceInput)positionSourcePickerMenu(activeSourceInput)});
     function transformOptionList(value){return transformIds.map(id=>'<option value="'+id+'" '+(id===(value||'identity')?'selected':'')+'>'+esc(transformMeta[id][0])+' — '+esc(transformMeta[id][1])+'</option>').join('')}
     function transformSummary(values){const active=values.filter(value=>value&&value!=='identity');if(!active.length)return 'Identity';if(active.length===1)return transformMeta[active[0]][0];return active.length+' transforms'}
     function transformHidden(cls,value){return '<input type="hidden" class="'+cls+'" value="'+esc(value||'identity')+'">'}
     function conflictStrategyLabel(strategy){return strategy==='source-of-truth'?'Source of truth':strategy==='last-write-wins'?'Last write wins':strategy==='field-merge'?'Field merge':strategy||'Last write wins'}
-    function systemLabel(sys){return sys==='salesforce'?'Salesforce':sys==='hubspot'?'HubSpot':sys||'Salesforce'}
     function getObjectSot(type){return (type&&syncConfigState?.objects?.[type]?.sourceOfTruth)||syncConfigState?.sourceOfTruth||'salesforce'}
-    async function loadFieldWorkspace(type){if(!type)return;const loadToken=++migrationState.fieldLoadToken;$('field-map-rows').innerHTML='<tr><td colspan="6" class="empty">Loading schemas and mappings…</td></tr>';$('field-map-notice').hidden=true;closeTransformLab();const row=migrationState.catalog.find(item=>item.canonicalType===type);if(!row)return;$('field-object').value=type;$('field-current-name').textContent=row.source.label+' → '+row.target.label;updateFieldObjectPosition();renderFieldObjectQueue();
+    async function loadFieldWorkspace(type){if(!type)return;const loadToken=++migrationState.fieldLoadToken;$('field-map-rows').innerHTML='<tr><td colspan="6" class="empty">Loading schemas and mappings…</td></tr>';$('field-map-notice').hidden=true;closeTransformLab();closeSourcePicker();
       if(!syncConfigState){try{syncConfigState=await api('/api/sync/settings')}catch{}}
-      try{const from=$('mig-from').value,to=from==='salesforce'?'hubspot':'salesforce';const [sourceMeta,targetMeta,sourceMap,targetMap]=await Promise.all([getMetadata(from,row.source.id),getMetadata(to,row.target.id),api('/api/mappings/'+from+'/'+type),api('/api/mappings/'+to+'/'+type)]);
+      const row=migrationState.catalog.find(item=>item.canonicalType===type);if(!row)return;
+      const {from,to,sourceObj,targetObj}=resolveRowEndpoints(row,type);if(!sourceObj||!targetObj)return;
+      updateFieldMappingDirectionHeaders(from,to);
+      $('field-object').value=type;$('field-current-name').textContent=sourceObj.label+' → '+targetObj.label;updateFieldObjectPosition();renderFieldObjectQueue();
+      try{const [sourceMeta,targetMeta,sourceMap,targetMap]=await Promise.all([getMetadata(from,sourceObj.id),getMetadata(to,targetObj.id),api('/api/mappings/'+from+'/'+type),api('/api/mappings/'+to+'/'+type)]);
         if(loadToken!==migrationState.fieldLoadToken)return;
         const sourceByCanonical=new Map(sourceMap.rules.map(rule=>[rule.canonical,rule])),targetByCanonical=new Map(targetMap.rules.map(rule=>[rule.canonical,rule]));const canonicals=[...new Set([...sourceByCanonical.keys(),...targetByCanonical.keys()])];
         migrationState.mapping={type,from,to,sourceMeta,targetMeta,sourceMap,targetMap,canonicals,removed:[],dirty:false};
@@ -596,14 +770,14 @@ export function operationsHtml(): string {
     });
 
     function renderFieldMappings(){const state=migrationState.mapping;if(!state)return;const sourceBy=new Map(state.sourceMap.rules.map(r=>[r.canonical,r])),targetBy=new Map(state.targetMap.rules.map(r=>[r.canonical,r]));
-      $('source-native-datalist').innerHTML=datalistOptions(state.sourceMeta.fields);$('target-native-datalist').innerHTML=datalistOptions(state.targetMeta.fields);
+      $('source-native-datalist').innerHTML=sourceDatalistOptions(state);$('target-native-datalist').innerHTML=datalistOptions(state.targetMeta.fields);
       const removed=new Set(state.removed),visible=state.canonicals.filter(canonical=>!removed.has(canonical));
       if(fieldSortCol){
         visible.sort((a,b)=>{
           let valA='',valB='';
           if(fieldSortCol==='source'){
-            valA=(sourceBy.get(a)?.native||'').trim().toLowerCase();
-            valB=(sourceBy.get(b)?.native||'').trim().toLowerCase();
+            valA=displaySourceNative(sourceBy.get(a)?.native||'',state.sourceMeta).trim().toLowerCase();
+            valB=displaySourceNative(sourceBy.get(b)?.native||'',state.sourceMeta).trim().toLowerCase();
           }else if(fieldSortCol==='canonical'){
             valA=a.trim().toLowerCase();
             valB=b.trim().toLowerCase();
@@ -624,8 +798,9 @@ export function operationsHtml(): string {
       $('field-map-rows').innerHTML=visible.map(canonical=>{const s=sourceBy.get(canonical)||{},t=targetBy.get(canonical)||{};
         const transforms=[s.toCanonical||'identity',s.fromCanonical||'identity',t.toCanonical||'identity',t.fromCanonical||'identity'];
         const currentSot=s.sourceOfTruth||t.sourceOfTruth||'salesforce';
-        return '<tr data-canonical="'+esc(canonical)+'"><td class="mapping-action"><button class="mapping-remove" data-remove-canonical="'+esc(canonical)+'" aria-label="Remove '+esc(canonical)+' mapping" title="Remove this mapping">Remove</button></td><td><input class="source-native" list="source-native-datalist" value="'+esc(s.native||'')+'" placeholder="— Not mapped —"></td><td><input class="canonical" value="'+esc(canonical)+'"></td><td>'+transformHidden('source-to',transforms[0])+transformHidden('source-from',transforms[1])+transformHidden('target-to',transforms[2])+transformHidden('target-from',transforms[3])+'<button class="mapping-transform" data-transform-canonical="'+esc(canonical)+'">'+esc(transformSummary([transforms[0],transforms[3]]))+'<small>Configure</small></button></td><td><input class="target-native" list="target-native-datalist" value="'+esc(t.native||'')+'" placeholder="— Not mapped —"></td><td><select class="field-sot" data-canonical="'+esc(canonical)+'"><option value="salesforce" '+(currentSot==='salesforce'?'selected':'')+'>Salesforce</option><option value="hubspot" '+(currentSot==='hubspot'?'selected':'')+'>HubSpot</option><option value="last-write-wins" '+(currentSot==='last-write-wins'?'selected':'')+'>Last write wins</option></select></td></tr>'}).join('')||'<tr><td colspan="6" class="empty">No mappings remain. Save to persist this empty mapping set, or undo the removal.</td></tr>';
-      refreshMappingCoverage();updateFieldSortHeaders();$('field-map-notice').hidden=!state.removed.length;$('field-map-notice-text').textContent=state.removed.length+' mapping'+(state.removed.length===1?'':'s')+' marked for removal. Save mappings to apply.';document.querySelectorAll('[data-remove-canonical]').forEach(button=>button.onclick=()=>{state.removed.push(button.dataset.removeCanonical);state.dirty=true;closeTransformLab();renderFieldMappings()});document.querySelectorAll('[data-transform-canonical]').forEach(button=>button.onclick=()=>openTransformLab(button));document.querySelectorAll('#field-map-rows tr[data-canonical] input, #field-map-rows tr[data-canonical] select.field-sot').forEach(control=>{control.oninput=control.onchange=()=>{state.dirty=true;refreshMappingCoverage();applyMappingFilters();setDraftStatus('Mapping changes not saved')}});applyMappingFilters()}
+        const shownSource=displaySourceNative(s.native||'',state.sourceMeta);
+        return '<tr data-canonical="'+esc(canonical)+'"><td class="mapping-action"><button class="mapping-remove" data-remove-canonical="'+esc(canonical)+'" aria-label="Remove '+esc(canonical)+' mapping" title="Remove this mapping">Remove</button></td><td><input class="source-native" autocomplete="off" value="'+esc(shownSource)+'" placeholder="Select field, picklist value, or enter text…"></td><td><input class="canonical" value="'+esc(canonical)+'"></td><td>'+transformHidden('source-to',transforms[0])+transformHidden('source-from',transforms[1])+transformHidden('target-to',transforms[2])+transformHidden('target-from',transforms[3])+'<button class="mapping-transform" data-transform-canonical="'+esc(canonical)+'">'+esc(transformSummary([transforms[0],transforms[3]]))+'<small>Configure</small></button></td><td><input class="target-native" list="target-native-datalist" value="'+esc(t.native||'')+'" placeholder="— Not mapped —"></td><td><select class="field-sot" data-canonical="'+esc(canonical)+'"><option value="salesforce" '+(currentSot==='salesforce'?'selected':'')+'>Salesforce</option><option value="hubspot" '+(currentSot==='hubspot'?'selected':'')+'>HubSpot</option><option value="last-write-wins" '+(currentSot==='last-write-wins'?'selected':'')+'>Last write wins</option></select></td></tr>'}).join('')||'<tr><td colspan="6" class="empty">No mappings remain. Save to persist this empty mapping set, or undo the removal.</td></tr>';
+      refreshMappingCoverage();updateFieldSortHeaders();$('field-map-notice').hidden=!state.removed.length;$('field-map-notice-text').textContent=state.removed.length+' mapping'+(state.removed.length===1?'':'s')+' marked for removal. Save mappings to apply.';document.querySelectorAll('[data-remove-canonical]').forEach(button=>button.onclick=()=>{state.removed.push(button.dataset.removeCanonical);state.dirty=true;closeTransformLab();closeSourcePicker();renderFieldMappings()});document.querySelectorAll('[data-transform-canonical]').forEach(button=>button.onclick=()=>openTransformLab(button));document.querySelectorAll('#field-map-rows tr[data-canonical] input, #field-map-rows tr[data-canonical] select.field-sot').forEach(control=>{control.oninput=control.onchange=()=>{state.dirty=true;refreshMappingCoverage();applyMappingFilters();setDraftStatus('Mapping changes not saved');if(control.classList.contains('source-native'))openSourcePicker(control,true)}});document.querySelectorAll('#field-map-rows tr[data-canonical] .source-native').forEach(srcInput=>{srcInput.onfocus=()=>openSourcePicker(srcInput,false);srcInput.onclick=()=>openSourcePicker(srcInput,false);srcInput.onblur=()=>setTimeout(()=>{if(activeSourceInput===srcInput)closeSourcePicker()},150);srcInput.onkeydown=e=>{if(e.key==='Escape')closeSourcePicker()}});applyMappingFilters()}
     function refreshMappingCoverage(){const state=migrationState.mapping;if(!state)return;const rows=[...$('field-map-rows').querySelectorAll('tr[data-canonical]')],ready=rows.filter(tr=>tr.querySelector('.source-native').value&&tr.querySelector('.target-native').value).length,total=rows.length,pct=total?Math.round(ready/total*100):0;$('coverage-number').textContent=pct+'%';$('coverage-list').innerHTML='<div><span>Mapped</span><b>'+ready+'</b></div><div><span>Needs review</span><b>'+(total-ready)+'</b></div><div><span>Removed</span><b>'+state.removed.length+'</b></div><div><span>Source fields</span><b>'+state.sourceMeta.fields.length+'</b></div><div><span>Target fields</span><b>'+state.targetMeta.fields.length+'</b></div>';$('summary-coverage').textContent=pct+'%'}
     function applyMappingFilters(){const query=$('field-search').value.trim().toLowerCase(),filter=$('field-filter').value;document.querySelectorAll('#field-map-rows tr[data-canonical]').forEach(tr=>{const source=tr.querySelector('.source-native').value||'',target=tr.querySelector('.target-native').value||'',canonical=tr.querySelector('.canonical').value,sot=tr.querySelector('.field-sot')?.value||'',text=(source+' '+target+' '+canonical+' '+sot).toLowerCase(),ready=tr.querySelector('.source-native').value&&tr.querySelector('.target-native').value,transformed=['source-to','target-from'].some(cls=>tr.querySelector('.'+cls).value!=='identity');tr.hidden=Boolean((query&&!text.includes(query))||(filter==='review'&&ready)||(filter==='transformed'&&!transformed))})}
     $('field-search').oninput=applyMappingFilters;$('field-filter').onchange=applyMappingFilters;
@@ -655,11 +830,12 @@ export function operationsHtml(): string {
     function compatibleMappingAdditions(sourceMeta,targetMeta,sourceRules,targetRules){const used=new Set([...sourceRules,...targetRules].map(rule=>rule.canonical.toLowerCase())),additions=[];for(const source of sourceMeta.fields){const match=targetMeta.fields.find(target=>!target.readOnly&&(target.name.toLowerCase()===source.name.toLowerCase()||target.label.toLowerCase()===source.label.toLowerCase()));const canonical=source.name.replace(/[^a-zA-Z0-9]/g,'');if(match&&canonical&&!used.has(canonical.toLowerCase())){additions.push({canonical,source:source.name,target:match.name});used.add(canonical.toLowerCase())}}return additions}
     function autoMapCurrentObject(){const state=migrationState.mapping;if(!state)return 0;const additions=compatibleMappingAdditions(state.sourceMeta,state.targetMeta,state.sourceMap.rules,state.targetMap.rules);for(const item of additions){state.canonicals.push(item.canonical);state.sourceMap.rules.push({canonical:item.canonical,native:item.source});state.targetMap.rules.push({canonical:item.canonical,native:item.target})}if(additions.length){state.dirty=true;setDraftStatus(additions.length+' compatible mappings ready to review');renderFieldMappings()}return additions.length}
     $('auto-map').onclick=()=>autoMapCurrentObject();
-    $('auto-map-all').onclick=async()=>{const rows=selectedCatalogRows();if(!rows.length)return;const button=$('auto-map-all'),from=$('mig-from').value,to=from==='salesforce'?'hubspot':'salesforce',current=migrationState.mapping?.type;button.disabled=true;button.textContent='Finding matches…';try{const batch=await Promise.all(rows.map(async row=>{const [sourceMeta,targetMeta,sourceMap,targetMap]=await Promise.all([getMetadata(from,row.source.id),getMetadata(to,row.target.id),api('/api/mappings/'+from+'/'+row.canonicalType),api('/api/mappings/'+to+'/'+row.canonicalType)]);return {row,sourceMap,targetMap,additions:compatibleMappingAdditions(sourceMeta,targetMeta,sourceMap.rules,targetMap.rules)}})),added=batch.reduce((total,item)=>total+item.additions.length,0),summary=batch.filter(item=>item.additions.length).map(item=>item.row.source.label+': '+item.additions.length).join(' · ');if(!added){setDraftStatus('No new exact matches found','saved');return}const confirmed=await requestTypedConfirmation({title:'Review automatic mappings',message:'Found '+added+' exact matches across '+batch.filter(item=>item.additions.length).length+' objects. '+summary+'. Existing mappings and transforms are preserved.',token:'MAP ALL',buttonLabel:'Apply mappings'});if(!confirmed)return;button.textContent='Applying mappings…';for(const item of batch){if(!item.additions.length)continue;await Promise.all([api('/api/mappings/'+from+'/'+item.row.canonicalType,{method:'PUT',body:JSON.stringify({rules:[...item.sourceMap.rules,...item.additions.map(entry=>({canonical:entry.canonical,native:entry.source}))]})}),api('/api/mappings/'+to+'/'+item.row.canonicalType,{method:'PUT',body:JSON.stringify({rules:[...item.targetMap.rules,...item.additions.map(entry=>({canonical:entry.canonical,native:entry.target}))]})})])}migrationState.metadata.clear();markPlanDirty();queuePlanAutosave();await loadCatalog();if(current)await loadFieldWorkspace(current);setDraftStatus(added+' mappings added across selected objects','saved')}catch(e){setDraftStatus(e.message,'error')}finally{button.disabled=false;button.textContent='Auto-map selected objects'}};
+    $('auto-map-all').onclick=async()=>{const rows=fieldQueueRows();if(!rows.length)return;const button=$('auto-map-all'),current=migrationState.mapping?.type;button.disabled=true;button.textContent='Finding matches…';try{const batch=await Promise.all(rows.map(async row=>{const {from,to,sourceObj,targetObj}=resolveRowEndpoints(row,row.canonicalType);const [sourceMeta,targetMeta,sourceMap,targetMap]=await Promise.all([getMetadata(from,(sourceObj||row.source).id),getMetadata(to,(targetObj||row.target).id),api('/api/mappings/'+from+'/'+row.canonicalType),api('/api/mappings/'+to+'/'+row.canonicalType)]);return {row,from,to,sourceObj:sourceObj||row.source,sourceMap,targetMap,additions:compatibleMappingAdditions(sourceMeta,targetMeta,sourceMap.rules,targetMap.rules)}})),added=batch.reduce((total,item)=>total+item.additions.length,0),summary=batch.filter(item=>item.additions.length).map(item=>item.sourceObj.label+': '+item.additions.length).join(' · ');if(!added){setDraftStatus('No new exact matches found','saved');return}const confirmed=await requestTypedConfirmation({title:'Review automatic mappings',message:'Found '+added+' exact matches across '+batch.filter(item=>item.additions.length).length+' objects. '+summary+'. Existing mappings and transforms are preserved.',token:'MAP ALL',buttonLabel:'Apply mappings'});if(!confirmed)return;button.textContent='Applying mappings…';for(const item of batch){if(!item.additions.length)continue;await Promise.all([api('/api/mappings/'+item.from+'/'+item.row.canonicalType,{method:'PUT',body:JSON.stringify({rules:[...item.sourceMap.rules,...item.additions.map(entry=>({canonical:entry.canonical,native:entry.source}))]})}),api('/api/mappings/'+item.to+'/'+item.row.canonicalType,{method:'PUT',body:JSON.stringify({rules:[...item.targetMap.rules,...item.additions.map(entry=>({canonical:entry.canonical,native:entry.target}))]})})])}migrationState.metadata.clear();markPlanDirty();queuePlanAutosave();await loadCatalog(workspaceMode==='sync'?'salesforce':$('mig-from').value);if(current)await loadFieldWorkspace(current);setDraftStatus(added+' mappings added across selected objects','saved')}catch(e){setDraftStatus(e.message,'error')}finally{button.disabled=false;button.textContent='Auto-map selected objects'}};
+    function showSyncPausedWarning(message){showWarning(message,{label:'Open Sync tab →',onClick:()=>{history.replaceState(null,'','#sync');selectView('sync')}})}
     async function saveFieldMappings(reload=true){const state=migrationState.mapping;if(!state)return;const rows=[...$('field-map-rows').querySelectorAll('tr[data-canonical]')];const existingSource=new Map(state.sourceMap.rules.map(r=>[r.canonical,r])),existingTarget=new Map(state.targetMap.rules.map(r=>[r.canonical,r]));const sourceRules=[],targetRules=[];
-      for(const tr of rows){const canonical=tr.querySelector('.canonical').value.trim(),sourceNative=tr.querySelector('.source-native').value,targetNative=tr.querySelector('.target-native').value;if(!canonical||!sourceNative||!targetNative)continue;const sot=tr.querySelector('.field-sot')?.value||undefined;const oldS=existingSource.get(tr.dataset.canonical)||{},oldT=existingTarget.get(tr.dataset.canonical)||{};sourceRules.push({...oldS,canonical,native:sourceNative,toCanonical:tr.querySelector('.source-to').value,fromCanonical:tr.querySelector('.source-from').value,sourceOfTruth:sot});targetRules.push({...oldT,canonical,native:targetNative,toCanonical:tr.querySelector('.target-to').value,fromCanonical:tr.querySelector('.target-from').value,sourceOfTruth:sot})}
-      const button=$('save-field-map');showProgressBar();try{button.disabled=true;button.textContent='Saving…';const results=await Promise.all([api('/api/mappings/'+state.from+'/'+state.type,{method:'PUT',body:JSON.stringify({rules:sourceRules})}),api('/api/mappings/'+state.to+'/'+state.type,{method:'PUT',body:JSON.stringify({rules:targetRules})})]);state.dirty=false;migrationState.metadata.clear();markPlanDirty();queuePlanAutosave();await loadCatalog();if(reload)await loadFieldWorkspace(state.type);button.textContent='Saved ✓';setTimeout(()=>button.textContent='Save mappings',1200);
-        if(results.some(r=>r.syncPaused))showNotice('Heads up: '+state.type+' was live-syncing, so saving this mapping change paused both real-time and scheduled sync for it. Review the mapping, then re-enable it from the Sync tab when ready.');
+      for(const tr of rows){const canonical=tr.querySelector('.canonical').value.trim(),rawSource=tr.querySelector('.source-native').value,sourceNative=encodeSourceNative(rawSource,state.sourceMeta),targetNative=tr.querySelector('.target-native').value.trim();if(!canonical||!sourceNative||!targetNative)continue;const sot=tr.querySelector('.field-sot')?.value||undefined;const oldS=existingSource.get(tr.dataset.canonical)||{},oldT=existingTarget.get(tr.dataset.canonical)||{};sourceRules.push({...oldS,canonical,native:sourceNative,toCanonical:tr.querySelector('.source-to').value,fromCanonical:tr.querySelector('.source-from').value,sourceOfTruth:sot});targetRules.push({...oldT,canonical,native:targetNative,toCanonical:tr.querySelector('.target-to').value,fromCanonical:tr.querySelector('.target-from').value,sourceOfTruth:sot})}
+      const button=$('save-field-map');showProgressBar();try{button.disabled=true;button.textContent='Saving…';const results=await Promise.all([api('/api/mappings/'+state.from+'/'+state.type,{method:'PUT',body:JSON.stringify({rules:sourceRules})}),api('/api/mappings/'+state.to+'/'+state.type,{method:'PUT',body:JSON.stringify({rules:targetRules})})]);state.dirty=false;migrationState.metadata.clear();markPlanDirty();queuePlanAutosave();await loadCatalog(workspaceMode==='sync'?'salesforce':$('mig-from').value);if(reload)await loadFieldWorkspace(state.type);button.textContent='Saved ✓';setTimeout(()=>button.textContent='Save mappings',1200);
+        if(results.some(r=>r.syncPaused))showSyncPausedWarning('Heads up: '+state.type+' was live-syncing, so saving this mapping change paused both real-time and scheduled sync for it. Review the mapping, then re-enable it from the Sync tab when ready.');
         else showNotice('Field mappings saved.');
         if(workspaceMode==='sync')await maybeOfferNaturalKeyStep();
       }catch(e){button.textContent='Save mappings';throw e}finally{button.disabled=false;hideProgressBar()}}
@@ -678,15 +854,15 @@ export function operationsHtml(): string {
     function renderNaturalKeyOptions(type,keyData,candidates){const presets=naturalKeyPresets(type,candidates),current=keyData.naturalKeyFields,matched=presets.findIndex(item=>sameFields(item.fields,current)),advancedValid=current.length&&current.every(field=>candidates.some(item=>item.field===field));$('natural-key-options').innerHTML=presets.length?presets.map((preset,index)=>'<label class="identity-option"><input type="radio" name="natural-key-mode" value="preset-'+index+'" '+(index===(matched>=0?matched:advancedValid?-1:0)?'checked':'')+'><span><b>'+esc(preset.label)+(preset.recommended?'<em class="recommended-badge">Recommended</em>':'')+'</b><small>'+esc(preset.description)+'</small></span></label>').join(''):'<div class="empty">No recommended identity is mapped in both CRMs.</div>';$('natural-key-fields').innerHTML=candidates.length?candidates.map(item=>'<label class="advanced-key-field"><input type="checkbox" data-natural-key-field="'+esc(item.field)+'" '+(advancedValid&&current.includes(item.field)?'checked':'')+'>'+esc(item.field)+(item.risky?' · mutable':'')+'</label>').join(''):'<div class="empty">Map a stable field in both CRMs first.</div>';const advancedRadio=document.querySelector('input[name="natural-key-mode"][value="advanced"]');advancedRadio.checked=matched<0&&advancedValid;$('natural-key-advanced').open=advancedRadio.checked||matched<0&&current.length>0;migrationState.valueContext.keyPresets=presets;migrationState.valueContext.keyCandidates=candidates;migrationState.valueContext.previousKeyUnsafe=Boolean(current.length&&matched<0&&!advancedValid);document.querySelectorAll('input[name="natural-key-mode"],[data-natural-key-field]').forEach(input=>input.onchange=()=>{if(input.dataset.naturalKeyField)advancedRadio.checked=true;updateNaturalKeyChoice()});updateNaturalKeyChoice()}
     function selectedNaturalKeyFields(){const mode=document.querySelector('input[name="natural-key-mode"]:checked')?.value;if(mode?.startsWith('preset-'))return migrationState.valueContext.keyPresets[Number(mode.slice(7))]?.fields||[];return [...document.querySelectorAll('[data-natural-key-field]:checked')].map(input=>input.dataset.naturalKeyField)}
     function updateNaturalKeyChoice(){const context=migrationState.valueContext;if(!context)return;const fields=selectedNaturalKeyFields(),mode=document.querySelector('input[name="natural-key-mode"]:checked')?.value,preset=mode?.startsWith('preset-')?context.keyPresets[Number(mode.slice(7))]:undefined,risky=fields.filter(field=>context.keyCandidates.find(item=>item.field===field)?.risky);$('save-natural-key').disabled=!fields.length;$('natural-key-summary').textContent=fields.length?'Match using '+fields.join(' + '):'Choose at least one stable field.';const warning=$('natural-key-warning');if(context.previousKeyUnsafe){warning.className='identity-warning';warning.textContent='The previous rule used an unstable or unmapped field. Choose and save a safe replacement before migration.';context.previousKeyUnsafe=false}else if(preset?.risky||risky.length){warning.className='identity-warning';warning.textContent='Review carefully: '+(risky.length?risky.join(', '):'this fallback')+' can change or may not be unique. Preflight will flag missing values and duplicate matches.'}else{warning.className='identity-warning safe';warning.textContent='Good identity rule: the selected field is stable, mapped in both CRMs, and searchable before creating a record.'}}
-    async function loadValuesWorkspace(type){if(!type)return;const loadToken=++migrationState.valueLoadToken,row=migrationState.catalog.find(item=>item.canonicalType===type);if(!row)return;$('value-object').value=type;renderValueObjectTabs();$('natural-key-options').innerHTML='<div class="empty">Loading matching rules…</div>';$('value-field').innerHTML='<option value="">Loading value fields…</option>';$('value-map-rows').innerHTML='<tr><td colspan="3" class="empty">Choose a value field after this object loads.</td></tr>';const from=$('mig-from').value,to=from==='salesforce'?'hubspot':'salesforce';
-      try{const [sourceMeta,targetMeta,sourceMap,targetMap,keyData]=await Promise.all([getMetadata(from,row.source.id),getMetadata(to,row.target.id),api('/api/mappings/'+from+'/'+type),api('/api/mappings/'+to+'/'+type),api('/api/object-mappings/'+type)]),sourceRules=new Map(sourceMap.rules.map(r=>[r.canonical,r])),targetRules=new Map(targetMap.rules.map(r=>[r.canonical,r])),canonicalFields=[...new Set([...sourceRules.keys()].filter(field=>targetRules.has(field)))],candidates=naturalKeyCandidates(type,sourceMeta,targetMeta,sourceRules,targetRules),enumFields=canonicalFields.filter(c=>{const s=sourceMeta.fields.find(f=>f.name===sourceRules.get(c)?.native),t=targetMeta.fields.find(f=>f.name===targetRules.get(c)?.native);return s?.options?.length||t?.options?.length});
+    async function loadValuesWorkspace(type){if(!type)return;const loadToken=++migrationState.valueLoadToken,row=migrationState.catalog.find(item=>item.canonicalType===type);if(!row)return;$('value-object').value=type;renderValueObjectTabs();$('natural-key-options').innerHTML='<div class="empty">Loading matching rules…</div>';$('value-field').innerHTML='<option value="">Loading value fields…</option>';$('value-map-rows').innerHTML='<tr><td colspan="3" class="empty">Choose a value field after this object loads.</td></tr>';const {from,to,sourceObj,targetObj}=resolveRowEndpoints(row,type);if(!sourceObj||!targetObj)return;
+      try{const [sourceMeta,targetMeta,sourceMap,targetMap,keyData]=await Promise.all([getMetadata(from,sourceObj.id),getMetadata(to,targetObj.id),api('/api/mappings/'+from+'/'+type),api('/api/mappings/'+to+'/'+type),api('/api/object-mappings/'+type)]),sourceRules=new Map(sourceMap.rules.map(r=>[r.canonical,r])),targetRules=new Map(targetMap.rules.map(r=>[r.canonical,r])),canonicalFields=[...new Set([...sourceRules.keys()].filter(field=>targetRules.has(field)))],candidates=naturalKeyCandidates(type,sourceMeta,targetMeta,sourceRules,targetRules),enumFields=canonicalFields.filter(c=>{const s=sourceMeta.fields.find(f=>f.name===sourceRules.get(c)?.native),t=targetMeta.fields.find(f=>f.name===targetRules.get(c)?.native);return s?.options?.length||t?.options?.length});
         if(loadToken!==migrationState.valueLoadToken)return;migrationState.valueContext={type,sourceMeta,targetMeta,sourceRules,targetRules,keyData,keyPresets:[],keyCandidates:[],previousKeyUnsafe:false};renderNaturalKeyOptions(type,keyData,candidates);$('value-field').innerHTML='<option value="">Choose a picklist field</option>'+enumFields.map(field=>'<option>'+esc(field)+'</option>').join('')}catch(e){if(loadToken!==migrationState.valueLoadToken)return;$('value-map-rows').innerHTML='<tr><td colspan="3" class="empty">'+esc(e.message)+'</td></tr>';$('natural-key-options').innerHTML='<div class="empty">'+esc(e.message)+'</div>'}}
     $('save-natural-key').onclick=async()=>{const type=$('value-object').value,fields=selectedNaturalKeyFields(),button=$('save-natural-key');if(!fields.length){$('natural-key-warning').className='identity-warning';$('natural-key-warning').textContent='Choose at least one stable identity field.';return}try{button.disabled=true;button.textContent='Saving…';const result=await api('/api/object-mappings/'+type,{method:'PUT',body:JSON.stringify({naturalKeyFields:fields})});markPlanDirty();queuePlanAutosave();button.textContent='Saved ✓';$('natural-key-summary').textContent='Saved: '+fields.join(' + ');setTimeout(()=>button.textContent='Save matching rule',1200);
-      if(result.syncPaused)showNotice('Heads up: '+type+' was live-syncing, so saving this matching rule paused both real-time and scheduled sync for it. Review it, then re-enable from the Sync tab when ready.')
+      if(result.syncPaused)showSyncPausedWarning('Heads up: '+type+' was live-syncing, so saving this matching rule paused both real-time and scheduled sync for it. Review it, then re-enable from the Sync tab when ready.')
     }catch(e){$('natural-key-warning').className='identity-warning';$('natural-key-warning').textContent=e.message;button.textContent='Save matching rule'}finally{button.disabled=false}};
     $('load-values').onclick=async()=>{const context=migrationState.valueContext,field=$('value-field').value;if(!context||!field)return;const current=await api('/api/value-mappings/'+context.type+'/'+encodeURIComponent(field));const sfMeta=$('mig-from').value==='salesforce'?context.sourceMeta:context.targetMeta,hsMeta=$('mig-from').value==='hubspot'?context.sourceMeta:context.targetMeta;const sfRule=($('mig-from').value==='salesforce'?context.sourceRules:context.targetRules).get(field),hsRule=($('mig-from').value==='hubspot'?context.sourceRules:context.targetRules).get(field);const sfOptions=sfMeta.fields.find(f=>f.name===sfRule?.native)?.options||[],hsOptions=hsMeta.fields.find(f=>f.name===hsRule?.native)?.options||[];const values=new Map(current.entries.map(e=>[e.canonicalValue,e]));[...sfOptions,...hsOptions].forEach(o=>{if(!values.has(o.value))values.set(o.value,{canonicalValue:o.value,salesforceValue:sfOptions.find(x=>x.value===o.value)?.value,hubspotValue:hsOptions.find(x=>x.value===o.value)?.value})});$('value-map-rows').innerHTML=[...values.values()].map(e=>'<tr><td><input class="value-canonical" value="'+esc(e.canonicalValue)+'"></td><td><input class="value-sf" value="'+esc(e.salesforceValue||'')+'"></td><td><input class="value-hs" value="'+esc(e.hubspotValue||'')+'"></td></tr>').join('')||'<tr><td colspan="3" class="empty">No values discovered.</td></tr>'};
     $('save-values').onclick=async()=>{const type=$('value-object').value,field=$('value-field').value;if(!field)return;const entries=[...$('value-map-rows').querySelectorAll('tr')].map(tr=>({canonicalValue:tr.querySelector('.value-canonical')?.value.trim(),salesforceValue:tr.querySelector('.value-sf')?.value.trim()||undefined,hubspotValue:tr.querySelector('.value-hs')?.value.trim()||undefined})).filter(x=>x.canonicalValue);try{const result=await api('/api/value-mappings/'+type+'/'+encodeURIComponent(field),{method:'PUT',body:JSON.stringify({entries})});markPlanDirty();queuePlanAutosave();$('save-values').textContent='Saved ✓';setTimeout(()=>$('save-values').textContent='Save values',1200);
-      if(result.syncPaused)showNotice('Heads up: '+type+' was live-syncing, so saving this value mapping paused both real-time and scheduled sync for it. Review it, then re-enable from the Sync tab when ready.')
+      if(result.syncPaused)showSyncPausedWarning('Heads up: '+type+' was live-syncing, so saving this value mapping paused both real-time and scheduled sync for it. Review it, then re-enable from the Sync tab when ready.')
     }catch(e){showError(e.message,e.requestId)}};
 
     async function runPlanPreflight(){try{const plan=await ensurePlan();migrationState.preflight=null;resetCopilot();$('summary-preflight').textContent='Running…';updateMigrationStepper();const result=await api('/api/migration-plans/'+plan.id+'/preflight',{method:'POST'});migrationState.preflight=result;renderPreflight(result);migrationState.plan=await api('/api/migration-plans/'+plan.id);updateMigrationSummary();updateMigrationStepper();return result}catch(e){$('ask-copilot').disabled=true;$('summary-preflight').textContent='Blocked';$('preflight-issues').innerHTML=e.code==='connection_refresh_required'?'<div class="preflight-blocked"><b>CRM connection needs attention</b><p>'+esc(e.message)+'</p><a class="button secondary" href="'+esc(e.actionUrl||'/')+'">Open Connections</a></div>':'<div class="empty">'+esc(e.message)+'</div>';updateMigrationStepper();throw e}}
@@ -858,7 +1034,7 @@ export function operationsHtml(): string {
     }
     window.deleteSavedPlan=deleteSavedPlan;
     async function loadSavedPlans(){const result=await api('/api/migration-plans');migrationState.savedPlans=result.entries;$('saved-plan-count').textContent=result.entries.length;$('saved-plans').innerHTML=result.entries.length?result.entries.map(plan=>'<article class="plan-item" data-plan="'+plan.id+'"><div class="plan-name"><span>'+esc(plan.name)+'</span><span class="pill '+(plan.status==='completed'?'completed':plan.status==='failed'?'error':'queued')+'">'+esc(plan.status)+'</span></div><div class="plan-meta">'+esc(plan.source==='salesforce'?'Salesforce → HubSpot':'HubSpot → Salesforce')+' · '+plan.types.length+' objects · revision '+plan.revision+'</div><div class="plan-meta">'+esc(plan.canary?.verifiedAt?'One-record test passed':plan.canary?'Test record ready':'One-record test required')+'</div><div class="plan-meta" style="display:flex;gap:8px;margin-top:6px;align-items:center;">'+(plan.activeExecutionId?'<button class="secondary" type="button" data-action="viewExecution" data-arg="'+esc(plan.activeExecutionId)+'">View run</button>':'')+'<button class="danger secondary" type="button" data-action="deleteSavedPlan" data-arg="'+esc(plan.id)+'"'+(plan.status==='executing'||plan.activeExecutionId?' disabled title="Cannot delete an executing plan"':'')+'>Delete</button></div></article>').join(''):'<div class="empty">No saved plans yet. Configure the builder and your first draft will appear here.</div>';$('saved-plans').querySelectorAll('[data-plan]').forEach(item=>item.onclick=(event)=>{if(event.target.closest('[data-action]'))return;loadPlan(item.dataset.plan)})}
-    async function loadPlan(id){const plan=await api('/api/migration-plans/'+id);selectMigrateTab('builder');migrationState.plan=plan;migrationState.dirty=false;migrationState.selected=new Set(plan.types);migrationState.preview=null;migrationState.canaryPreview=null;migrationState.canaryVerified=Boolean(plan.canary?.verifiedAt&&plan.canary.previewRevision===plan.revision);migrationState.preflight=null;resetCopilot();$('plan-name').value=plan.name;$('mig-from').value=plan.source;$('mig-limit').value=plan.limitPerType||20;updateDirectionPreview();setDraftStatus('Loaded revision '+plan.revision,'saved');await loadCatalog();$('summary-plan').textContent=plan.name+' · r'+plan.revision;$('summary-preflight').textContent=plan.status==='validated'||plan.status==='previewed'||plan.status==='completed'?'Passed':'Not run';$('summary-preview').textContent=migrationState.canaryVerified?'Passed':plan.canary?'Ready':'Required';$('full-migration').hidden=!migrationState.canaryVerified;$('test-record-result').hidden=true;
+    async function loadPlan(id){const plan=await api('/api/migration-plans/'+id);selectMigrateTab('builder');migrationState.plan=plan;migrationState.dirty=false;migrationState.selected=new Set(plan.types);migrationState.preview=null;migrationState.canaryPreview=null;migrationState.canaryVerified=Boolean(plan.canary?.verifiedAt&&plan.canary.previewRevision===plan.revision);migrationState.preflight=null;migrationState.mapping=null;resetCopilot();$('plan-name').value=plan.name;$('mig-from').value=plan.source;setStoredMigrationFrom(plan.source);$('mig-limit').value=plan.limitPerType||20;updateDirectionPreview();setDraftStatus('Loaded revision '+plan.revision,'saved');await loadCatalog(plan.source);$('summary-plan').textContent=plan.name+' · r'+plan.revision;$('summary-preflight').textContent=plan.status==='validated'||plan.status==='previewed'||plan.status==='completed'?'Passed':'Not run';$('summary-preview').textContent=migrationState.canaryVerified?'Passed':plan.canary?'Ready':'Required';$('full-migration').hidden=!migrationState.canaryVerified;$('test-record-result').hidden=true;
       const hasCurrentPreview=plan.previewRunId&&plan.previewRevision===plan.revision;if(hasCurrentPreview){const frozen=await api('/api/migrations/'+plan.previewRunId+'/items?limit=2000');migrationState.preview={runId:plan.previewRunId,plans:frozen.entries};renderPlans(frozen.entries);renderPreviewActions(frozen.entries);$('mig-status').textContent=plan.previewRunId.slice(0,8)+' · prepared migration loaded';$('execute').disabled=!frozen.entries.length||frozen.entries.some(item=>item.action==='ambiguous')}else{$('execute').disabled=true}updateMigrationSummary();updateMigrationStepper()}
     function updateMigrationSummary(){const rows=selectedCatalogRows(),direction=$('mig-from').value==='salesforce'?'Salesforce → HubSpot':'HubSpot → Salesforce';$('summary-direction').textContent=direction;$('summary-objects').textContent=migrationState.selected.size+' selected';const mapped=rows.reduce((n,row)=>n+row.mappedFields,0),total=rows.reduce((n,row)=>n+row.totalMappedFields,0);$('summary-coverage').textContent=total?Math.round(mapped/total*100)+'%':'—';if(!migrationState.plan)$('summary-plan').textContent='Unsaved draft';updateDeletePlanButton()}
     async function loadRuns(){const r=await api('/api/migrations');migrationState.runs=r.entries;$('run-count').textContent=r.entries.length;const latest=r.entries[0];$('latest-run-shortcut').textContent=latest?'Latest run · '+latest.status:'View run history';renderMigrationRuns()}
@@ -1000,7 +1176,8 @@ export function operationsHtml(): string {
     function syncObjectRowHtml(obj,config){
       const type=obj.canonicalObject,value=config.objects[type]||{enabled:false,direction:'bidirectional'},polling=config.polling[type]||{enabled:false,intervalMinutes:30},unit=minutesToUnit(polling.intervalMinutes),status=config.pollingStatus&&config.pollingStatus[type];
       const cronMode=Boolean(polling.cron),dis=value.enabled?'':'disabled',objStrat=value.conflictStrategy||'source-of-truth',objSot=value.sourceOfTruth||'salesforce';
-      const pairLabel=capitalizeWord(obj.salesforceObject||'—')+' → '+capitalizeWord(obj.hubspotObject||'—');
+      const sfLabel=capitalizeWord(obj.salesforceObject||'—'),hsLabel=capitalizeWord(obj.hubspotObject||'—');
+      const pairLabel=value.direction==='hubspot_to_salesforce'?(hsLabel+' → '+sfLabel):(sfLabel+' → '+hsLabel);
       return '<div class="object-sync-row">'
         +'<div class="object-sync-main"><label><input type="checkbox" data-sync-enabled="'+esc(type)+'" '+(value.enabled?'checked':'')+' title="Master switch -- turns sync off entirely, both webhooks and scheduled polling, when unchecked"><b>'+esc(pairLabel)+'</b><span class="muted" style="font-weight:400;font-size:11px"> · Sync enabled</span></label>'
         +'<span class="pill '+(value.enabled?'completed':'queued')+'">'+(value.enabled?'Live':'Paused')+'</span>'
@@ -1077,18 +1254,17 @@ export function operationsHtml(): string {
     // (mig-from), so an object registered from the "other" side wouldn't be there yet.
     async function ensureCatalogForSyncObject(type){
       if(migrationState.catalog.some(row=>row.canonicalType===type))return;
-      $('mig-from').value='salesforce';
-      await loadCatalog();
+      await loadCatalog('salesforce');
     }
     async function loadFieldMappingWorkspace(preferredType){
       if(workspaceMode==='sync'){
-        $('mig-from').value='salesforce';
-        await Promise.all([syncConfigState?Promise.resolve():loadSyncSettings(),migrationState.catalog.length?Promise.resolve():loadCatalog()]);
+        await Promise.all([syncConfigState?Promise.resolve():loadSyncSettings(),migrationState.catalog.length?Promise.resolve():loadCatalog('salesforce')]);
         if(preferredType)await ensureCatalogForSyncObject(preferredType);
       }else{
         migrationState.currentStep='fields';migrationState.visited.add('fields');
-        if(!migrationState.catalog.length){
-          await Promise.allSettled([loadCatalog(),loadSavedPlans(),loadRuns()]);
+        const from=$('mig-from').value==='hubspot'?'hubspot':'salesforce';
+        if(!migrationState.catalog.length||migrationState.catalogSource!==from){
+          await Promise.allSettled([loadCatalog(from),loadSavedPlans(),loadRuns()]);
         }
       }
       refreshObjectSelectors();
@@ -1180,7 +1356,7 @@ export function operationsHtml(): string {
       $('sync-wizard-label-row').hidden=true;$('sync-wizard-conditions-panel').hidden=true;
       $('sync-wizard-step2-continue').hidden=false;$('sync-wizard-step2-continue').disabled=true;$('sync-wizard-save-conditions').hidden=true;
       $('sync-wizard-edit-objects').hidden=true;$('sync-wizard-save-native-objects').hidden=true;
-      $('mig-from').value='salesforce';await Promise.all([loadCatalog(),syncConfigState?Promise.resolve():loadSyncSettings()]);renderSyncWizardObjectOptions();
+      await Promise.all([loadCatalog('salesforce'),syncConfigState?Promise.resolve():loadSyncSettings()]);renderSyncWizardObjectOptions();
     };
     $('sync-wizard-step2-back').onclick=()=>{$('sync-wizard-step-2').hidden=true;$('sync-wizard-step-1').hidden=false};
     // row.supported only means "an auto-match by name already exists" (Migration's
@@ -1418,7 +1594,8 @@ export function operationsHtml(): string {
         const type=syncWizard.type;
         const result=await api('/api/object-mappings/'+type+'/native-objects',{method:'PUT',body:JSON.stringify({salesforceObject,hubspotObject})});
         resetSyncWizard();await loadSyncSettings();
-        showNotice('Objects updated. Field mappings and the matching key were reset'+(result.syncPaused?' and sync was paused for this object -- turn it back on once fields are remapped.':' -- map fields for the new objects, then re-check your natural key, before relying on sync.'));
+        if(result.syncPaused)showSyncPausedWarning('Objects updated. Field mappings and the matching key were reset and sync was paused for this object -- turn it back on once fields are remapped.');
+        else showNotice('Objects updated. Field mappings and the matching key were reset -- map fields for the new objects, then re-check your natural key, before relying on sync.');
         await goMapFields(type);
       }catch(e){$('sync-wizard-message').textContent=e.message}
       finally{button.disabled=false;button.textContent='Save object change'}
@@ -1724,8 +1901,7 @@ export function operationsHtml(): string {
           applyWorkspaceMode();
           const targetType=route.objectType||migrationState.mapping?.type||$('field-object').value;
           if(workspaceMode==='sync'){
-            $('mig-from').value='salesforce';
-            await Promise.allSettled([loadSyncSettings(),loadCatalog(),loadReadiness()]);
+            await Promise.allSettled([loadSyncSettings(),loadCatalog('salesforce'),loadReadiness()]);
           }else{
             const migTasks=[loadRuns(),loadCatalog(),loadSavedPlans(),loadReadiness()];
             if(migrationState.plan?.id){
