@@ -129,6 +129,31 @@ describe('scheduled sync polling', () => {
     expect(history).toHaveLength(20);
     expect(new Date(history[0]!.at).getTime()).toBeGreaterThanOrEqual(new Date(history[1]!.at).getTime());
   });
+
+  it('commits watermark cursor progressively per page as records are enqueued', async () => {
+    // Seed 150 contacts so list() returns 2 pages (MockConnector pageSize is 100)
+    for (let i = 0; i < 150; i += 1) {
+      ctx.sf.seed('contact', {
+        firstName: `Contact${i}`,
+        email: `c${i}@example.com`,
+      });
+    }
+    const committedCursors: string[] = [];
+    const origCommit = ctx.cursors.commit.bind(ctx.cursors);
+    ctx.cursors.commit = async (system, stream, cursor) => {
+      committedCursors.push(cursor);
+      return origCommit(system, stream, cursor);
+    };
+
+    const summary = await ctx.poller.runOnce('contact');
+    expect(summary.changed).toBe(150);
+    // Page 1 committed, Page 2 committed, and final completion committed
+    expect(committedCursors.length).toBeGreaterThanOrEqual(2);
+    // Every committed watermark is a valid ISO timestamp
+    for (const c of committedCursors) {
+      expect(Number.isFinite(Date.parse(c))).toBe(true);
+    }
+  });
 });
 
 describe('scheduled sync polling -- independent per-object intervals', () => {

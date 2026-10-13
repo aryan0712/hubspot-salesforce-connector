@@ -416,7 +416,7 @@ export class SalesforceConnector implements CRMConnector {
       condition?.rawCondition ? `(${condition.rawCondition})` : undefined,
     ].filter((clause): clause is string => Boolean(clause));
     const where = clauses.length ? ` WHERE ${clauses.join(' AND ')}` : '';
-    return `SELECT Id, LastModifiedDate, ${fields.join(', ')} FROM ${sobject}${where}`;
+    return `SELECT Id, LastModifiedDate, ${fields.join(', ')} FROM ${sobject}${where} ORDER BY LastModifiedDate ASC`;
   }
 
   private canonicalize(type: CanonicalType, native: Record<string, unknown>): CanonicalRecord {

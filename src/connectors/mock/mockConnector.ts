@@ -20,6 +20,7 @@ import type {
   SystemId,
 } from '../../core/types.js';
 import type { ConfigContext } from '../../core/configContext.js';
+import { isLiteralNative } from '../../core/mapping.js';
 import { evaluateConditions } from '../../core/syncConfig.js';
 
 /**
@@ -115,11 +116,13 @@ export class MockConnector implements CRMConnector {
     condition?: QueryCondition,
   ): Promise<RecordPage> {
     const sinceMs = modifiedSince ? Date.parse(modifiedSince) : undefined;
-    const all = [...this.bucket(type).values()].filter(
-      (n) =>
-        (sinceMs === undefined || Date.parse(n.__modifiedAt) >= sinceMs) &&
-        evaluateConditions(condition?.conditions, n),
-    );
+    const all = [...this.bucket(type).values()]
+      .filter(
+        (n) =>
+          (sinceMs === undefined || Date.parse(n.__modifiedAt) >= sinceMs) &&
+          evaluateConditions(condition?.conditions, n),
+      )
+      .sort((a, b) => Date.parse(a.__modifiedAt) - Date.parse(b.__modifiedAt));
     const pageSize = 100;
     const start = cursor ? Number(cursor) : 0;
     const slice = all.slice(start, start + pageSize);
@@ -160,12 +163,14 @@ export class MockConnector implements CRMConnector {
   }
 
   async describe(type: CanonicalType): Promise<SchemaField[]> {
-    return this.config.fieldRules(this.system, type).map((rule) => ({
-      name: rule.native,
-      label: rule.native,
-      type: 'string',
-      readOnly: rule.readOnly,
-    }));
+    return this.config.fieldRules(this.system, type)
+      .filter((rule) => !isLiteralNative(rule.native))
+      .map((rule) => ({
+        name: rule.native,
+        label: rule.native,
+        type: 'string',
+        readOnly: rule.readOnly,
+      }));
   }
 
   async listObjects(): Promise<CRMObjectDescriptor[]> {

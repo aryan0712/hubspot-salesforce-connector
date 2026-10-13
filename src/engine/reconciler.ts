@@ -21,7 +21,7 @@ import {
   type IdMapStore,
   type Link,
 } from '../core/idMap.js';
-import { resolve, type ResolveOptions } from '../core/conflict.js';
+import { resolve, type FieldOwner, type ResolveOptions } from '../core/conflict.js';
 import { logger } from '../logger.js';
 import type { ActivityLog } from '../observability/activity.js';
 import type { ConfigContext } from '../core/configContext.js';
@@ -462,7 +462,7 @@ export class Reconciler {
     if (!opts.force && link.ids[to] && link.modifiedAt?.[from]) {
       const sourceTs = Date.parse(source.meta.modifiedAt);
       const lastSyncTs = Date.parse(link.modifiedAt[from]);
-      if (Number.isFinite(sourceTs) && Number.isFinite(lastSyncTs) && sourceTs <= lastSyncTs) {
+      if (Number.isFinite(sourceTs) && Number.isFinite(lastSyncTs) && sourceTs <= lastSyncTs && hashMatches(link.hashes?.[from], source.fields)) {
         logger.debug(
           { canonicalId: link.canonicalId, from, to, sourceModifiedAt: source.meta.modifiedAt, lastSync: link.modifiedAt[from] },
           'record already synced and source not updated; skipping redundant sync',
@@ -1178,7 +1178,7 @@ export class Reconciler {
     };
   }
 
-  private fieldOwners(type: CanonicalType): Record<string, SystemId> {
+  private fieldOwners(type: CanonicalType): Record<string, FieldOwner> {
     return Object.fromEntries(
       [...this.config.fieldRules('salesforce', type), ...this.config.fieldRules('hubspot', type)]
         .filter((rule) => rule.sourceOfTruth)

@@ -218,12 +218,21 @@ export class SyncPoller {
       rawCondition: objectConfig?.rawCondition?.[system],
     };
 
-    const events: ChangeEvent[] = [];
     let changed = 0;
     let cursor: string | undefined;
+    let highestWatermarkMs = cursor0 ? Date.parse(cursor0) : 0;
+    let highestWatermarkIso: string | undefined;
+
     do {
       const page = await connector.list(type, cursor, since, condition);
+      const pageEvents: ChangeEvent[] = [];
       for (const record of page.records) {
+        const recordModifiedMs = Date.parse(record.meta.modifiedAt);
+        if (Number.isFinite(recordModifiedMs) && recordModifiedMs > highestWatermarkMs) {
+          highestWatermarkMs = recordModifiedMs;
+          highestWatermarkIso = record.meta.modifiedAt;
+        }
+
         if (this.idMap) {
           const other: SystemId = system === 'salesforce' ? 'hubspot' : 'salesforce';
           const link = await this.idMap.bySource(system, record.meta.sourceId, type);
@@ -240,7 +249,7 @@ export class SyncPoller {
             }
           }
         }
-        events.push({
+        pageEvents.push({
           eventId: `poll:${system}:${type}:${record.meta.sourceId}:${record.meta.modifiedAt}`,
           system,
           type,
@@ -249,6 +258,15 @@ export class SyncPoller {
           occurredAt: record.meta.modifiedAt,
         });
         changed += 1;
+      }
+
+      if (pageEvents.length) {
+        await this.sync.enqueue(pageEvents);
+      }
+      // Progressive watermark: commit the cursor after each page so that if the cycle is
+      // interrupted, subsequent cycles resume from this watermark rather than restarting from the beginning.
+      if (highestWatermarkIso) {
+        await this.cursors.commit(system, stream, highestWatermarkIso);
       }
       cursor = page.nextCursor;
     } while (cursor);
@@ -270,8 +288,10 @@ export class SyncPoller {
           )
         ).filter((d): d is { sourceId: string; occurredAt: string } => Boolean(d))
       : rawDeletions;
+
+    const deletionEvents: ChangeEvent[] = [];
     for (const deletion of deletions) {
-      events.push({
+      deletionEvents.push({
         eventId: `poll:${system}:${type}:${deletion.sourceId}:deleted:${deletion.occurredAt}`,
         system,
         type,
@@ -281,7 +301,9 @@ export class SyncPoller {
       });
     }
 
-    if (events.length) await this.sync.enqueue(events);
+    if (deletionEvents.length) {
+      await this.sync.enqueue(deletionEvents);
+    }
     await this.cursors.commit(system, stream, pollStartedAt);
     return { changed, deleted: deletions.length };
   }
