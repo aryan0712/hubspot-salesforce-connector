@@ -484,6 +484,11 @@ describe('operations dashboard', () => {
       expect(page).not.toContain('header{ background:var(--nav); color:#fff; display:flex');
     }
     expect(operationsHtml()).toContain('.card.builder-header{overflow:visible}');
+    expect(operationsHtml()).toContain('class="poll-schedule-line"');
+    expect(operationsHtml()).toContain('class="poll-cadence"');
+    expect(operationsHtml()).toContain('class="poll-interval-fields"');
+    expect(operationsHtml()).toContain('class="poll-action-line"');
+    expect(operationsHtml()).not.toContain('<span>every</span>');
   });
 });
 

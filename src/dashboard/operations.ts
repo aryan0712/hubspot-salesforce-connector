@@ -43,25 +43,31 @@ export function operationsHtml(): string {
     .settings-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
     .settings-grid>.card{margin:0}
     .sync-config-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
-    .object-sync-row{display:flex;flex-direction:column;gap:8px;padding:13px 0;border-bottom:1px solid #f0f3f7}
+    .object-sync-row{display:flex;flex-direction:column;gap:10px;padding:15px 0;border-bottom:1px solid #f0f3f7}
     .object-sync-row:last-child{border-bottom:0}
-    .object-sync-main{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
-    .object-sync-main label{margin:0;display:flex;align-items:center;gap:9px}
-    .object-sync-main input{width:16px;height:16px;min-height:auto}
+    .object-sync-main{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+    .object-sync-main label{margin:0;display:flex;align-items:center;gap:9px;cursor:pointer}
+    .object-sync-main input{width:16px;height:16px;min-height:auto;margin:0}
     .object-sync-main select{margin-left:auto}
-    .object-poll-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding-left:25px;font-size:12px;color:var(--text-2)}
-    .object-poll-row label{margin:0;display:flex;align-items:center;gap:6px;white-space:nowrap}
-    .object-poll-row input[type=checkbox]{width:14px;height:14px;min-height:auto}
-    .object-poll-row input[type=number]{width:60px}
-    .object-poll-row select{width:auto}
+    .object-conflict-row{display:flex;align-items:center;gap:8px 16px;flex-wrap:wrap;padding-left:25px;font-size:12.5px;color:var(--text-2)}
+    .object-conflict-row label{margin:0;display:inline-flex;align-items:center;gap:7px;white-space:nowrap;font-weight:500}
+    .object-conflict-row select{width:auto;min-height:32px;height:32px;padding:4px 10px;font-size:12.5px;border-radius:6px}
+    .object-conflict-row.disabled{opacity:.5}
+    .object-poll-row{display:flex;flex-direction:column;gap:8px;margin-left:25px;padding:10px 12px;background:#f8fafc;border:1px solid #e6ecf2;border-radius:8px;font-size:12.5px;color:var(--text-2)}
+    .poll-schedule-line{display:flex;align-items:center;justify-content:space-between;gap:8px 14px;flex-wrap:wrap}
+    .poll-enable-label{margin:0;display:inline-flex;align-items:center;gap:7px;white-space:nowrap;font-size:12.5px;font-weight:600;color:var(--text);cursor:pointer}
+    .poll-enable-label input[type=checkbox]{width:15px;height:15px;min-height:auto;margin:0}
+    .poll-cadence,.poll-interval-fields,.poll-cron-fields{display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap}
+    .object-poll-row select,.object-poll-row input[type=number],.object-poll-row input[type=text]{width:auto;min-height:32px;height:32px;padding:4px 10px;font-size:12.5px;border-radius:6px}
+    .object-poll-row input[type=number]{width:64px;text-align:center;padding:4px 6px}
+    .object-poll-row input[type=text]{width:220px;max-width:100%}
+    .poll-action-line{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding-top:8px;border-top:1px dashed #e2e8f0}
+    .poll-now-btn{min-height:30px;padding:5px 12px;font-size:12px;font-weight:600;border-radius:6px;flex-shrink:0}
+    .poll-status-text{font-size:12px;line-height:1.4;flex:1;min-width:160px}
     .object-poll-row .muted{color:var(--muted)}
     .object-poll-row .muted.error{color:var(--red)}
     .object-poll-row.disabled{opacity:.5}
-    .object-conflict-row{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding-left:25px;font-size:12px;color:var(--text-2)}
-    .object-conflict-row label{margin:0;display:flex;align-items:center;gap:6px;white-space:nowrap}
-    .object-conflict-row select{width:auto;padding:3px 8px;font-size:12px}
-    .object-conflict-row.disabled{opacity:.5}
-    .object-links-row{display:flex;gap:14px;flex-wrap:wrap;padding-left:25px}
+    .object-links-row{display:flex;gap:14px;flex-wrap:wrap;padding-left:25px;padding-top:2px}
     .poll-history{padding:10px 12px 4px 25px;display:flex;flex-direction:column;gap:6px}
     .poll-history-row{display:flex;gap:14px;font-size:12px;color:var(--text-2)}
     .poll-history-row span:first-child{flex:none;width:150px;color:var(--muted)}
@@ -99,7 +105,7 @@ export function operationsHtml(): string {
     .run-detail{margin-top:16px}
     @media(max-width:1050px){.ops-metrics{grid-template-columns:repeat(3,minmax(0,1fr))}}
     @media(max-width:900px){.layout,.settings-grid,.sync-config-grid{grid-template-columns:1fr}.fields{grid-template-columns:1fr 1fr!important}}
-    @media(max-width:640px){.ops-metrics,.fields,.webhook-grid,.ai-details,#usage,.ai-form-row{grid-template-columns:1fr!important}.toolbar{align-items:stretch}.toolbar>*{width:100%}.card h2,.jobs-head,.subtabs{padding:14px 16px}.card>.card-body{padding:16px}}
+    @media(max-width:640px){.ops-metrics,.fields,.webhook-grid,.ai-details,#usage,.ai-form-row{grid-template-columns:1fr!important}.toolbar{align-items:stretch}.toolbar>*{width:100%}.card h2,.jobs-head,.subtabs{padding:14px 16px}.card>.card-body{padding:16px}.object-conflict-row,.object-links-row,.poll-history{padding-left:0}.object-poll-row{margin-left:0}}
     .readiness-list{list-style:none;margin:0;padding:0;display:grid;gap:10px}.readiness-list li{line-height:1.5}
     .status-dot.warn{background:#f5b642}.linkbtn{background:none;border:0;color:inherit;font:inherit;font-weight:700;cursor:pointer;padding:0}
     .linkbtn:focus-visible,button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid #53a6ff;outline-offset:2px}
@@ -1187,18 +1193,23 @@ export function operationsHtml(): string {
         +'<label>Conflict strategy: <select data-object-strategy="'+esc(type)+'" '+dis+'><option value="source-of-truth" '+(objStrat==='source-of-truth'?'selected':'')+'>Source of truth</option><option value="last-write-wins" '+(objStrat==='last-write-wins'?'selected':'')+'>Last write wins</option><option value="field-merge" '+(objStrat==='field-merge'?'selected':'')+'>Field merge</option></select></label>'
         +'<label>Source of truth: <select data-object-sot="'+esc(type)+'" '+dis+'><option value="salesforce" '+(objSot==='salesforce'?'selected':'')+'>Salesforce</option><option value="hubspot" '+(objSot==='hubspot'?'selected':'')+'>HubSpot</option></select></label></div>'
         +'<div class="object-poll-row'+(value.enabled?'':' disabled')+'" data-poll-row="'+esc(type)+'">'
-        +'<label><input type="checkbox" data-poll-enabled="'+esc(type)+'" '+(polling.enabled?'checked':'')+' '+dis+'> Also poll on a schedule</label>'
-        +'<select data-poll-mode="'+esc(type)+'" '+dis+'><option value="interval" '+(cronMode?'':'selected')+'>Every…</option><option value="cron" '+(cronMode?'selected':'')+'>Cron schedule</option></select>'
-        +'<span data-poll-interval-fields="'+esc(type)+'" '+(cronMode?'hidden':'')+'>'
-        +'<span>every</span><input type="number" min="1" step="1" value="'+unit.value+'" data-poll-value="'+esc(type)+'" '+dis+'>'
+        +'<div class="poll-schedule-line">'
+        +'<label class="poll-enable-label"><input type="checkbox" data-poll-enabled="'+esc(type)+'" '+(polling.enabled?'checked':'')+' '+dis+'><span>Also poll on a schedule</span></label>'
+        +'<div class="poll-cadence">'
+        +'<select data-poll-mode="'+esc(type)+'" '+dis+'><option value="interval" '+(cronMode?'':'selected')+'>Every</option><option value="cron" '+(cronMode?'selected':'')+'>Cron schedule</option></select>'
+        +'<span class="poll-interval-fields" data-poll-interval-fields="'+esc(type)+'" '+(cronMode?'hidden':'')+'>'
+        +'<input type="number" min="1" step="1" value="'+unit.value+'" data-poll-value="'+esc(type)+'" '+dis+'>'
         +'<select data-poll-unit="'+esc(type)+'" '+dis+'><option value="minutes" '+(unit.unit==='minutes'?'selected':'')+'>Minutes</option><option value="hours" '+(unit.unit==='hours'?'selected':'')+'>Hours</option><option value="days" '+(unit.unit==='days'?'selected':'')+'>Days</option></select>'
         +'</span>'
-        +'<span data-poll-cron-fields="'+esc(type)+'" '+(cronMode?'':'hidden')+'>'
-        +'<input type="text" placeholder="0 9 * * 1 (every Monday at 9am)" value="'+esc(polling.cron||'')+'" data-poll-cron="'+esc(type)+'" '+dis+' style="width:220px">'
+        +'<span class="poll-cron-fields" data-poll-cron-fields="'+esc(type)+'" '+(cronMode?'':'hidden')+'>'
+        +'<input type="text" placeholder="0 9 * * 1 (every Monday at 9am)" value="'+esc(polling.cron||'')+'" data-poll-cron="'+esc(type)+'" '+dis+'>'
         +'<span class="muted" data-poll-cron-next="'+esc(type)+'"></span>'
         +'</span>'
-        +'<button class="secondary" id="poll-now-'+esc(type)+'" type="button" '+dis+'>Sync now</button>'
-        +'<span class="muted'+(status?.errors?' error':'')+'" id="poll-status-'+esc(type)+'" data-poll-status-text="'+esc(pollingStatusText(status))+'">'+esc(value.enabled?pollingStatusText(status):'Turn on "Sync enabled" above to use scheduled polling.')+'</span></div>'
+        +'</div></div>'
+        +'<div class="poll-action-line">'
+        +'<button class="secondary poll-now-btn" id="poll-now-'+esc(type)+'" type="button" '+dis+'>Sync now</button>'
+        +'<span class="muted poll-status-text'+(status?.errors?' error':'')+'" id="poll-status-'+esc(type)+'" data-poll-status-text="'+esc(pollingStatusText(status))+'">'+esc(value.enabled?pollingStatusText(status):'Turn on "Sync enabled" above to use scheduled polling.')+'</span>'
+        +'</div></div>'
         +'<div class="object-links-row"><button class="run-link" id="map-fields-'+esc(type)+'" type="button">Map fields</button>'
         +'<button class="run-link" id="edit-conditions-'+esc(type)+'" type="button">Direction &amp; conditions</button>'
         +'<button class="run-link" id="toggle-history-'+esc(type)+'" type="button">History</button>'
