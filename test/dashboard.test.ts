@@ -550,7 +550,31 @@ describe('operations dashboard', () => {
     expect(html).toContain('formatJobDateTime(j)');
     expect(html).toContain('j&&(j.completedAt||j.updatedAt||j.createdAt||(j.event&&j.event.occurredAt))');
   });
+
+  it('renders a re-sync button on all completed records in the activity tab and supports bulk re-sync', () => {
+    const html = operationsHtml();
+    expect(html).toContain('id="jobs-resync-selected"');
+    expect(html).toContain('id="jobs-resync-all-completed"');
+    expect(html).toContain('isCompleted?\'<button class="secondary" type="button" data-action="resyncJob" data-arg="\'+esc(j.id)+\'">Re-sync</button>\':\'\'');
+    expect(html).toContain('window.resyncJob=resyncJob;');
+    expect(html).toContain('data-action="resyncConflict"');
+    expect(html).toContain('window.resyncConflict=resyncConflict;');
+  });
+
+  it('renders picklist value mapping modal and controls in the field mapping view', () => {
+    const html = operationsHtml();
+    expect(html).toContain('id="picklist-value-modal"');
+    expect(html).toContain('id="picklist-modal-title"');
+    expect(html).toContain('id="picklist-value-rows"');
+    expect(html).toContain('id="picklist-add-row"');
+    expect(html).toContain('id="picklist-automatch"');
+    expect(html).toContain('id="picklist-modal-save"');
+    expect(html).toContain('openPicklistValueModal');
+    expect(html).toContain('data-values-canonical');
+    expect(html).toContain('mapping-values-btn');
+  });
 });
+
 
 
 

@@ -70,6 +70,14 @@ export function mappingRoutes(ctx: RouteContext): Router {
     });
   });
 
+  router.get('/api/value-mappings/:type', (req, res) => {
+    const type = req.params.type as CanonicalType;
+    if (!isType(type)) return res.status(400).json({ error: 'bad_object_type' });
+    res.json({
+      entries: app.valueMappings?.list(type) ?? [],
+    });
+  });
+
   // The object registry: which canonical objects exist and their native name per CRM.
   // Selecting a not-yet-registered row in the Step 2 catalog calls POST here first.
   router.get('/api/object-mappings', (_req, res) => {

@@ -99,5 +99,81 @@ describe('field mapping', () => {
     expect(sfPayload).not.toHaveProperty('literal:Warm');
     expect(sfPayload).not.toHaveProperty('"2026 Website"');
   });
+
+  it('translates alternate picklist values bidirectionally between Salesforce and HubSpot (e.g. Active ⇄ Contact Active)', () => {
+    const customConfig = createDefaultConfigContext('picklist-value-test');
+    customConfig.configureFieldRules('salesforce', 'contact', [
+      ...customConfig.fieldRules('salesforce', 'contact'),
+      { canonical: 'status', native: 'Status' },
+    ]);
+    customConfig.configureFieldRules('hubspot', 'contact', [
+      ...customConfig.fieldRules('hubspot', 'contact'),
+      { canonical: 'status', native: 'hs_lead_status' },
+    ]);
+    customConfig.configureValueMappings([
+      {
+        type: 'contact',
+        canonicalField: 'status',
+        canonicalValue: 'Active',
+        salesforceValue: 'Active',
+        hubspotValue: 'Contact Active',
+      },
+      {
+        type: 'contact',
+        canonicalField: 'status',
+        canonicalValue: 'Deactivated',
+        salesforceValue: 'Deactivated',
+        hubspotValue: 'Discontinued',
+      },
+    ]);
+
+    // 1. Salesforce -> Canonical -> HubSpot
+    const sfRecord = { FirstName: 'Alice', Status: 'Active' };
+    const canonicalFromSf = customConfig.toCanonicalFields('salesforce', 'contact', sfRecord);
+    expect(canonicalFromSf.status).toBe('Active');
+
+    const hsPayload = customConfig.fromCanonicalFields('hubspot', 'contact', canonicalFromSf);
+    expect(hsPayload.hs_lead_status).toBe('Contact Active');
+
+    // 2. HubSpot -> Canonical -> Salesforce
+    const hsRecord = { firstname: 'Alice', hs_lead_status: 'Contact Active' };
+    const canonicalFromHs = customConfig.toCanonicalFields('hubspot', 'contact', hsRecord);
+    expect(canonicalFromHs.status).toBe('Active');
+
+    const sfPayload = customConfig.fromCanonicalFields('salesforce', 'contact', canonicalFromHs);
+    expect(sfPayload.Status).toBe('Active');
+
+    // 3. Second alternate mapping: Deactivated ⇄ Discontinued
+    const sfDeactivated = { FirstName: 'Bob', Status: 'Deactivated' };
+    const canDeact = customConfig.toCanonicalFields('salesforce', 'contact', sfDeactivated);
+    expect(canDeact.status).toBe('Deactivated');
+    const hsDiscontinued = customConfig.fromCanonicalFields('hubspot', 'contact', canDeact);
+    expect(hsDiscontinued.hs_lead_status).toBe('Discontinued');
+
+    const hsDeactPayload = { firstname: 'Bob', hs_lead_status: 'Discontinued' };
+    const canHsDeact = customConfig.toCanonicalFields('hubspot', 'contact', hsDeactPayload);
+    expect(canHsDeact.status).toBe('Deactivated');
+    const sfDeactPayload = customConfig.fromCanonicalFields('salesforce', 'contact', canHsDeact);
+    expect(sfDeactPayload.Status).toBe('Deactivated');
+
+    // 4. Case-insensitivity support
+    const sfLower = customConfig.toCanonicalFields('salesforce', 'contact', { Status: 'active' });
+    expect(sfLower.status).toBe('Active');
+    const hsFromLower = customConfig.fromCanonicalFields('hubspot', 'contact', { status: 'active' });
+    expect(hsFromLower.hs_lead_status).toBe('Contact Active');
+
+    // 5. Unmapped value falls through untouched
+    const sfUnknown = customConfig.toCanonicalFields('salesforce', 'contact', { Status: 'SomeOtherStatus' });
+    expect(sfUnknown.status).toBe('SomeOtherStatus');
+    const hsUnknown = customConfig.fromCanonicalFields('hubspot', 'contact', sfUnknown);
+    expect(hsUnknown.hs_lead_status).toBe('SomeOtherStatus');
+
+    // 6. Semicolon delimited multi-select options
+    const multiSf = customConfig.toCanonicalFields('salesforce', 'contact', { Status: 'Active;Deactivated' });
+    expect(multiSf.status).toBe('Active;Deactivated');
+    const multiHs = customConfig.fromCanonicalFields('hubspot', 'contact', multiSf);
+    expect(multiHs.hs_lead_status).toBe('Contact Active;Discontinued');
+  });
 });
+
 

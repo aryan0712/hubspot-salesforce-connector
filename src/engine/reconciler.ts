@@ -209,7 +209,7 @@ export class Reconciler {
 
   constructor(
     private readonly connectors: Record<SystemId, CRMConnector>,
-    private readonly idMap: IdMapStore,
+    readonly idMap: IdMapStore,
     private readonly config: ConfigContext,
     private readonly opts: {
       readCounterpartForConflict?: boolean;

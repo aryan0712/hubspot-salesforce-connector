@@ -51,7 +51,20 @@ export class PostgresValueMappingStore {
          WHERE tenant_id = $1 AND object_type = $2 AND canonical_field = $3`,
         [this.tenantId, type, field],
       );
-      for (const mapping of mappings) {
+      const seenCanonical = new Set<string>();
+      for (let i = 0; i < mappings.length; i++) {
+        const mapping = mappings[i];
+        if (!mapping) continue;
+        let cv =
+          mapping.canonicalValue?.trim() ||
+          mapping.salesforceValue?.trim() ||
+          mapping.hubspotValue?.trim() ||
+          `value_${i + 1}`;
+        if (seenCanonical.has(cv.toLowerCase())) {
+          cv = `${cv}_${i + 1}`;
+        }
+        seenCanonical.add(cv.toLowerCase());
+
         await client.query(
           `INSERT INTO value_mappings(
              tenant_id, object_type, canonical_field, salesforce_value,
@@ -63,7 +76,7 @@ export class PostgresValueMappingStore {
             field,
             mapping.salesforceValue ?? null,
             mapping.hubspotValue ?? null,
-            mapping.canonicalValue,
+            cv,
           ],
         );
       }

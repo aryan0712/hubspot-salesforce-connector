@@ -275,14 +275,35 @@ export function syncRoutes(ctx: RouteContext): Router {
   router.post('/api/sync/jobs/:id/replay', requireRole('operator'), async (req, res) => {
     const id = String(req.params.id);
     // Only jobs of this workspace are visible; anything else is simply not found.
-    if (!(await app.sync.store.get(id))) return res.status(404).json({ error: 'sync_job_not_found' });
-    await app.sync.replay(id);
+    const job = await app.sync.store.get(id);
+    if (!job) return res.status(404).json({ error: 'sync_job_not_found' });
+    const force = Boolean(req.body?.force);
+    if (force) {
+      await app.sync.resync(id);
+    } else {
+      await app.sync.replay(id);
+    }
     await app.operations?.recordAudit({
       actorId: res.locals.auth?.actorId,
-      action: 'sync.job.replayed',
+      action: force ? 'sync.job.resynced' : 'sync.job.replayed',
       resourceType: 'sync_event',
       resourceId: id,
-      detail: {},
+      detail: { system: job.event.system, type: job.event.type, sourceId: job.event.sourceId },
+    });
+    res.json({ ok: true });
+  });
+
+  router.post('/api/sync/jobs/:id/resync', requireRole('operator'), async (req, res) => {
+    const id = String(req.params.id);
+    const job = await app.sync.store.get(id);
+    if (!job) return res.status(404).json({ error: 'sync_job_not_found' });
+    await app.sync.resync(id);
+    await app.operations?.recordAudit({
+      actorId: res.locals.auth?.actorId,
+      action: 'sync.job.resynced',
+      resourceType: 'sync_event',
+      resourceId: id,
+      detail: { system: job.event.system, type: job.event.type, sourceId: job.event.sourceId },
     });
     res.json({ ok: true });
   });

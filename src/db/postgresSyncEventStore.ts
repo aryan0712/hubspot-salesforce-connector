@@ -27,6 +27,7 @@ interface JobRow {
   completed_at?: Date | null;
   lease_token: string | null;
   deferred_reason: string | null;
+  payload?: unknown;
 }
 
 export class PostgresSyncEventStore implements SyncEventStore {
@@ -100,7 +101,7 @@ export class PostgresSyncEventStore implements SyncEventStore {
          RETURNING e.id, e.vendor_event_id, e.system, e.object_type, e.source_id,
                    e.change_type, e.occurred_at, e.status, e.attempts,
                    e.next_attempt_at, e.last_error, e.created_at, e.updated_at, e.completed_at,
-                   e.lease_token, e.deferred_reason`,
+                   e.lease_token, e.deferred_reason, e.payload`,
         [this.tenantId, limit, workerId],
       );
       return result.rows.map(toJob);
@@ -147,12 +148,12 @@ export class PostgresSyncEventStore implements SyncEventStore {
     });
   }
 
-  async replay(id: string): Promise<void> {
+  async replay(id: string, opts?: { force?: boolean }): Promise<void> {
     await this.db.tenant(this.tenantId, async (client) => {
       await client.query(
         `UPDATE sync_events SET status = 'queued', attempts = 0, last_error = NULL,
                 next_attempt_at = now(), locked_at = NULL, locked_by = NULL, lease_token = NULL,
-                completed_at = NULL, created_at = now(), occurred_at = now(), updated_at = now()
+                completed_at = NULL, created_at = now(), occurred_at = now(), updated_at = now()${opts?.force ? ", payload = jsonb_set(COALESCE(payload, '{}'::jsonb), '{force}', 'true'::jsonb)" : ''}
          WHERE tenant_id = $1 AND id = $2`,
         [this.tenantId, id],
       );
@@ -177,7 +178,7 @@ export class PostgresSyncEventStore implements SyncEventStore {
       const result = await client.query<JobRow>(
         `SELECT id, vendor_event_id, system, object_type, source_id, change_type,
                 occurred_at, status, attempts, next_attempt_at, last_error, created_at,
-                updated_at, completed_at, lease_token, deferred_reason
+                updated_at, completed_at, lease_token, deferred_reason, payload
          FROM sync_events WHERE tenant_id = $1 AND id = $2`,
         [this.tenantId, id],
       );
@@ -200,7 +201,7 @@ export class PostgresSyncEventStore implements SyncEventStore {
       const result = await client.query<JobRow>(
         `SELECT id, vendor_event_id, system, object_type, source_id, change_type,
                 occurred_at, status, attempts, next_attempt_at, last_error, created_at,
-                updated_at, completed_at, lease_token, deferred_reason
+                updated_at, completed_at, lease_token, deferred_reason, payload
          FROM sync_events WHERE tenant_id = $1 ${statusClause}
          ORDER BY created_at DESC, id DESC LIMIT $2`,
         params,
@@ -277,6 +278,8 @@ export class PostgresSyncEventStore implements SyncEventStore {
 }
 
 function toJob(row: JobRow): SyncJob {
+  const payload = typeof row.payload === 'string' ? JSON.parse(row.payload) : (row.payload as Record<string, unknown> | null | undefined);
+  const force = Boolean(payload?.force);
   return {
     id: row.id,
     event: {
@@ -286,6 +289,7 @@ function toJob(row: JobRow): SyncJob {
       sourceId: row.source_id,
       changeType: row.change_type,
       occurredAt: row.occurred_at.toISOString(),
+      force,
     },
     status: row.status,
     attempts: row.attempts,
@@ -296,5 +300,6 @@ function toJob(row: JobRow): SyncJob {
     completedAt: row.completed_at ? row.completed_at.toISOString() : undefined,
     leaseToken: row.lease_token ?? undefined,
     deferredReason: row.deferred_reason ?? undefined,
+    force,
   };
 }

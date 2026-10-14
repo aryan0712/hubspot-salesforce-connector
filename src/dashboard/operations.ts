@@ -238,6 +238,8 @@ export function operationsHtml(): string {
         <div class="activity-panel active" id="activity-jobs">
           <div class="toolbar jobs-head"><h2 style="margin:0 auto 0 0">Durable sync journal</h2>
             <button class="secondary" id="jobs-replay-selected" type="button" hidden>Replay selected</button>
+            <button class="secondary" id="jobs-resync-selected" type="button" hidden>Re-sync selected</button>
+            <button class="secondary" id="jobs-resync-all-completed" type="button" hidden>Re-sync all completed</button>
             <button class="danger" id="jobs-delete-selected" type="button" hidden>Delete selected</button>
             <select id="job-filter"><option value="">All statuses</option><option>queued</option><option>retry</option><option>dead_letter</option><option>manual_review</option><option>completed</option><option>dismissed</option></select></div>
           <div class="scroll"><table><thead><tr><th style="width:36px"><input type="checkbox" id="jobs-select-all"></th><th>Status</th><th>Date &amp; time</th><th>Event</th><th>Attempts</th><th>Error</th><th></th></tr></thead><tbody id="jobs"></tbody></table></div>
@@ -781,21 +783,21 @@ export function operationsHtml(): string {
         }
       }
     }
-    async function loadFieldWorkspace(type){if(!type)return;const loadToken=++migrationState.fieldLoadToken;$('field-map-rows').innerHTML='<tr><td colspan="6" class="empty">Loading schemas and mappings…</td></tr>';$('field-map-notice').hidden=true;closeTransformLab();closeSourcePicker();
+    async function loadFieldWorkspace(type){if(!type)return;const loadToken=++migrationState.fieldLoadToken;$('field-map-rows').innerHTML='<tr><td colspan="7" class="empty">Loading schemas and mappings…</td></tr>';$('field-map-notice').hidden=true;closeTransformLab();closeSourcePicker();
       if(!syncConfigState){try{syncConfigState=await api('/api/sync/settings')}catch{}}
       const row=migrationState.catalog.find(item=>item.canonicalType===type);if(!row)return;
       const {from,to,sourceObj,targetObj}=resolveRowEndpoints(row,type);if(!sourceObj||!targetObj)return;
       updateFieldMappingDirectionHeaders(from,to);
       $('field-object').value=type;$('field-current-name').textContent=sourceObj.label+' → '+targetObj.label;updateFieldObjectPosition();renderFieldObjectQueue();
-      try{const [sourceMeta,targetMeta,sourceMap,targetMap,keyData]=await Promise.all([getMetadata(from,sourceObj.id),getMetadata(to,targetObj.id),api('/api/mappings/'+from+'/'+type),api('/api/mappings/'+to+'/'+type),api('/api/object-mappings/'+type).catch(()=>({naturalKeyFields:[]}))]);
+      try{const [sourceMeta,targetMeta,sourceMap,targetMap,keyData,valueData]=await Promise.all([getMetadata(from,sourceObj.id),getMetadata(to,targetObj.id),api('/api/mappings/'+from+'/'+type),api('/api/mappings/'+to+'/'+type),api('/api/object-mappings/'+type).catch(()=>({naturalKeyFields:[]})),api('/api/value-mappings/'+type).catch(()=>({entries:[]}))]);
         if(loadToken!==migrationState.fieldLoadToken)return;
         if(from==='hubspot')ensureHubSpotMigratedRecordId(sourceMeta);
         if(to==='hubspot')ensureHubSpotMigratedRecordId(targetMeta);
         const sourceByCanonical=new Map(sourceMap.rules.map(rule=>[rule.canonical,rule])),targetByCanonical=new Map(targetMap.rules.map(rule=>[rule.canonical,rule]));const canonicals=[...new Set([...sourceByCanonical.keys(),...targetByCanonical.keys()])];
-        migrationState.mapping={type,from,to,sourceMeta,targetMeta,sourceMap,targetMap,canonicals,removed:[],dirty:false};
+        migrationState.mapping={type,from,to,sourceMeta,targetMeta,sourceMap,targetMap,canonicals,removed:[],dirty:false,valueMappings:valueData?.entries||[]};
         ensureAutoMappedFields(migrationState.mapping);
         renderFieldMappings();updateFieldObjectPosition();renderFieldObjectQueue();
-        renderFieldWorkspaceNaturalKey(type,keyData,sourceMeta,targetMeta,sourceByCanonical,targetByCanonical)}catch(e){if(loadToken===migrationState.fieldLoadToken)$('field-map-rows').innerHTML='<tr><td colspan="6" class="empty">'+esc(e.message)+'</td></tr>'}}
+        renderFieldWorkspaceNaturalKey(type,keyData,sourceMeta,targetMeta,sourceByCanonical,targetByCanonical)}catch(e){if(loadToken===migrationState.fieldLoadToken)$('field-map-rows').innerHTML='<tr><td colspan="7" class="empty">'+esc(e.message)+'</td></tr>'}}
     let fieldSortCol=null,fieldSortAsc=true;
     function updateFieldSortHeaders(){
       document.querySelectorAll('.mapping-table th[data-sort]').forEach(th=>{
@@ -883,12 +885,21 @@ export function operationsHtml(): string {
         const currentSot=s.sourceOfTruth||t.sourceOfTruth||'salesforce';
         const shownSource=displaySourceNative(s.native||'',state.sourceMeta);
         const mandatory=isMandatoryField(canonical,state.type);
+        const sField=state.sourceMeta?.fields?.find(f=>f.name===(s.native||'').replace(/^literal:/,''));
+        const tField=state.targetMeta?.fields?.find(f=>f.name===(t.native||'').replace(/^literal:/,''));
+        const isPicklist=Boolean(sField?.options?.length||tField?.options?.length||/(picklist|enum)/i.test(sField?.type||'')||/(picklist|enum)/i.test(tField?.type||''));
+        const valCount=(state.valueMappings||[]).filter(v=>v.canonicalField===canonical).length;
+        const valuesBtn=valCount>0
+          ?'<button class="mapping-values-btn has-mappings" type="button" data-values-canonical="'+esc(canonical)+'" title="'+valCount+' alternate value mappings active">'+valCount+' mapped</button>'
+          :(isPicklist
+            ?'<button class="mapping-values-btn is-picklist" type="button" data-values-canonical="'+esc(canonical)+'" title="Map dropdown values">Map values</button>'
+            :'<button class="mapping-values-btn" type="button" data-values-canonical="'+esc(canonical)+'" title="Map values">Values</button>');
         const actionBtn=mandatory
           ?'<button class="mapping-remove" disabled title="Mandatory field (cannot be removed)" style="opacity:0.4;cursor:not-allowed">Locked</button>'
           :'<button class="mapping-remove" data-remove-canonical="'+esc(canonical)+'" aria-label="Remove '+esc(canonical)+' mapping" title="Remove this mapping">Remove</button>';
-        return '<tr data-canonical="'+esc(canonical)+'"><td class="mapping-action">'+actionBtn+'</td><td><input class="target-native" list="target-native-datalist" value="'+esc(t.native||'')+'" placeholder="— Not mapped —"></td><td><input class="canonical" value="'+esc(canonical)+'" '+(mandatory?'readonly style="opacity:0.85"':'')+'></td><td>'+transformHidden('source-to',transforms[0])+transformHidden('source-from',transforms[1])+transformHidden('target-to',transforms[2])+transformHidden('target-from',transforms[3])+'<button class="mapping-transform" data-transform-canonical="'+esc(canonical)+'">'+esc(transformSummary([transforms[0],transforms[3]]))+'<small>Configure</small></button></td><td><input class="source-native" autocomplete="off" value="'+esc(shownSource)+'" placeholder="Select field, picklist value, or enter text…"></td><td><select class="field-sot" data-canonical="'+esc(canonical)+'"><option value="salesforce" '+(currentSot==='salesforce'?'selected':'')+'>Salesforce</option><option value="hubspot" '+(currentSot==='hubspot'?'selected':'')+'>HubSpot</option><option value="last-write-wins" '+(currentSot==='last-write-wins'?'selected':'')+'>Last write wins</option></select></td></tr>';
-      }).join('')||'<tr><td colspan="6" class="empty">No mappings remain. Save to persist this empty mapping set, or undo the removal.</td></tr>';
-      refreshMappingCoverage();updateFieldSortHeaders();$('field-map-notice').hidden=!state.removed.length;$('field-map-notice-text').textContent=state.removed.length+' mapping'+(state.removed.length===1?'':'s')+' marked for removal. Save mappings to apply.';document.querySelectorAll('[data-remove-canonical]').forEach(button=>button.onclick=()=>{state.removed.push(button.dataset.removeCanonical);state.dirty=true;closeTransformLab();closeSourcePicker();renderFieldMappings()});document.querySelectorAll('[data-transform-canonical]').forEach(button=>button.onclick=()=>openTransformLab(button));document.querySelectorAll('#field-map-rows tr[data-canonical] input, #field-map-rows tr[data-canonical] select.field-sot').forEach(control=>{control.oninput=control.onchange=()=>{state.dirty=true;refreshMappingCoverage();applyMappingFilters();setDraftStatus('Mapping changes not saved');if(control.classList.contains('source-native'))openSourcePicker(control,true);if(control.classList.contains('target-native')&&activeSourceInput&&activeSourceInput.closest('tr')===control.closest('tr'))openSourcePicker(activeSourceInput,false)}});document.querySelectorAll('#field-map-rows tr[data-canonical] .source-native').forEach(srcInput=>{srcInput.onfocus=()=>openSourcePicker(srcInput,false);srcInput.onclick=()=>openSourcePicker(srcInput,false);srcInput.onblur=()=>setTimeout(()=>{if(activeSourceInput===srcInput)closeSourcePicker()},150);srcInput.onkeydown=e=>{if(e.key==='Escape')closeSourcePicker()}});applyMappingFilters()}
+        return '<tr data-canonical="'+esc(canonical)+'"><td class="mapping-action">'+actionBtn+'</td><td><input class="target-native" list="target-native-datalist" value="'+esc(t.native||'')+'" placeholder="— Not mapped —"></td><td><input class="canonical" value="'+esc(canonical)+'" '+(mandatory?'readonly style="opacity:0.85"':'')+'></td><td>'+valuesBtn+'</td><td>'+transformHidden('source-to',transforms[0])+transformHidden('source-from',transforms[1])+transformHidden('target-to',transforms[2])+transformHidden('target-from',transforms[3])+'<button class="mapping-transform" data-transform-canonical="'+esc(canonical)+'">'+esc(transformSummary([transforms[0],transforms[3]]))+'<small>Configure</small></button></td><td><input class="source-native" autocomplete="off" value="'+esc(shownSource)+'" placeholder="Select field, picklist value, or enter text…"></td><td><select class="field-sot" data-canonical="'+esc(canonical)+'"><option value="salesforce" '+(currentSot==='salesforce'?'selected':'')+'>Salesforce</option><option value="hubspot" '+(currentSot==='hubspot'?'selected':'')+'>HubSpot</option><option value="last-write-wins" '+(currentSot==='last-write-wins'?'selected':'')+'>Last write wins</option></select></td></tr>';
+      }).join('')||'<tr><td colspan="7" class="empty">No mappings remain. Save to persist this empty mapping set, or undo the removal.</td></tr>';
+      refreshMappingCoverage();updateFieldSortHeaders();$('field-map-notice').hidden=!state.removed.length;$('field-map-notice-text').textContent=state.removed.length+' mapping'+(state.removed.length===1?'':'s')+' marked for removal. Save mappings to apply.';document.querySelectorAll('[data-remove-canonical]').forEach(button=>button.onclick=()=>{state.removed.push(button.dataset.removeCanonical);state.dirty=true;closeTransformLab();closeSourcePicker();renderFieldMappings()});document.querySelectorAll('[data-transform-canonical]').forEach(button=>button.onclick=()=>openTransformLab(button));document.querySelectorAll('[data-values-canonical]').forEach(button=>button.onclick=()=>openPicklistValueModal(button.dataset.valuesCanonical));document.querySelectorAll('#field-map-rows tr[data-canonical] input, #field-map-rows tr[data-canonical] select.field-sot').forEach(control=>{control.oninput=control.onchange=()=>{state.dirty=true;refreshMappingCoverage();applyMappingFilters();setDraftStatus('Mapping changes not saved');if(control.classList.contains('source-native'))openSourcePicker(control,true);if(control.classList.contains('target-native')&&activeSourceInput&&activeSourceInput.closest('tr')===control.closest('tr'))openSourcePicker(activeSourceInput,false)}});document.querySelectorAll('#field-map-rows tr[data-canonical] .source-native').forEach(srcInput=>{srcInput.onfocus=()=>openSourcePicker(srcInput,false);srcInput.onclick=()=>openSourcePicker(srcInput,false);srcInput.onblur=()=>setTimeout(()=>{if(activeSourceInput===srcInput)closeSourcePicker()},150);srcInput.onkeydown=e=>{if(e.key==='Escape')closeSourcePicker()}});applyMappingFilters()}
     function refreshMappingCoverage(){const state=migrationState.mapping;if(!state)return;const rows=[...$('field-map-rows').querySelectorAll('tr[data-canonical]')],ready=rows.filter(tr=>tr.querySelector('.source-native').value&&tr.querySelector('.target-native').value).length,total=rows.length,pct=total?Math.round(ready/total*100):0;$('coverage-number').textContent=pct+'%';$('coverage-list').innerHTML='<div><span>Mapped</span><b>'+ready+'</b></div><div><span>Needs review</span><b>'+(total-ready)+'</b></div><div><span>Removed</span><b>'+state.removed.length+'</b></div><div><span>Source fields</span><b>'+state.sourceMeta.fields.length+'</b></div><div><span>Target fields</span><b>'+state.targetMeta.fields.length+'</b></div>';$('summary-coverage').textContent=pct+'%'}
     function applyMappingFilters(){const query=$('field-search').value.trim().toLowerCase(),filter=$('field-filter').value;document.querySelectorAll('#field-map-rows tr[data-canonical]').forEach(tr=>{const source=tr.querySelector('.source-native').value||'',target=tr.querySelector('.target-native').value||'',canonical=tr.querySelector('.canonical').value,sot=tr.querySelector('.field-sot')?.value||'',text=(source+' '+target+' '+canonical+' '+sot).toLowerCase(),ready=tr.querySelector('.source-native').value&&tr.querySelector('.target-native').value,transformed=['source-to','target-from'].some(cls=>tr.querySelector('.'+cls).value!=='identity');tr.hidden=Boolean((query&&!text.includes(query))||(filter==='review'&&ready)||(filter==='transformed'&&!transformed))})}
     $('field-search').oninput=applyMappingFilters;$('field-filter').onchange=applyMappingFilters;
@@ -928,6 +939,208 @@ export function operationsHtml(): string {
         if(workspaceMode==='sync')await maybeOfferNaturalKeyStep();
       }catch(e){button.textContent='Save mappings';throw e}finally{button.disabled=false;hideProgressBar()}}
     $('save-field-map').onclick=()=>saveFieldMappings().catch(e=>setDraftStatus(e.message,'error'));
+
+    async function openPicklistValueModal(canonicalField){
+      const state=migrationState.mapping;
+      if(!state||!canonicalField)return;
+      const s=state.sourceMap.rules.find(r=>r.canonical===canonicalField)||{};
+      const t=state.targetMap.rules.find(r=>r.canonical===canonicalField)||{};
+      const sField=state.sourceMeta?.fields?.find(f=>f.name===(s.native||'').replace(/^literal:/,''));
+      const tField=state.targetMeta?.fields?.find(f=>f.name===(t.native||'').replace(/^literal:/,''));
+      const isSfSource=(state.from==='salesforce');
+      const sfOptions=isSfSource?(sField?.options||[]):(tField?.options||[]);
+      const hsOptions=isSfSource?(tField?.options||[]):(sField?.options||[]);
+      const sfNativeName=isSfSource?(s.native||''):(t.native||'');
+      const hsNativeName=isSfSource?(t.native||''):(s.native||'');
+
+      $('picklist-modal-title').textContent='Map values: '+canonicalField;
+      $('picklist-modal-subtitle').textContent='Salesforce ('+(sfNativeName||'unmapped')+') ⇄ HubSpot ('+(hsNativeName||'unmapped')+')';
+      $('picklist-modal-message').className='settings-message';
+      $('picklist-modal-message').textContent='';
+      $('picklist-value-rows').innerHTML='<tr><td colspan="4" class="empty">Loading values…</td></tr>';
+      $('picklist-value-modal').hidden=false;
+
+      let entries=[];
+      try{
+        const res=await api('/api/value-mappings/'+state.type+'/'+encodeURIComponent(canonicalField));
+        entries=res.entries||[];
+      }catch(e){
+        entries=[];
+      }
+
+      function buildOptionList(options,selectedVal){
+        let hasMatch=false;
+        let html='<option value="">— Select option —</option>';
+        for(const opt of options){
+          const isSel=(opt.value===selectedVal);
+          if(isSel)hasMatch=true;
+          const display=opt.label&&opt.label!==opt.value?opt.label+' ('+opt.value+')':opt.value;
+          html+='<option value="'+esc(opt.value)+'"'+(isSel?' selected':'')+'>'+esc(display)+'</option>';
+        }
+        html+='<option value="__custom__"'+(!hasMatch&&selectedVal?' selected':'')+'>✏️ Custom value…</option>';
+        return {html,hasMatch};
+      }
+
+      function renderModalRows(){
+        if(!entries.length){
+          $('picklist-value-rows').innerHTML='<tr><td colspan="4" class="empty">No values mapped yet. Click "Auto-match" or "+ Add mapping row".</td></tr>';
+          $('picklist-modal-count').textContent='0 mapped';
+          return;
+        }
+        $('picklist-modal-count').textContent=entries.length+' mapped';
+        $('picklist-value-rows').innerHTML=entries.map((entry,idx)=>{
+          const sfVal=entry.salesforceValue||'';
+          const hsVal=entry.hubspotValue||'';
+          const sfOpts=buildOptionList(sfOptions,sfVal);
+          const hsOpts=buildOptionList(hsOptions,hsVal);
+          const showSfCustom=!sfOpts.hasMatch&&sfVal!=='';
+          const showHsCustom=!hsOpts.hasMatch&&hsVal!=='';
+
+          return '<tr data-row-index="'+idx+'">'
+            +'<td>'
+              +'<select class="picklist-sf-select">'+sfOpts.html+'</select>'
+              +'<input class="picklist-sf-custom custom-input" placeholder="Custom Salesforce value" value="'+esc(sfVal)+'" style="'+(showSfCustom?'':'display:none;')+'">'
+            +'</td>'
+            +'<td class="picklist-row-arrow">⇄</td>'
+            +'<td>'
+              +'<select class="picklist-hs-select">'+hsOpts.html+'</select>'
+              +'<input class="picklist-hs-custom custom-input" placeholder="Custom HubSpot value" value="'+esc(hsVal)+'" style="'+(showHsCustom?'':'display:none;')+'">'
+            +'</td>'
+            +'<td style="text-align:center"><button class="mapping-remove picklist-del-row" type="button" data-del-index="'+idx+'" title="Remove this row">✕</button></td>'
+          +'</tr>';
+        }).join('');
+
+        document.querySelectorAll('#picklist-value-rows tr[data-row-index]').forEach(tr=>{
+          const idx=Number(tr.dataset.rowIndex);
+          const sfSelect=tr.querySelector('.picklist-sf-select');
+          const sfCustom=tr.querySelector('.picklist-sf-custom');
+          const hsSelect=tr.querySelector('.picklist-hs-select');
+          const hsCustom=tr.querySelector('.picklist-hs-custom');
+          const delBtn=tr.querySelector('.picklist-del-row');
+
+          if(sfSelect){
+            sfSelect.onchange=()=>{
+              if(sfSelect.value==='__custom__'){
+                if(sfCustom){sfCustom.style.display='';sfCustom.focus()}
+                entries[idx].salesforceValue=sfCustom?.value.trim()||'';
+              }else{
+                if(sfCustom){sfCustom.style.display='none';sfCustom.value=sfSelect.value}
+                entries[idx].salesforceValue=sfSelect.value;
+              }
+            };
+          }
+          if(sfCustom){
+            sfCustom.oninput=()=>{
+              entries[idx].salesforceValue=sfCustom.value.trim();
+            };
+          }
+
+          if(hsSelect){
+            hsSelect.onchange=()=>{
+              if(hsSelect.value==='__custom__'){
+                if(hsCustom){hsCustom.style.display='';hsCustom.focus()}
+                entries[idx].hubspotValue=hsCustom?.value.trim()||'';
+              }else{
+                if(hsCustom){hsCustom.style.display='none';hsCustom.value=hsSelect.value}
+                entries[idx].hubspotValue=hsSelect.value;
+              }
+            };
+          }
+          if(hsCustom){
+            hsCustom.oninput=()=>{
+              entries[idx].hubspotValue=hsCustom.value.trim();
+            };
+          }
+
+          if(delBtn){
+            delBtn.onclick=()=>{
+              entries.splice(idx,1);
+              renderModalRows();
+            };
+          }
+        });
+      }
+
+      renderModalRows();
+
+      $('picklist-add-row').onclick=()=>{
+        entries.push({salesforceValue:'',hubspotValue:'',canonicalValue:''});
+        renderModalRows();
+        const lastRow=document.querySelector('#picklist-value-rows tr:last-child');
+        lastRow?.querySelector('select')?.focus();
+      };
+
+      $('picklist-automatch').onclick=()=>{
+        let addedCount=0;
+        for(const sf of sfOptions){
+          const sfValLower=(sf.value||'').trim().toLowerCase();
+          const sfLabelLower=(sf.label||'').trim().toLowerCase();
+          const match=hsOptions.find(hs=>{
+            const hsValLower=(hs.value||'').trim().toLowerCase();
+            const hsLabelLower=(hs.label||'').trim().toLowerCase();
+            return (sfValLower&&hsValLower===sfValLower)||(sfLabelLower&&hsLabelLower===sfLabelLower);
+          });
+          if(match){
+            const alreadySf=entries.some(e=>(e.salesforceValue||'').trim().toLowerCase()===sfValLower);
+            const alreadyHs=entries.some(e=>(e.hubspotValue||'').trim().toLowerCase()===(match.value||'').trim().toLowerCase());
+            if(!alreadySf&&!alreadyHs){
+              entries.push({salesforceValue:sf.value,hubspotValue:match.value,canonicalValue:sf.value});
+              addedCount++;
+            }
+          }
+        }
+        renderModalRows();
+        if(addedCount>0){
+          $('picklist-modal-message').className='settings-message success';
+          $('picklist-modal-message').textContent='Auto-matched '+addedCount+' identical option'+(addedCount===1?'':'s')+'.';
+        }else{
+          $('picklist-modal-message').className='settings-message';
+          $('picklist-modal-message').textContent='No new identical options found between Salesforce and HubSpot.';
+        }
+      };
+
+      const closeModal=()=>{
+        $('picklist-value-modal').hidden=true;
+      };
+      $('picklist-modal-close').onclick=closeModal;
+      $('picklist-modal-cancel').onclick=closeModal;
+
+      $('picklist-modal-save').onclick=async()=>{
+        const saveBtn=$('picklist-modal-save');
+        saveBtn.disabled=true;
+        saveBtn.textContent='Saving…';
+        try{
+          const validEntries=entries
+            .map(e=>({
+              salesforceValue:(e.salesforceValue||'').trim()||undefined,
+              hubspotValue:(e.hubspotValue||'').trim()||undefined,
+              canonicalValue:(e.canonicalValue||e.salesforceValue||e.hubspotValue||'').trim(),
+            }))
+            .filter(e=>e.salesforceValue||e.hubspotValue);
+
+          const result=await api('/api/value-mappings/'+state.type+'/'+encodeURIComponent(canonicalField),{
+            method:'PUT',
+            body:JSON.stringify({entries:validEntries}),
+          });
+
+          state.valueMappings=(state.valueMappings||[]).filter(v=>v.canonicalField!==canonicalField).concat(result.entries||[]);
+          renderFieldMappings();
+
+          if(result.syncPaused){
+            showSyncPausedWarning('Heads up: '+state.type+' was live-syncing, so saving this value mapping paused sync for it. Review it, then re-enable from the Sync tab when ready.');
+          }else{
+            showNotice('Value mappings for "'+canonicalField+'" saved.');
+          }
+          closeModal();
+        }catch(err){
+          $('picklist-modal-message').className='settings-message error';
+          $('picklist-modal-message').textContent=err.message||String(err);
+        }finally{
+          saveBtn.disabled=false;
+          saveBtn.textContent='Save value mappings';
+        }
+      };
+    }
 
     function blockedNaturalKeyField(type,field){const key=field.replace(/[^a-z0-9]/gi,'').toLowerCase();if(key==='recordid'||key==='id'||key==='salesforceid'||key==='migratedrecordid'||(key.includes('external')&&key.endsWith('id')))return false;return ['type','industry','website','annualrevenue','revenue'].includes(key)||/(modified|activity|created|updated|timestamp|description|notes?|ownerid|recordtype|status|stage|pipeline|amount|employee|count|isdeleted)/.test(key)}
     function naturalKeyCandidates(type,sourceMeta,targetMeta,sourceRules,targetRules){const common=[...sourceRules.keys()].filter(field=>targetRules.has(field));return common.map(field=>{const sNative=sourceRules.get(field)?.native||'';const tNative=targetRules.get(field)?.native||'';const source=sourceMeta.fields.find(item=>item.name===sNative||item.name.toLowerCase()===sNative.toLowerCase());const target=targetMeta.fields.find(item=>item.name===tNative||item.name.toLowerCase()===tNative.toLowerCase());return {field,source,target,risky:/^(name|phone|title|companyName)$/i.test(field)}}).filter(item=>{const isRecId=/^(record_?id|salesforce_?id|migrated_?record_?id|id)$/i.test(item.field)||/^(record_?id|salesforce_?id|migrated_record_id)$/i.test(item.source?.name||'')||/^(record_?id|salesforce_?id|migrated_record_id)$/i.test(item.target?.name||'');if(isRecId)return true;return item.source&&item.target&&!item.source.calculated&&!item.target.calculated&&!blockedNaturalKeyField(type,item.field)})}
@@ -1017,7 +1230,7 @@ export function operationsHtml(): string {
     $('save-natural-key').onclick=async()=>{const type=$('value-object').value,fields=selectedNaturalKeyFields(),button=$('save-natural-key');if(!fields.length){$('natural-key-warning').className='identity-warning';$('natural-key-warning').textContent='Choose at least one stable identity field.';return}try{button.disabled=true;button.textContent='Saving…';const result=await api('/api/object-mappings/'+type,{method:'PUT',body:JSON.stringify({naturalKeyFields:fields})});markPlanDirty();queuePlanAutosave();button.textContent='Saved ✓';$('natural-key-summary').textContent='Saved: '+fields.join(' + ');setTimeout(()=>button.textContent='Save matching rule',1200);
       if(result.syncPaused)showSyncPausedWarning('Heads up: '+type+' was live-syncing, so saving this matching rule paused both real-time and scheduled sync for it. Review it, then re-enable from the Sync tab when ready.')
     }catch(e){$('natural-key-warning').className='identity-warning';$('natural-key-warning').textContent=e.message;button.textContent='Save matching rule'}finally{button.disabled=false}};
-    $('load-values').onclick=async()=>{const context=migrationState.valueContext,field=$('value-field').value;if(!context||!field)return;const current=await api('/api/value-mappings/'+context.type+'/'+encodeURIComponent(field));const sfMeta=$('mig-from').value==='salesforce'?context.sourceMeta:context.targetMeta,hsMeta=$('mig-from').value==='hubspot'?context.sourceMeta:context.targetMeta;const sfRule=($('mig-from').value==='salesforce'?context.sourceRules:context.targetRules).get(field),hsRule=($('mig-from').value==='hubspot'?context.sourceRules:context.targetRules).get(field);const sfOptions=sfMeta.fields.find(f=>f.name===sfRule?.native)?.options||[],hsOptions=hsMeta.fields.find(f=>f.name===hsRule?.native)?.options||[];const values=new Map(current.entries.map(e=>[e.canonicalValue,e]));[...sfOptions,...hsOptions].forEach(o=>{if(!values.has(o.value))values.set(o.value,{canonicalValue:o.value,salesforceValue:sfOptions.find(x=>x.value===o.value)?.value,hubspotValue:hsOptions.find(x=>x.value===o.value)?.value})});$('value-map-rows').innerHTML=[...values.values()].map(e=>'<tr><td><input class="value-canonical" value="'+esc(e.canonicalValue)+'"></td><td><input class="value-sf" value="'+esc(e.salesforceValue||'')+'"></td><td><input class="value-hs" value="'+esc(e.hubspotValue||'')+'"></td></tr>').join('')||'<tr><td colspan="3" class="empty">No values discovered.</td></tr>'};
+    $('load-values').onclick=async()=>{const context=migrationState.valueContext,field=$('value-field').value;if(!context||!field)return;if(migrationState.mapping?.type===context.type){openPicklistValueModal(field)}else{await loadFieldWorkspace(context.type);openPicklistValueModal(field)}};
     $('save-values').onclick=async()=>{const type=$('value-object').value,field=$('value-field').value;if(!field)return;const entries=[...$('value-map-rows').querySelectorAll('tr')].map(tr=>({canonicalValue:tr.querySelector('.value-canonical')?.value.trim(),salesforceValue:tr.querySelector('.value-sf')?.value.trim()||undefined,hubspotValue:tr.querySelector('.value-hs')?.value.trim()||undefined})).filter(x=>x.canonicalValue);try{const result=await api('/api/value-mappings/'+type+'/'+encodeURIComponent(field),{method:'PUT',body:JSON.stringify({entries})});markPlanDirty();queuePlanAutosave();$('save-values').textContent='Saved ✓';setTimeout(()=>$('save-values').textContent='Save values',1200);
       if(result.syncPaused)showSyncPausedWarning('Heads up: '+type+' was live-syncing, so saving this value mapping paused both real-time and scheduled sync for it. Review it, then re-enable from the Sync tab when ready.')
     }catch(e){showError(e.message,e.requestId)}};
@@ -1826,9 +2039,13 @@ export function operationsHtml(): string {
       return '<span class="pill '+esc(j.status)+'">'+esc(j.status)+'</span>';
     }
     function jobRowCells(j,selectable){const needsAttention=j.status==='dead_letter'||j.status==='manual_review'||j.status==='retry';
-      const select='<td>'+(selectable&&needsAttention?'<input type="checkbox" class="row-select" value="'+esc(j.id)+'">':'')+'</td>';
+      const isCompleted=j.status==='completed';
+      const canSelect=selectable&&(needsAttention||isCompleted);
+      const select='<td>'+(canSelect?'<input type="checkbox" class="row-select" data-status="'+esc(j.status)+'" value="'+esc(j.id)+'">':'')+'</td>';
       const reviewBtn=needsAttention?'<button class="secondary" type="button" data-action="reviewJob" data-arg="'+esc(j.id)+'">Review</button>':'';
-      const primary=j.status==='manual_review'&&j.event.changeType==='deleted'?'<button class="danger" data-action="approveDelete" data-arg="'+esc(j.id)+'">Approve delete</button>':needsAttention?'<button data-action="replay" data-arg="'+esc(j.id)+'">Replay</button>':'';
+      const primary=j.status==='manual_review'&&j.event.changeType==='deleted'?'<button class="danger" data-action="approveDelete" data-arg="'+esc(j.id)+'">Approve delete</button>'
+        :needsAttention?'<button data-action="replay" data-arg="'+esc(j.id)+'">Replay</button>'
+        :isCompleted?'<button class="secondary" type="button" data-action="resyncJob" data-arg="'+esc(j.id)+'">Re-sync</button>':'';
       const dismiss=needsAttention?'<button class="danger" data-action="dismissJob" data-arg="'+esc(j.id)+'" title="Give up on this permanently -- it will not be retried">Delete</button>':'';
       const actions=(reviewBtn||primary||dismiss)?'<div class="row-actions">'+reviewBtn+primary+dismiss+'</div>':'';
       return {select,actions}}
@@ -1863,7 +2080,7 @@ export function operationsHtml(): string {
 
     async function loadJobs(){const f=$('job-filter').value;const r=await api('/api/sync/jobs?limit=200'+(f?'&status='+encodeURIComponent(f):''));rememberJobs(r.entries);
       $('jobs').innerHTML=r.entries.length?r.entries.map(j=>{const c=jobRowCells(j,true);return '<tr>'+c.select+'<td>'+jobStatusBadge(j)+'</td><td class="muted" style="white-space:nowrap">'+esc(formatJobDateTime(j))+'</td><td>'+esc(j.event.system+' '+j.event.type+' '+j.event.changeType)+'<br><span class="muted">'+esc(j.event.sourceId)+'</span></td><td>'+j.attempts+'</td><td>'+formatJobErrorCell(j.lastError,'—')+'</td><td>'+c.actions+'</td></tr>'}).join(''):'<tr><td colspan="7" class="empty">No jobs</td></tr>';
-      resetBulkBar('jobs')}
+      const completedCount=r.entries.filter(j=>j.status==='completed').length;if($('jobs-resync-all-completed')){$('jobs-resync-all-completed').hidden=completedCount===0;$('jobs-resync-all-completed').textContent='Re-sync all completed ('+completedCount+')'}resetBulkBar('jobs')}
     function closeReviewModal(){const m=$('manual-review-modal');if(m)m.hidden=true}
     function reviewJob(id){
       const j=cachedSyncJobs.get(id);
@@ -1931,6 +2148,24 @@ export function operationsHtml(): string {
         if(el&&el.isConnected){el.disabled=false;el.textContent='Delete'}
       }
     }
+    
+    async function resyncJob(id,el){
+      if(el){el.disabled=true;el.textContent='Re-syncing…'}
+      showProgressBar();
+      try{
+        await api('/api/sync/jobs/'+encodeURIComponent(id)+'/resync',{method:'POST'});
+        showNotice('Sync job queued for re-sync.');
+        await Promise.all([loadJobs(),loadMetrics(),loadSyncConflicts()]);
+        setTimeout(()=>{Promise.allSettled([loadJobs(),loadMetrics(),loadSyncConflicts()])},1200);
+        setTimeout(()=>{Promise.allSettled([loadJobs(),loadMetrics(),loadSyncConflicts()])},3000);
+      }catch(e){
+        showError('Failed to re-sync: '+(e.message||e));
+      }finally{
+        hideProgressBar();
+        if(el&&el.isConnected){el.disabled=false;el.textContent='Re-sync'}
+      }
+    }
+    window.resyncJob=resyncJob;
     window.replay=replay;window.approveDelete=approveDelete;window.dismissJob=dismissJob;
     window.reviewJob=reviewJob;window.closeReviewModal=closeReviewModal;
     window.reviewMapFields=type=>{closeReviewModal();goMapFields(type)};
@@ -1942,12 +2177,48 @@ export function operationsHtml(): string {
     // Bulk selection for both the Conflicts card and the Activity tab's Sync jobs table --
     // one row checkbox per selectable row, a header "select all", and Replay/Delete selected
     // buttons that only appear once something is checked.
-    const bulkTables={conflicts:{selectAll:'conflicts-select-all',replayBtn:'conflicts-replay-selected',deleteBtn:'conflicts-delete-selected'},jobs:{selectAll:'jobs-select-all',replayBtn:'jobs-replay-selected',deleteBtn:'jobs-delete-selected'}};
+    const bulkTables={conflicts:{selectAll:'conflicts-select-all',replayBtn:'conflicts-replay-selected',deleteBtn:'conflicts-delete-selected'},jobs:{selectAll:'jobs-select-all',replayBtn:'jobs-replay-selected',resyncBtn:'jobs-resync-selected',deleteBtn:'jobs-delete-selected'}};
     function selectedJobIds(tbodyId){return [...document.querySelectorAll('#'+tbodyId+' .row-select:checked')].map(el=>el.value)}
     function resetBulkBar(tbodyId){$(bulkTables[tbodyId].selectAll).checked=false;updateBulkBar(tbodyId)}
-    function updateBulkBar(tbodyId){const cfg=bulkTables[tbodyId],n=selectedJobIds(tbodyId).length,total=document.querySelectorAll('#'+tbodyId+' .row-select').length;$(cfg.replayBtn).hidden=n===0;$(cfg.deleteBtn).hidden=n===0;$(cfg.replayBtn).textContent='Replay selected ('+n+')';$(cfg.deleteBtn).textContent='Delete selected ('+n+')';$(cfg.selectAll).checked=total>0&&n===total;$(cfg.selectAll).indeterminate=n>0&&n<total}
+    function updateBulkBar(tbodyId){
+      const cfg=bulkTables[tbodyId];
+      const checkedBoxes=[...document.querySelectorAll('#'+tbodyId+' .row-select:checked')];
+      const n=checkedBoxes.length;
+      const total=document.querySelectorAll('#'+tbodyId+' .row-select').length;
+      const completedChecked=checkedBoxes.filter(el=>el.dataset.status==='completed').length;
+      const attentionChecked=n-completedChecked;
+      if(cfg.resyncBtn){
+        $(cfg.resyncBtn).hidden=completedChecked===0;
+        $(cfg.resyncBtn).textContent='Re-sync selected ('+completedChecked+')';
+      }
+      $(cfg.replayBtn).hidden=attentionChecked===0;
+      $(cfg.replayBtn).textContent='Replay selected ('+attentionChecked+')';
+      $(cfg.deleteBtn).hidden=attentionChecked===0;
+      $(cfg.deleteBtn).textContent='Delete selected ('+attentionChecked+')';
+      $(cfg.selectAll).checked=total>0&&n===total;
+      $(cfg.selectAll).indeterminate=n>0&&n<total;
+    }
     async function bulkRefresh(){await Promise.all([loadJobs(),loadMetrics(),loadSyncConflicts()])}
     Object.entries(bulkTables).forEach(([tbodyId,cfg])=>{
+
+      if(cfg.resyncBtn){
+        $(cfg.resyncBtn).onclick=async()=>{
+          const ids=[...document.querySelectorAll('#'+tbodyId+' .row-select:checked')].filter(el=>el.dataset.status==='completed').map(el=>el.value);
+          if(!ids.length)return;
+          const btn=$(cfg.resyncBtn);btn.disabled=true;btn.textContent='Re-syncing…';
+          showProgressBar();
+          try{
+            await Promise.allSettled(ids.map(id=>api('/api/sync/jobs/'+encodeURIComponent(id)+'/resync',{method:'POST'})));
+            showNotice(ids.length+' sync job'+(ids.length===1?'':'s')+' queued for re-sync.');
+            await bulkRefresh();
+            setTimeout(()=>{bulkRefresh()},1200);
+            setTimeout(()=>{bulkRefresh()},3000);
+          }finally{
+            hideProgressBar();
+            if(btn&&btn.isConnected)btn.disabled=false;
+          }
+        };
+      }
       document.getElementById(tbodyId).addEventListener('change',e=>{if(e.target.classList.contains('row-select'))updateBulkBar(tbodyId)});
       $(cfg.selectAll).onchange=()=>{document.querySelectorAll('#'+tbodyId+' .row-select').forEach(el=>el.checked=$(cfg.selectAll).checked);updateBulkBar(tbodyId)};
       $(cfg.replayBtn).onclick=async()=>{
@@ -1960,6 +2231,24 @@ export function operationsHtml(): string {
       };
       $(cfg.deleteBtn).onclick=async()=>{const ids=selectedJobIds(tbodyId);if(!ids.length)return;if(!confirm('Give up on '+ids.length+' job'+(ids.length===1?'':'s')+' permanently? '+(ids.length===1?'It':'They')+' will not be retried.'))return;await Promise.allSettled(ids.map(id=>api('/api/sync/jobs/'+id+'/dismiss',{method:'POST'})));await bulkRefresh()};
     });
+    
+    if($('jobs-resync-all-completed')){$('jobs-resync-all-completed').onclick=async()=>{
+      const completedJobs=[...cachedSyncJobs.values()].filter(j=>j.status==='completed');
+      if(!completedJobs.length)return;
+      if(!confirm('Re-sync all '+completedJobs.length+' completed record'+(completedJobs.length===1?'':'s')+' now?'))return;
+      const btn=$('jobs-resync-all-completed');btn.disabled=true;btn.textContent='Re-syncing all…';
+      showProgressBar();
+      try{
+        await Promise.allSettled(completedJobs.map(j=>api('/api/sync/jobs/'+encodeURIComponent(j.id)+'/resync',{method:'POST'})));
+        showNotice(completedJobs.length+' sync job'+(completedJobs.length===1?'':'s')+' queued for re-sync.');
+        await bulkRefresh();
+        setTimeout(()=>{bulkRefresh()},1200);
+        setTimeout(()=>{bulkRefresh()},3000);
+      }finally{
+        hideProgressBar();
+        if(btn&&btn.isConnected){btn.disabled=false;btn.textContent='Re-sync all completed ('+completedJobs.length+')'}
+      }
+    }};
     document.querySelectorAll('[data-activity-tab]').forEach(button=>button.onclick=()=>{document.querySelectorAll('[data-activity-tab]').forEach(item=>item.classList.toggle('active',item===button));document.querySelectorAll('.activity-panel').forEach(panel=>panel.classList.toggle('active',panel.id==='activity-'+button.dataset.activityTab))});
     async function loadAudit(){let a;try{a=await api('/api/audit?limit=100')}catch(e){if(e.code==='insufficient_role'){$('audit').innerHTML='<div class="empty">The audit log is visible to admins.</div>';return}throw e}$('audit').innerHTML=a.entries.length?a.entries.map(x=>'<div class="audit-entry"><b>'+esc(x.action)+'</b><br><span class="muted">'+esc(x.detail.message||x.resourceType)+' · '+esc(new Date(x.createdAt).toLocaleString())+'</span></div>').join(''):'<div class="empty">No audit entries</div>'}
 
@@ -2042,14 +2331,30 @@ export function operationsHtml(): string {
       $('conflict-review').innerHTML=c.entries.length?'<table><thead><tr><th>Record</th><th>Decision</th><th>Changed fields</th><th>Status</th><th></th></tr></thead><tbody>'+c.entries.map(x=>{
         const fields=Object.keys({...x.source.fields,...x.target.fields}).filter(k=>JSON.stringify(x.source.fields[k])!==JSON.stringify(x.target.fields[k]));
         const winner=x.decision&&x.decision.winner;const source=x.source.meta.source;const other=source==='salesforce'?'hubspot':'salesforce';
-        const diff=fields.slice(0,6).map(k=>'<div><b>'+esc(k)+'</b>: '+esc(SYSTEM_LABEL[source])+' '+esc(x.source.fields[k]??'—')+' · '+esc(SYSTEM_LABEL[other])+' '+esc(x.target.fields[k]??'—')+'</div>').join('')||'<span class="muted">No field differences recorded</span>';
-        const actions=['salesforce','hubspot'].map(sys=>'<button class="secondary" data-action="resolveConflict" data-arg="'+esc(x.id)+':'+sys+'"'+(winner===sys&&x.resolutionSource==='manual'?' disabled':'')+'>Keep '+SYSTEM_LABEL[sys]+'</button>').join(' ');
+        const diff=fields.slice(0,6).map(k=>'<div><b>'+esc(k)+'</b>: '+esc(SYSTEM_LABEL[source])+' '+esc(x.source.fields[k]??'—')+' · '+esc(SYSTEM_LABEL[other])+' '+esc(x.target.fields[k]??'—')+'</div>').join('')||'<span class="muted">No field differences recorded</span>';const targetWinner=winner||source||'salesforce';
+        const actions=['salesforce','hubspot'].map(sys=>'<button class="secondary" data-action="resolveConflict" data-arg="'+esc(x.id)+':'+sys+'"'+(winner===sys&&x.resolutionSource==='manual'?' disabled':'')+'>Keep '+SYSTEM_LABEL[sys]+'</button>').join(' ')+' <button class="secondary" data-action="resyncConflict" data-arg="'+esc(x.id)+':'+esc(targetWinner)+'">Re-sync</button>';
         const conflictDate=x.resolvedAt||x.createdAt;
         return '<tr data-conflict="'+esc(x.id)+'"><td>'+esc(x.type)+'<br><span class="muted">'+esc(new Date(conflictDate).toLocaleString())+'</span></td><td>'+esc(x.strategy)+(winner?' → '+esc(SYSTEM_LABEL[winner]||winner):'')+'</td><td>'+diff+'</td><td><span class="pill '+(x.resolutionSource==='manual'?'completed':'ambiguous')+'">'+(x.resolutionSource==='manual'?'resolved by operator':'automatic')+'</span></td><td>'+actions+'</td></tr>'}).join('')+'</tbody></table>':'<div class="empty">No conflicts recorded</div>'}
     async function resolveConflict(arg){const [id,winner]=String(arg).split(':');
       const r=await api('/api/conflicts/'+encodeURIComponent(id)+'/resolve',{method:'POST',body:JSON.stringify({winner})});
       showNotice('Kept '+SYSTEM_LABEL[winner]+' values for this '+r.type+'.');await loadConflictReview()}
     window.resolveConflict=resolveConflict;
+    async function resyncConflict(arg,el){
+      const [id,winner]=String(arg).split(':');
+      if(el){el.disabled=true;el.textContent='Re-syncing…'}
+      showProgressBar();
+      try{
+        const r=await api('/api/conflicts/'+encodeURIComponent(id)+'/resolve',{method:'POST',body:JSON.stringify({winner:winner||'salesforce'})});
+        showNotice('Re-synced '+r.type+' values.');
+        await Promise.all([loadConflictReview(),loadJobs(),loadMetrics()]);
+      }catch(e){
+        showError('Failed to re-sync conflict: '+(e.message||e));
+      }finally{
+        hideProgressBar();
+        if(el&&el.isConnected){el.disabled=false;el.textContent='Re-sync'}
+      }
+    }
+    window.resyncConflict=resyncConflict;
     async function loadConflicts(){await Promise.all([loadSyncConflicts(),loadConflictReview()])}
 
     let isRefreshingAll=false;

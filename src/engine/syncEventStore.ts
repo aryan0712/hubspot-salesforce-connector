@@ -28,6 +28,8 @@ export interface SyncJob {
   leaseToken?: string;
   /** Why a queued job is waiting (e.g. its object's sync is paused). */
   deferredReason?: string;
+  /** Force reconciliation, bypassing redundant update and echo checks. */
+  force?: boolean;
 }
 
 export interface SyncJobStats {
@@ -60,7 +62,7 @@ export interface SyncEventStore {
   /** Puts a claimed job back without consuming an attempt (e.g. its object's sync is paused). */
   defer(id: string, until: string, reason: string, leaseToken?: string): Promise<boolean>;
   heartbeat(id: string, leaseToken: string): Promise<boolean>;
-  replay(id: string): Promise<void>;
+  replay(id: string, opts?: { force?: boolean }): Promise<void>;
   dismiss(id: string): Promise<void>;
   get(id: string): Promise<SyncJob | undefined>;
   /** Newest first; `before` continues after the last row of the previous page. */
@@ -175,7 +177,7 @@ export class InMemorySyncEventStore implements SyncEventStore {
     return true;
   }
 
-  async replay(id: string): Promise<void> {
+  async replay(id: string, opts?: { force?: boolean }): Promise<void> {
     const job = this.jobs.get(id);
     if (job) {
       const now = new Date().toISOString();
@@ -189,6 +191,12 @@ export class InMemorySyncEventStore implements SyncEventStore {
       job.completedAt = undefined;
       if (job.event) {
         job.event.occurredAt = now;
+        if (opts?.force) {
+          job.event.force = true;
+        }
+      }
+      if (opts?.force) {
+        job.force = true;
       }
     }
   }

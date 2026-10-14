@@ -110,6 +110,20 @@ describe('R09 lease fencing and recovery (PostgreSQL, independent clients)', () 
     expect(Date.parse(completed!.completedAt!)).toBeGreaterThanOrEqual(Date.parse(replayed!.createdAt));
   });
 
+  it('preserves force flag when replayed with force: true in postgres', async () => {
+    const tenantId = await pg.ensureTenant(`r09-${crypto.randomUUID().slice(0, 8)}`);
+    const store = new PostgresSyncEventStore(pg.connect(), tenantId);
+    const [id] = await store.enqueue([event('003FORCE')]);
+    await store.replay(id!, { force: true });
+    const replayed = await store.get(id!);
+    expect(replayed?.force).toBe(true);
+    expect(replayed?.event.force).toBe(true);
+
+    const [claimed] = await store.claim(1, 'worker');
+    expect(claimed?.force).toBe(true);
+    expect(claimed?.event.force).toBe(true);
+  });
+
   it('modifies date and time when a job is replayed and completed in memory', async () => {
     const store = new InMemorySyncEventStore();
     const [id] = await store.enqueue([event('003MEM')]);

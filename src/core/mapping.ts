@@ -267,13 +267,25 @@ function toCanonicalValue(
   value: FieldValue,
 ): FieldValue {
   if (typeof value !== 'string') return value;
-  const row = mappings.find(
-    (mapping) =>
-      mapping.type === type &&
-      mapping.canonicalField === field &&
-      mapping[`${system}Value` as 'salesforceValue' | 'hubspotValue'] === value,
+  const sysKey = `${system}Value` as 'salesforceValue' | 'hubspotValue';
+  const fieldMappings = mappings.filter(
+    (mapping) => mapping.type === type && mapping.canonicalField === field,
   );
-  return row?.canonicalValue ?? value;
+  if (fieldMappings.length === 0) return value;
+
+  const translateSingle = (val: string): string => {
+    const valTrimmed = val.trim();
+    const valLower = valTrimmed.toLowerCase();
+    const row = fieldMappings.find(
+      (m) => m[sysKey] === valTrimmed || m[sysKey]?.trim().toLowerCase() === valLower,
+    );
+    return row?.canonicalValue || row?.[sysKey] || val;
+  };
+
+  if (value.includes(';')) {
+    return value.split(';').map(translateSingle).join(';');
+  }
+  return translateSingle(value);
 }
 
 function fromCanonicalValue(
@@ -284,11 +296,36 @@ function fromCanonicalValue(
   value: FieldValue,
 ): FieldValue {
   if (typeof value !== 'string') return value;
-  const row = mappings.find(
-    (mapping) =>
-      mapping.type === type &&
-      mapping.canonicalField === field &&
-      mapping.canonicalValue === value,
+  const sysKey = `${system}Value` as 'salesforceValue' | 'hubspotValue';
+  const otherSysKey = system === 'salesforce' ? 'hubspotValue' : 'salesforceValue';
+  const fieldMappings = mappings.filter(
+    (mapping) => mapping.type === type && mapping.canonicalField === field,
   );
-  return row?.[`${system}Value` as 'salesforceValue' | 'hubspotValue'] ?? value;
+  if (fieldMappings.length === 0) return value;
+
+  const translateSingle = (val: string): string => {
+    const valTrimmed = val.trim();
+    const valLower = valTrimmed.toLowerCase();
+    // 1. Try exact or case-insensitive match on canonicalValue
+    let row = fieldMappings.find(
+      (m) =>
+        m.canonicalValue === valTrimmed ||
+        m.canonicalValue?.trim().toLowerCase() === valLower,
+    );
+    // 2. Fallback: match on counterpart system's value (e.g. if canonical record held other system's native value directly)
+    if (!row) {
+      row = fieldMappings.find(
+        (m) =>
+          m[otherSysKey] === valTrimmed ||
+          m[otherSysKey]?.trim().toLowerCase() === valLower,
+      );
+    }
+    return row?.[sysKey] ?? val;
+  };
+
+  if (value.includes(';')) {
+    return value.split(';').map(translateSingle).join(';');
+  }
+  return translateSingle(value);
 }
+

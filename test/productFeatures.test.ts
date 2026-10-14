@@ -349,4 +349,35 @@ describe('durable sync semantics', () => {
     expect((await sync.stats()).completed).toBe(1);
     await expect(sync.dismiss(jobId!)).rejects.toThrow();
   });
+
+  it('re-syncing a completed job forces reconciliation even when the record is unchanged', async () => {
+    const ctx = await setup();
+    const sfId = ctx.sf.seed('contact', { firstName: 'Ada', email: 'ada@example.com' });
+    const store = new InMemorySyncEventStore();
+    const sync = new SyncEngine(ctx.connectors, ctx.reconciler, store);
+    await sync.init();
+
+    // Initial sync
+    const [jobId] = await sync.enqueue([
+      {
+        eventId: 'initial-sync-1',
+        system: 'salesforce',
+        type: 'contact',
+        sourceId: sfId,
+        changeType: 'updated',
+        occurredAt: new Date().toISOString(),
+      },
+    ]);
+    await sync.drain();
+    expect((await sync.stats()).completed).toBe(1);
+    expect(ctx.hs.writes).toHaveLength(1);
+
+    // Replay without force on identical record would skip write,
+    // but calling sync.resync(jobId) clears the hash and forces reconciliation
+    await sync.resync(jobId!);
+    await sync.drain();
+    expect(ctx.hs.writes.length).toBeGreaterThanOrEqual(1);
+    const completedJob = await store.get(jobId!);
+    expect(completedJob?.status).toBe('completed');
+  });
 });

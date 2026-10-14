@@ -126,8 +126,23 @@ export class SyncEngine {
     return ids;
   }
 
-  async replay(id: string): Promise<void> {
-    await this.store.replay(id);
+  async replay(id: string, opts?: { force?: boolean }): Promise<void> {
+    await this.store.replay(id, opts);
+    this.kick();
+  }
+
+  async resync(id: string): Promise<void> {
+    const job = await this.store.get(id);
+    if (!job) throw new Error('sync_job_not_found');
+    if (this.reconciler.idMap) {
+      const link = await this.reconciler.idMap.bySource(job.event.system, job.event.sourceId, job.event.type);
+      if (link) {
+        const hashes = { ...link.hashes };
+        delete hashes[job.event.system];
+        await this.reconciler.idMap.upsertLink({ ...link, hashes });
+      }
+    }
+    await this.store.replay(id, { force: true });
     this.kick();
   }
 
@@ -284,7 +299,7 @@ export class SyncEngine {
       const connector = this.connectors[event.system];
       const record = await connector.read(event.type, event.sourceId);
       if (!record) throw new Error('record vanished before fetch');
-      await this.reconciler.reconcile(record);
+      await this.reconciler.reconcile(record, { force: Boolean(job.force || event.force) });
       await this.opts.associations?.syncRecord(record);
       fenced(await this.store.complete(job.id, token));
     } catch (err) {

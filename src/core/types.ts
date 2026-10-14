@@ -80,6 +80,8 @@ export interface ChangeEvent {
   changeType: 'created' | 'updated' | 'deleted';
   /** When the source says the change happened (ISO 8601). */
   occurredAt: string;
+  /** Force reconciliation, bypassing redundant update and echo checks. */
+  force?: boolean;
 }
 
 export interface NaturalKeyQuery {

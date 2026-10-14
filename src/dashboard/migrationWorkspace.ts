@@ -285,6 +285,22 @@ export const migrationWorkspaceCss = `
   .typed-confirmation-card input{width:100%;margin-top:7px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;text-transform:uppercase}
   .typed-confirmation-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:18px}
   .typed-confirm-error{display:block;margin-top:8px;color:var(--red);font-size:12px}.typed-confirm-error[hidden]{display:none}
+  .picklist-modal-backdrop[hidden]{display:none}
+  .picklist-modal-backdrop{position:fixed;inset:0;z-index:1000;display:grid;place-items:center;padding:20px;background:rgba(18,36,52,.56);backdrop-filter:blur(2px)}
+  .picklist-modal-card{width:min(760px,100%);max-height:calc(100vh - 48px);display:flex;flex-direction:column;padding:22px 24px;border:1px solid var(--border);border-radius:12px;background:#fff;box-shadow:0 24px 70px rgba(18,36,52,.25);overflow:hidden}
+  .picklist-modal-header{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:12px}
+  .picklist-modal-header button{padding:4px 9px;font-size:14px;line-height:1}
+  .picklist-modal-toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:10px 0}
+  .picklist-modal-footer{display:flex;justify-content:flex-end;align-items:center;gap:10px;margin-top:14px;padding-top:14px;border-top:1px solid var(--border)}
+  .mapping-values-btn{padding:5px 8px;border-radius:6px;background:#fff;border:1px solid #b9cad9;color:var(--text-2);font-size:11px;cursor:pointer;white-space:nowrap;transition:all .15s}
+  .mapping-values-btn:hover{background:#f5f9fc;border-color:var(--orange);color:var(--orange)}
+  .mapping-values-btn.is-picklist{border-color:var(--orange-pale,#f4a28c);background:#fff9f7;color:var(--orange,#e05a33);font-weight:600}
+  .mapping-values-btn.has-mappings{background:var(--teal,#1d8c7c);border-color:var(--teal,#1d8c7c);color:#fff;font-weight:600}
+  .mapping-values-btn.has-mappings:hover{background:#166e62;border-color:#166e62;color:#fff}
+  .picklist-table td{padding:6px 8px;vertical-align:top}
+  .picklist-table select,.picklist-table input{width:100%;font-size:12px}
+  .picklist-table .custom-input{margin-top:4px}
+  .picklist-row-arrow{text-align:center;color:var(--muted);font-weight:700;font-size:14px}
   @media(max-width:1050px){
     .builder-shell{grid-template-columns:1fr}.workspace-steps{position:static;flex-direction:row;overflow-x:auto}
     .workspace-step{min-width:155px}.coverage-card{grid-template-columns:minmax(210px,.55fr) minmax(0,1.45fr)}
@@ -600,7 +616,7 @@ export function migrationWorkspaceHtml(): string {
                   </div>
                   <div class="transform-lab-actions"><span class="muted" id="transform-help">Transforms run before migration validation and value mapping.</span><button id="reset-transforms" class="secondary">Use identity</button><button id="apply-transforms">Apply transforms</button></div>
                 </section>
-                <div class="field-layout"><div class="scroll"><table class="mapping-table"><thead><tr><th class="mapping-action">Action</th><th class="sortable-th" data-sort="target" title="Click to sort by target field"><span id="target-field-th-label">Target field (HubSpot)</span> <span class="sort-icon">↕</span></th><th class="sortable-th" data-sort="canonical" title="Click to sort by canonical field">Canonical field <span class="sort-icon">↕</span></th><th>Transform</th><th class="sortable-th" data-sort="source" title="Click to sort by source field"><span id="source-field-th-label">Source field (Salesforce)</span> <span class="sort-icon">↕</span></th><th class="sortable-th" data-sort="sot" title="Click to sort by source of truth">Source of truth <span class="sort-icon">↕</span></th></tr></thead><tbody id="field-map-rows"><tr><td colspan="6" class="empty">Choose an object to load its mappings.</td></tr></tbody></table></div></div>
+                <div class="field-layout"><div class="scroll"><table class="mapping-table"><thead><tr><th class="mapping-action">Action</th><th class="sortable-th" data-sort="target" title="Click to sort by target field"><span id="target-field-th-label">Target field (HubSpot)</span> <span class="sort-icon">↕</span></th><th class="sortable-th" data-sort="canonical" title="Click to sort by canonical field">Canonical field <span class="sort-icon">↕</span></th><th style="width:115px">Values</th><th>Transform</th><th class="sortable-th" data-sort="source" title="Click to sort by source field"><span id="source-field-th-label">Source field (Salesforce)</span> <span class="sort-icon">↕</span></th><th class="sortable-th" data-sort="sot" title="Click to sort by source of truth">Source of truth <span class="sort-icon">↕</span></th></tr></thead><tbody id="field-map-rows"><tr><td colspan="7" class="empty">Choose an object to load its mappings.</td></tr></tbody></table></div></div>
                 <datalist id="source-native-datalist"></datalist>
                 <datalist id="target-native-datalist"></datalist>
                 <div id="source-picker-menu" class="source-picker-menu" role="listbox" hidden></div>
@@ -623,6 +639,53 @@ export function migrationWorkspaceHtml(): string {
         <div class="typed-confirmation-actions">
           <button class="secondary" id="typed-confirm-cancel">Cancel</button>
           <button class="danger" id="typed-confirm-submit">Confirm</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="picklist-modal-backdrop" id="picklist-value-modal" role="dialog" aria-modal="true" aria-labelledby="picklist-modal-title" hidden>
+      <div class="picklist-modal-card">
+        <div class="picklist-modal-header">
+          <div>
+            <div class="step-eyebrow" id="picklist-modal-eyebrow">Picklist value mapping</div>
+            <h2 id="picklist-modal-title" style="margin:2px 0 4px;font-size:18px">Map dropdown values</h2>
+            <p class="subcopy" id="picklist-modal-subtitle" style="margin:0;font-size:12px;color:var(--muted)">Salesforce ⇄ HubSpot</p>
+          </div>
+          <button class="secondary" id="picklist-modal-close" type="button" aria-label="Close">✕</button>
+        </div>
+
+        <div class="picklist-modal-body" style="overflow-y:auto;display:flex;flex-direction:column;flex:1 1 auto;min-height:0">
+          <div class="notice" style="margin-bottom:12px;font-size:12px;padding:9px 12px">
+            Map differing option values between Salesforce and HubSpot (e.g. <b>Active</b> ⇄ <b>Contact Active</b>, <b>Deactivated</b> ⇄ <b>Discontinued</b>). Mapped values are automatically translated in both directions during sync and migration.
+          </div>
+
+          <div class="picklist-modal-toolbar">
+            <button class="secondary" id="picklist-add-row" type="button">+ Add mapping row</button>
+            <button class="secondary" id="picklist-automatch" type="button">⚡ Auto-match identical options</button>
+            <span id="picklist-modal-count" style="margin-left:auto;font-size:12px;color:var(--muted)"></span>
+          </div>
+
+          <div class="scroll picklist-table-scroll" style="max-height:360px;margin-top:10px;border:1px solid var(--border);border-radius:8px">
+            <table class="mapping-table picklist-table" style="width:100%">
+              <thead>
+                <tr>
+                  <th style="width:44%"><span id="picklist-sf-th-label">Salesforce option</span></th>
+                  <th style="width:40px;text-align:center">⇄</th>
+                  <th style="width:44%"><span id="picklist-hs-th-label">HubSpot option</span></th>
+                  <th style="width:48px;text-align:center">Action</th>
+                </tr>
+              </thead>
+              <tbody id="picklist-value-rows">
+                <tr><td colspan="4" class="empty">No values mapped yet. Click "Auto-match" or "+ Add mapping row".</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div id="picklist-modal-message" class="settings-message" style="margin-top:10px"></div>
+        </div>
+
+        <div class="picklist-modal-footer">
+          <button class="secondary" id="picklist-modal-cancel" type="button">Cancel</button>
+          <button id="picklist-modal-save" type="button">Save value mappings</button>
         </div>
       </div>
     </section>`;
