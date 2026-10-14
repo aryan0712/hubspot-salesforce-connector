@@ -23,6 +23,7 @@ export interface StoredConflict extends ConflictRecord {
   status: 'open' | 'resolved' | 'ignored';
   resolutionSource: 'automatic' | 'manual';
   resolvedBy?: string;
+  resolvedAt?: string;
   createdAt: string;
 }
 
@@ -76,12 +77,14 @@ export class InMemoryGovernanceStore implements GovernanceStore {
   readonly tombstones: Tombstone[] = [];
 
   async recordConflict(conflict: ConflictRecord): Promise<void> {
+    const now = new Date().toISOString();
     this.conflicts.push({
       ...structuredClone(conflict),
       id: crypto.randomUUID(),
       status: 'resolved',
       resolutionSource: 'automatic',
-      createdAt: new Date().toISOString(),
+      resolvedAt: now,
+      createdAt: now,
     });
   }
 
@@ -100,6 +103,7 @@ export class InMemoryGovernanceStore implements GovernanceStore {
     conflict.status = 'resolved';
     conflict.resolutionSource = 'manual';
     conflict.resolvedBy = actorId;
+    conflict.resolvedAt = new Date().toISOString();
     conflict.decision = { ...(conflict.decision ?? { keptDestinationFields: [] }), winner };
     return true;
   }

@@ -84,6 +84,53 @@ describe('R09 lease fencing and recovery (PostgreSQL, independent clients)', () 
     expect(await store.recoverStale(new Date(Date.now() - 60_000).toISOString())).toBe(0);
     expect(await store.heartbeat(job!.id, 'someone-else')).toBe(false);
   });
+
+  it('modifies date and time when a job is replayed and completed in postgres', async () => {
+    const tenantId = await pg.ensureTenant(`r09-${crypto.randomUUID().slice(0, 8)}`);
+    const store = new PostgresSyncEventStore(pg.connect(), tenantId);
+    const [id] = await store.enqueue([event('003REPLAY')]);
+    const initial = await store.get(id!);
+    expect(initial).toBeDefined();
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await store.replay(id!);
+    const replayed = await store.get(id!);
+    expect(replayed).toBeDefined();
+    expect(Date.parse(replayed!.createdAt)).toBeGreaterThanOrEqual(Date.parse(initial!.createdAt));
+    expect(replayed!.completedAt).toBeUndefined();
+
+    const [claimed] = await store.claim(1, 'worker');
+    expect(claimed?.id).toBe(id);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await store.complete(id!, claimed!.leaseToken);
+
+    const completed = await store.get(id!);
+    expect(completed?.status).toBe('completed');
+    expect(completed?.completedAt).toBeDefined();
+    expect(Date.parse(completed!.completedAt!)).toBeGreaterThanOrEqual(Date.parse(replayed!.createdAt));
+  });
+
+  it('modifies date and time when a job is replayed and completed in memory', async () => {
+    const store = new InMemorySyncEventStore();
+    const [id] = await store.enqueue([event('003MEM')]);
+    const initial = await store.get(id!);
+    expect(initial).toBeDefined();
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await store.replay(id!);
+    const replayed = await store.get(id!);
+    expect(Date.parse(replayed!.createdAt)).toBeGreaterThanOrEqual(Date.parse(initial!.createdAt));
+    expect(replayed!.completedAt).toBeUndefined();
+
+    const [claimed] = await store.claim(1, 'worker');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await store.complete(id!, claimed!.leaseToken);
+
+    const completed = await store.get(id!);
+    expect(completed?.status).toBe('completed');
+    expect(completed?.completedAt).toBeDefined();
+    expect(Date.parse(completed!.completedAt!)).toBeGreaterThanOrEqual(Date.parse(replayed!.createdAt));
+  });
 });
 
 describe('R09 worker lifecycle', () => {

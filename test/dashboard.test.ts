@@ -493,6 +493,10 @@ describe('operations dashboard', () => {
     const tdSourceIdx = html.indexOf('class="source-native"');
     expect(tdTargetIdx).toBeGreaterThan(0);
     expect(tdSourceIdx).toBeGreaterThan(tdTargetIdx);
+    const picklistPushIdx = html.indexOf("sections.push('<div class=\"source-picker-heading\">'+esc(picklistHeading)");
+    const fieldPushIdx = html.indexOf("sections.push('<div class=\"source-picker-heading\">'+esc(fieldHeading)");
+    expect(picklistPushIdx).toBeGreaterThan(0);
+    expect(fieldPushIdx).toBeGreaterThan(picklistPushIdx);
   });
 
   it('marks recordId and contact email as mandatory non-removable fields with locked status and auto-maps default fields', () => {
@@ -539,6 +543,12 @@ describe('operations dashboard', () => {
     expect(operationsHtml()).toContain('class="poll-interval-fields"');
     expect(operationsHtml()).toContain('class="poll-action-line"');
     expect(operationsHtml()).not.toContain('<span>every</span>');
+  });
+
+  it('formats job date and time with completion and replay timestamp precedence', () => {
+    const html = operationsHtml();
+    expect(html).toContain('formatJobDateTime(j)');
+    expect(html).toContain('j&&(j.completedAt||j.updatedAt||j.createdAt||(j.event&&j.event.occurredAt))');
   });
 });
 

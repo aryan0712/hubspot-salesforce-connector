@@ -20,6 +20,7 @@ interface ConflictRow {
   status: StoredConflict['status'];
   resolution_source: StoredConflict['resolutionSource'];
   resolved_by: string | null;
+  resolved_at: Date | null;
   created_at: Date;
 }
 
@@ -220,6 +221,7 @@ function mapConflict(row: ConflictRow): StoredConflict {
     status: row.status,
     resolutionSource: row.resolution_source,
     resolvedBy: row.resolved_by ?? undefined,
+    resolvedAt: row.resolved_at ? row.resolved_at.toISOString() : undefined,
     createdAt: row.created_at.toISOString(),
   };
 }

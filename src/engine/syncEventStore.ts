@@ -22,6 +22,8 @@ export interface SyncJob {
   nextAttemptAt: string;
   lastError?: string;
   createdAt: string;
+  updatedAt?: string;
+  completedAt?: string;
   /** R09: identifies the current claim; completion is fenced on it. */
   leaseToken?: string;
   /** Why a queued job is waiting (e.g. its object's sync is paused). */
@@ -97,6 +99,7 @@ export class InMemorySyncEventStore implements SyncEventStore {
         attempts: 0,
         nextAttemptAt: now,
         createdAt: now,
+        updatedAt: now,
       });
       this.eventIndex.set(vendorId, id);
       ids.push(id);
@@ -128,6 +131,7 @@ export class InMemorySyncEventStore implements SyncEventStore {
       job.lockedAt = now;
       job.lockedBy = workerId;
       job.deferredReason = undefined;
+      job.updatedAt = new Date(now).toISOString();
       claimed.push(job);
     }
     return claimed.map(cloneJob);
@@ -159,6 +163,7 @@ export class InMemorySyncEventStore implements SyncEventStore {
       deferredReason: reason,
       leaseToken: undefined,
       lockedAt: undefined,
+      updatedAt: new Date().toISOString(),
     });
     return true;
   }
@@ -173,11 +178,18 @@ export class InMemorySyncEventStore implements SyncEventStore {
   async replay(id: string): Promise<void> {
     const job = this.jobs.get(id);
     if (job) {
+      const now = new Date().toISOString();
       job.status = 'queued';
       job.attempts = 0;
       job.lastError = undefined;
       job.leaseToken = undefined;
-      job.nextAttemptAt = new Date().toISOString();
+      job.nextAttemptAt = now;
+      job.createdAt = now;
+      job.updatedAt = now;
+      job.completedAt = undefined;
+      if (job.event) {
+        job.event.occurredAt = now;
+      }
     }
   }
 
@@ -186,6 +198,7 @@ export class InMemorySyncEventStore implements SyncEventStore {
     if (job) {
       job.status = 'dismissed';
       job.leaseToken = undefined;
+      job.updatedAt = new Date().toISOString();
     }
   }
 
@@ -246,7 +259,18 @@ export class InMemorySyncEventStore implements SyncEventStore {
     const job = this.jobs.get(id);
     if (!job) return false;
     if (leaseToken && (job.status !== 'processing' || job.leaseToken !== leaseToken)) return false;
-    Object.assign(job, patch, { leaseToken: undefined, lockedAt: undefined });
+    const now = new Date().toISOString();
+    const isCompleted = patch.status === 'completed';
+    Object.assign(job, patch, {
+      leaseToken: undefined,
+      lockedAt: undefined,
+      updatedAt: now,
+      createdAt: isCompleted ? now : job.createdAt,
+      completedAt: isCompleted ? now : job.completedAt,
+    });
+    if (isCompleted && job.event) {
+      job.event.occurredAt = now;
+    }
     return true;
   }
 }

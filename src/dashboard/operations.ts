@@ -703,11 +703,11 @@ export function operationsHtml(): string {
       if(rawQuery&&!fields.some(f=>f.value===rawQuery)&&!picklists.some(p=>p.value===rawQuery)){
         sections.push('<div class="source-picker-heading">Text value</div><button type="button" class="source-picker-item" data-picker-value="'+esc(rawQuery)+'"><b>'+esc(rawQuery)+'</b><span>Use as custom text value</span></button>');
       }
-      if(matchedFields.length){
-        sections.push('<div class="source-picker-heading">'+esc(fieldHeading)+'</div>'+matchedFields.slice(0,250).map(item=>'<button type="button" class="source-picker-item" data-picker-value="'+esc(item.value)+'"><b>'+esc(item.title)+'</b><span>'+esc(item.subtitle)+'</span></button>').join(''));
-      }
       if(matchedPicklists.length){
         sections.push('<div class="source-picker-heading">'+esc(picklistHeading)+'</div>'+matchedPicklists.slice(0,300).map(item=>'<button type="button" class="source-picker-item" data-picker-value="'+esc(item.value)+'"><b>'+esc(item.title)+'</b><span>'+esc(item.subtitle)+'</span></button>').join(''));
+      }
+      if(matchedFields.length){
+        sections.push('<div class="source-picker-heading">'+esc(fieldHeading)+'</div>'+matchedFields.slice(0,250).map(item=>'<button type="button" class="source-picker-item" data-picker-value="'+esc(item.value)+'"><b>'+esc(item.title)+'</b><span>'+esc(item.subtitle)+'</span></button>').join(''));
       }
       if(!sections.length){
         menu.hidden=true;return;
@@ -1813,7 +1813,7 @@ export function operationsHtml(): string {
     const cachedSyncJobs=new Map();
     function rememberJobs(entries){for(const j of entries||[])cachedSyncJobs.set(j.id,j)}
     function formatJobDateTime(j){
-      const raw=j&&(j.createdAt||(j.event&&j.event.occurredAt));
+      const raw=j&&(j.completedAt||j.updatedAt||j.createdAt||(j.event&&j.event.occurredAt));
       if(!raw)return '—';
       const d=new Date(raw);
       return Number.isNaN(d.getTime())?String(raw):d.toLocaleString();
@@ -1899,6 +1899,7 @@ export function operationsHtml(): string {
         showNotice('Sync job queued for replay.');
         await Promise.all([loadJobs(),loadMetrics(),loadSyncConflicts()]);
         setTimeout(()=>{Promise.allSettled([loadJobs(),loadMetrics(),loadSyncConflicts()])},1200);
+        setTimeout(()=>{Promise.allSettled([loadJobs(),loadMetrics(),loadSyncConflicts()])},3000);
       }finally{
         hideProgressBar();
         if(el&&el.isConnected){el.disabled=false;el.textContent='Replay'}
@@ -1949,7 +1950,14 @@ export function operationsHtml(): string {
     Object.entries(bulkTables).forEach(([tbodyId,cfg])=>{
       document.getElementById(tbodyId).addEventListener('change',e=>{if(e.target.classList.contains('row-select'))updateBulkBar(tbodyId)});
       $(cfg.selectAll).onchange=()=>{document.querySelectorAll('#'+tbodyId+' .row-select').forEach(el=>el.checked=$(cfg.selectAll).checked);updateBulkBar(tbodyId)};
-      $(cfg.replayBtn).onclick=async()=>{const ids=selectedJobIds(tbodyId);if(!ids.length)return;await Promise.allSettled(ids.map(id=>api('/api/sync/jobs/'+id+'/replay',{method:'POST'})));await bulkRefresh()};
+      $(cfg.replayBtn).onclick=async()=>{
+        const ids=selectedJobIds(tbodyId);
+        if(!ids.length)return;
+        await Promise.allSettled(ids.map(id=>api('/api/sync/jobs/'+id+'/replay',{method:'POST'})));
+        await bulkRefresh();
+        setTimeout(()=>{bulkRefresh()},1200);
+        setTimeout(()=>{bulkRefresh()},3000);
+      };
       $(cfg.deleteBtn).onclick=async()=>{const ids=selectedJobIds(tbodyId);if(!ids.length)return;if(!confirm('Give up on '+ids.length+' job'+(ids.length===1?'':'s')+' permanently? '+(ids.length===1?'It':'They')+' will not be retried.'))return;await Promise.allSettled(ids.map(id=>api('/api/sync/jobs/'+id+'/dismiss',{method:'POST'})));await bulkRefresh()};
     });
     document.querySelectorAll('[data-activity-tab]').forEach(button=>button.onclick=()=>{document.querySelectorAll('[data-activity-tab]').forEach(item=>item.classList.toggle('active',item===button));document.querySelectorAll('.activity-panel').forEach(panel=>panel.classList.toggle('active',panel.id==='activity-'+button.dataset.activityTab))});
@@ -2036,7 +2044,8 @@ export function operationsHtml(): string {
         const winner=x.decision&&x.decision.winner;const source=x.source.meta.source;const other=source==='salesforce'?'hubspot':'salesforce';
         const diff=fields.slice(0,6).map(k=>'<div><b>'+esc(k)+'</b>: '+esc(SYSTEM_LABEL[source])+' '+esc(x.source.fields[k]??'—')+' · '+esc(SYSTEM_LABEL[other])+' '+esc(x.target.fields[k]??'—')+'</div>').join('')||'<span class="muted">No field differences recorded</span>';
         const actions=['salesforce','hubspot'].map(sys=>'<button class="secondary" data-action="resolveConflict" data-arg="'+esc(x.id)+':'+sys+'"'+(winner===sys&&x.resolutionSource==='manual'?' disabled':'')+'>Keep '+SYSTEM_LABEL[sys]+'</button>').join(' ');
-        return '<tr data-conflict="'+esc(x.id)+'"><td>'+esc(x.type)+'<br><span class="muted">'+esc(new Date(x.createdAt).toLocaleString())+'</span></td><td>'+esc(x.strategy)+(winner?' → '+esc(SYSTEM_LABEL[winner]||winner):'')+'</td><td>'+diff+'</td><td><span class="pill '+(x.resolutionSource==='manual'?'completed':'ambiguous')+'">'+(x.resolutionSource==='manual'?'resolved by operator':'automatic')+'</span></td><td>'+actions+'</td></tr>'}).join('')+'</tbody></table>':'<div class="empty">No conflicts recorded</div>'}
+        const conflictDate=x.resolvedAt||x.createdAt;
+        return '<tr data-conflict="'+esc(x.id)+'"><td>'+esc(x.type)+'<br><span class="muted">'+esc(new Date(conflictDate).toLocaleString())+'</span></td><td>'+esc(x.strategy)+(winner?' → '+esc(SYSTEM_LABEL[winner]||winner):'')+'</td><td>'+diff+'</td><td><span class="pill '+(x.resolutionSource==='manual'?'completed':'ambiguous')+'">'+(x.resolutionSource==='manual'?'resolved by operator':'automatic')+'</span></td><td>'+actions+'</td></tr>'}).join('')+'</tbody></table>':'<div class="empty">No conflicts recorded</div>'}
     async function resolveConflict(arg){const [id,winner]=String(arg).split(':');
       const r=await api('/api/conflicts/'+encodeURIComponent(id)+'/resolve',{method:'POST',body:JSON.stringify({winner})});
       showNotice('Kept '+SYSTEM_LABEL[winner]+' values for this '+r.type+'.');await loadConflictReview()}

@@ -23,6 +23,8 @@ interface JobRow {
   next_attempt_at: Date;
   last_error: string | null;
   created_at: Date;
+  updated_at?: Date | null;
+  completed_at?: Date | null;
   lease_token: string | null;
   deferred_reason: string | null;
 }
@@ -97,7 +99,8 @@ export class PostgresSyncEventStore implements SyncEventStore {
          WHERE e.id = selected.id
          RETURNING e.id, e.vendor_event_id, e.system, e.object_type, e.source_id,
                    e.change_type, e.occurred_at, e.status, e.attempts,
-                   e.next_attempt_at, e.last_error, e.created_at, e.lease_token, e.deferred_reason`,
+                   e.next_attempt_at, e.last_error, e.created_at, e.updated_at, e.completed_at,
+                   e.lease_token, e.deferred_reason`,
         [this.tenantId, limit, workerId],
       );
       return result.rows.map(toJob);
@@ -149,7 +152,7 @@ export class PostgresSyncEventStore implements SyncEventStore {
       await client.query(
         `UPDATE sync_events SET status = 'queued', attempts = 0, last_error = NULL,
                 next_attempt_at = now(), locked_at = NULL, locked_by = NULL, lease_token = NULL,
-                updated_at = now()
+                completed_at = NULL, created_at = now(), occurred_at = now(), updated_at = now()
          WHERE tenant_id = $1 AND id = $2`,
         [this.tenantId, id],
       );
@@ -174,7 +177,7 @@ export class PostgresSyncEventStore implements SyncEventStore {
       const result = await client.query<JobRow>(
         `SELECT id, vendor_event_id, system, object_type, source_id, change_type,
                 occurred_at, status, attempts, next_attempt_at, last_error, created_at,
-                lease_token, deferred_reason
+                updated_at, completed_at, lease_token, deferred_reason
          FROM sync_events WHERE tenant_id = $1 AND id = $2`,
         [this.tenantId, id],
       );
@@ -197,7 +200,7 @@ export class PostgresSyncEventStore implements SyncEventStore {
       const result = await client.query<JobRow>(
         `SELECT id, vendor_event_id, system, object_type, source_id, change_type,
                 occurred_at, status, attempts, next_attempt_at, last_error, created_at,
-                lease_token, deferred_reason
+                updated_at, completed_at, lease_token, deferred_reason
          FROM sync_events WHERE tenant_id = $1 ${statusClause}
          ORDER BY created_at DESC, id DESC LIMIT $2`,
         params,
@@ -261,6 +264,8 @@ export class PostgresSyncEventStore implements SyncEventStore {
         `UPDATE sync_events SET status = $3, last_error = $4,
                 next_attempt_at = coalesce($5, next_attempt_at),
                 completed_at = CASE WHEN $3 = 'completed' THEN now() ELSE completed_at END,
+                created_at = CASE WHEN $3 = 'completed' THEN now() ELSE created_at END,
+                occurred_at = CASE WHEN $3 = 'completed' THEN now() ELSE occurred_at END,
                 locked_at = NULL, locked_by = NULL, lease_token = NULL, updated_at = now()
          WHERE tenant_id = $1 AND id = $2
            AND ($6::text IS NULL OR (status = 'processing' AND lease_token = $6))`,
@@ -287,6 +292,8 @@ function toJob(row: JobRow): SyncJob {
     nextAttemptAt: row.next_attempt_at.toISOString(),
     lastError: row.last_error ?? undefined,
     createdAt: row.created_at.toISOString(),
+    updatedAt: row.updated_at ? row.updated_at.toISOString() : undefined,
+    completedAt: row.completed_at ? row.completed_at.toISOString() : undefined,
     leaseToken: row.lease_token ?? undefined,
     deferredReason: row.deferred_reason ?? undefined,
   };
