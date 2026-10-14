@@ -327,6 +327,7 @@ describe('operations dashboard', () => {
     expect(script).toBeTruthy();
     expect(() => new Function(script!)).not.toThrow();
     expect(html).toContain('Custom Event Tracking IDs');
+    expect(html).toContain('Guide: Creating Custom Events &amp; Custom Objects in HubSpot');
     expect(html).toContain('data-action="saveHsEvents"');
     expect(html).toContain('data-action="addHsEventRow"');
   });

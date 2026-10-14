@@ -671,7 +671,8 @@ export function operationsHtml(): string {
       const state=migrationState.mapping,menu=$('source-picker-menu');
       if(!state||!menu||!input)return;
       activeSourceInput=input;
-      const {fieldHeading,picklistHeading,fields,picklists}=buildSourcePickerGroups(state);
+      const targetNative=input.closest('tr')?.querySelector('.target-native')?.value?.trim()||'';
+      const {fieldHeading,picklistHeading,fields,picklists}=buildSourcePickerGroups(state,targetNative);
       const rawQuery=input.value.trim();
       const q=filterByQuery?rawQuery.toLowerCase():'';
       const matchedFields=q?fields.filter(item=>item.search.includes(q)):fields;
@@ -708,6 +709,56 @@ export function operationsHtml(): string {
     function transformHidden(cls,value){return '<input type="hidden" class="'+cls+'" value="'+esc(value||'identity')+'">'}
     function conflictStrategyLabel(strategy){return strategy==='source-of-truth'?'Source of truth':strategy==='last-write-wins'?'Last write wins':strategy==='field-merge'?'Field merge':strategy||'Last write wins'}
     function getObjectSot(type){return (type&&syncConfigState?.objects?.[type]?.sourceOfTruth)||syncConfigState?.sourceOfTruth||'salesforce'}
+    function isMandatoryField(canonical, type){
+      const c=String(canonical||'').toLowerCase();
+      const t=String(type||'').toLowerCase();
+      if(c==='recordid'||c==='id'||c==='salesforceid')return true;
+      if((t==='contact'||t==='contacts')&&c==='email')return true;
+      return false;
+    }
+    function ensureAutoMappedFields(state){
+      if(!state?.sourceMap||!state?.targetMap)return;
+      const t=String(state.type||'').toLowerCase();
+      const fromSf=state.from==='salesforce';
+      function addField(canonical, sfNative, hsNative){
+        const sNative=fromSf?sfNative:hsNative;
+        const tNative=fromSf?hsNative:sfNative;
+        if(!state.canonicals.includes(canonical)){
+          state.canonicals.unshift(canonical);
+        }
+        let sRule=state.sourceMap.rules.find(r=>r.canonical===canonical);
+        if(!sRule){
+          sRule={canonical,native:sNative};
+          state.sourceMap.rules.push(sRule);
+        }else if(!sRule.native){
+          sRule.native=sNative;
+        }
+        let tRule=state.targetMap.rules.find(r=>r.canonical===canonical);
+        if(!tRule){
+          tRule={canonical,native:tNative};
+          state.targetMap.rules.push(tRule);
+        }else if(!tRule.native){
+          tRule.native=tNative;
+        }
+      }
+      if(t==='company'||t==='account'||t==='contact'||t==='contacts'||t==='deal'||t==='deals'){
+        addField('recordId','Id','hs_object_id');
+      }
+      if(t==='company'||t==='account'){
+        addField('name','Name','name');
+        addField('domain','Website','domain');
+      }else if(t==='contact'||t==='contacts'){
+        addField('email','Email','email');
+        if(!state.canonicals.includes('name')&&!state.canonicals.includes('lastName')){
+          addField('name','Name','firstname');
+        }
+      }else if(t==='deal'||t==='deals'){
+        addField('amount','Amount','amount');
+        if(!state.canonicals.includes('association')&&!state.canonicals.includes('accountId')){
+          addField('association','AccountId','associatedcompanyid');
+        }
+      }
+    }
     async function loadFieldWorkspace(type){if(!type)return;const loadToken=++migrationState.fieldLoadToken;$('field-map-rows').innerHTML='<tr><td colspan="6" class="empty">Loading schemas and mappings…</td></tr>';$('field-map-notice').hidden=true;closeTransformLab();closeSourcePicker();
       if(!syncConfigState){try{syncConfigState=await api('/api/sync/settings')}catch{}}
       const row=migrationState.catalog.find(item=>item.canonicalType===type);if(!row)return;
@@ -718,6 +769,7 @@ export function operationsHtml(): string {
         if(loadToken!==migrationState.fieldLoadToken)return;
         const sourceByCanonical=new Map(sourceMap.rules.map(rule=>[rule.canonical,rule])),targetByCanonical=new Map(targetMap.rules.map(rule=>[rule.canonical,rule]));const canonicals=[...new Set([...sourceByCanonical.keys(),...targetByCanonical.keys()])];
         migrationState.mapping={type,from,to,sourceMeta,targetMeta,sourceMap,targetMap,canonicals,removed:[],dirty:false};
+        ensureAutoMappedFields(migrationState.mapping);
         renderFieldMappings();updateFieldObjectPosition();renderFieldObjectQueue()}catch(e){if(loadToken===migrationState.fieldLoadToken)$('field-map-rows').innerHTML='<tr><td colspan="6" class="empty">'+esc(e.message)+'</td></tr>'}}
     let fieldSortCol=null,fieldSortAsc=true;
     function updateFieldSortHeaders(){
@@ -805,8 +857,13 @@ export function operationsHtml(): string {
         const transforms=[s.toCanonical||'identity',s.fromCanonical||'identity',t.toCanonical||'identity',t.fromCanonical||'identity'];
         const currentSot=s.sourceOfTruth||t.sourceOfTruth||'salesforce';
         const shownSource=displaySourceNative(s.native||'',state.sourceMeta);
-        return '<tr data-canonical="'+esc(canonical)+'"><td class="mapping-action"><button class="mapping-remove" data-remove-canonical="'+esc(canonical)+'" aria-label="Remove '+esc(canonical)+' mapping" title="Remove this mapping">Remove</button></td><td><input class="source-native" autocomplete="off" value="'+esc(shownSource)+'" placeholder="Select field, picklist value, or enter text…"></td><td><input class="canonical" value="'+esc(canonical)+'"></td><td>'+transformHidden('source-to',transforms[0])+transformHidden('source-from',transforms[1])+transformHidden('target-to',transforms[2])+transformHidden('target-from',transforms[3])+'<button class="mapping-transform" data-transform-canonical="'+esc(canonical)+'">'+esc(transformSummary([transforms[0],transforms[3]]))+'<small>Configure</small></button></td><td><input class="target-native" list="target-native-datalist" value="'+esc(t.native||'')+'" placeholder="— Not mapped —"></td><td><select class="field-sot" data-canonical="'+esc(canonical)+'"><option value="salesforce" '+(currentSot==='salesforce'?'selected':'')+'>Salesforce</option><option value="hubspot" '+(currentSot==='hubspot'?'selected':'')+'>HubSpot</option><option value="last-write-wins" '+(currentSot==='last-write-wins'?'selected':'')+'>Last write wins</option></select></td></tr>'}).join('')||'<tr><td colspan="6" class="empty">No mappings remain. Save to persist this empty mapping set, or undo the removal.</td></tr>';
-      refreshMappingCoverage();updateFieldSortHeaders();$('field-map-notice').hidden=!state.removed.length;$('field-map-notice-text').textContent=state.removed.length+' mapping'+(state.removed.length===1?'':'s')+' marked for removal. Save mappings to apply.';document.querySelectorAll('[data-remove-canonical]').forEach(button=>button.onclick=()=>{state.removed.push(button.dataset.removeCanonical);state.dirty=true;closeTransformLab();closeSourcePicker();renderFieldMappings()});document.querySelectorAll('[data-transform-canonical]').forEach(button=>button.onclick=()=>openTransformLab(button));document.querySelectorAll('#field-map-rows tr[data-canonical] input, #field-map-rows tr[data-canonical] select.field-sot').forEach(control=>{control.oninput=control.onchange=()=>{state.dirty=true;refreshMappingCoverage();applyMappingFilters();setDraftStatus('Mapping changes not saved');if(control.classList.contains('source-native'))openSourcePicker(control,true)}});document.querySelectorAll('#field-map-rows tr[data-canonical] .source-native').forEach(srcInput=>{srcInput.onfocus=()=>openSourcePicker(srcInput,false);srcInput.onclick=()=>openSourcePicker(srcInput,false);srcInput.onblur=()=>setTimeout(()=>{if(activeSourceInput===srcInput)closeSourcePicker()},150);srcInput.onkeydown=e=>{if(e.key==='Escape')closeSourcePicker()}});applyMappingFilters()}
+        const mandatory=isMandatoryField(canonical,state.type);
+        const actionBtn=mandatory
+          ?'<button class="mapping-remove" disabled title="Mandatory field (cannot be removed)" style="opacity:0.4;cursor:not-allowed">Locked</button>'
+          :'<button class="mapping-remove" data-remove-canonical="'+esc(canonical)+'" aria-label="Remove '+esc(canonical)+' mapping" title="Remove this mapping">Remove</button>';
+        return '<tr data-canonical="'+esc(canonical)+'"><td class="mapping-action">'+actionBtn+'</td><td><input class="target-native" list="target-native-datalist" value="'+esc(t.native||'')+'" placeholder="— Not mapped —"></td><td><input class="canonical" value="'+esc(canonical)+'" '+(mandatory?'readonly style="opacity:0.85"':'')+'></td><td>'+transformHidden('source-to',transforms[0])+transformHidden('source-from',transforms[1])+transformHidden('target-to',transforms[2])+transformHidden('target-from',transforms[3])+'<button class="mapping-transform" data-transform-canonical="'+esc(canonical)+'">'+esc(transformSummary([transforms[0],transforms[3]]))+'<small>Configure</small></button></td><td><input class="source-native" autocomplete="off" value="'+esc(shownSource)+'" placeholder="Select field, picklist value, or enter text…"></td><td><select class="field-sot" data-canonical="'+esc(canonical)+'"><option value="salesforce" '+(currentSot==='salesforce'?'selected':'')+'>Salesforce</option><option value="hubspot" '+(currentSot==='hubspot'?'selected':'')+'>HubSpot</option><option value="last-write-wins" '+(currentSot==='last-write-wins'?'selected':'')+'>Last write wins</option></select></td></tr>';
+      }).join('')||'<tr><td colspan="6" class="empty">No mappings remain. Save to persist this empty mapping set, or undo the removal.</td></tr>';
+      refreshMappingCoverage();updateFieldSortHeaders();$('field-map-notice').hidden=!state.removed.length;$('field-map-notice-text').textContent=state.removed.length+' mapping'+(state.removed.length===1?'':'s')+' marked for removal. Save mappings to apply.';document.querySelectorAll('[data-remove-canonical]').forEach(button=>button.onclick=()=>{state.removed.push(button.dataset.removeCanonical);state.dirty=true;closeTransformLab();closeSourcePicker();renderFieldMappings()});document.querySelectorAll('[data-transform-canonical]').forEach(button=>button.onclick=()=>openTransformLab(button));document.querySelectorAll('#field-map-rows tr[data-canonical] input, #field-map-rows tr[data-canonical] select.field-sot').forEach(control=>{control.oninput=control.onchange=()=>{state.dirty=true;refreshMappingCoverage();applyMappingFilters();setDraftStatus('Mapping changes not saved');if(control.classList.contains('source-native'))openSourcePicker(control,true);if(control.classList.contains('target-native')&&activeSourceInput&&activeSourceInput.closest('tr')===control.closest('tr'))openSourcePicker(activeSourceInput,false)}});document.querySelectorAll('#field-map-rows tr[data-canonical] .source-native').forEach(srcInput=>{srcInput.onfocus=()=>openSourcePicker(srcInput,false);srcInput.onclick=()=>openSourcePicker(srcInput,false);srcInput.onblur=()=>setTimeout(()=>{if(activeSourceInput===srcInput)closeSourcePicker()},150);srcInput.onkeydown=e=>{if(e.key==='Escape')closeSourcePicker()}});applyMappingFilters()}
     function refreshMappingCoverage(){const state=migrationState.mapping;if(!state)return;const rows=[...$('field-map-rows').querySelectorAll('tr[data-canonical]')],ready=rows.filter(tr=>tr.querySelector('.source-native').value&&tr.querySelector('.target-native').value).length,total=rows.length,pct=total?Math.round(ready/total*100):0;$('coverage-number').textContent=pct+'%';$('coverage-list').innerHTML='<div><span>Mapped</span><b>'+ready+'</b></div><div><span>Needs review</span><b>'+(total-ready)+'</b></div><div><span>Removed</span><b>'+state.removed.length+'</b></div><div><span>Source fields</span><b>'+state.sourceMeta.fields.length+'</b></div><div><span>Target fields</span><b>'+state.targetMeta.fields.length+'</b></div>';$('summary-coverage').textContent=pct+'%'}
     function applyMappingFilters(){const query=$('field-search').value.trim().toLowerCase(),filter=$('field-filter').value;document.querySelectorAll('#field-map-rows tr[data-canonical]').forEach(tr=>{const source=tr.querySelector('.source-native').value||'',target=tr.querySelector('.target-native').value||'',canonical=tr.querySelector('.canonical').value,sot=tr.querySelector('.field-sot')?.value||'',text=(source+' '+target+' '+canonical+' '+sot).toLowerCase(),ready=tr.querySelector('.source-native').value&&tr.querySelector('.target-native').value,transformed=['source-to','target-from'].some(cls=>tr.querySelector('.'+cls).value!=='identity');tr.hidden=Boolean((query&&!text.includes(query))||(filter==='review'&&ready)||(filter==='transformed'&&!transformed))})}
     $('field-search').oninput=applyMappingFilters;$('field-filter').onchange=applyMappingFilters;
@@ -829,7 +886,7 @@ export function operationsHtml(): string {
     $('reset-transforms').onclick=()=>{transformSelectIds.forEach(id=>$(id).value='identity');updateTransformPreview()};
     $('apply-transforms').onclick=()=>{const row=migrationState.transformRow;if(!row)return;for(const [cls,id] of transformFieldPairs)row.querySelector('.'+cls).value=$(id).value;row.querySelector('.mapping-transform').innerHTML=esc(transformSummary(transformFieldPairs.map(([,id])=>$(id).value)))+'<small>Configure</small>';migrationState.mapping.dirty=true;setDraftStatus('Mapping changes not saved');applyMappingFilters();closeTransformLab()};
     $('undo-field-removal').onclick=()=>{const state=migrationState.mapping;if(!state?.removed.length)return;state.removed.pop();renderFieldMappings()};
-    $('remove-all-fields').onclick=()=>{const state=migrationState.mapping;if(!state)return;const remaining=state.canonicals.filter(c=>!state.removed.includes(c));if(!remaining.length)return;state.removed.push(...remaining);state.dirty=true;closeTransformLab();renderFieldMappings();setDraftStatus('Mapping changes not saved')};
+    $('remove-all-fields').onclick=()=>{const state=migrationState.mapping;if(!state)return;const remaining=state.canonicals.filter(c=>!state.removed.includes(c)&&!isMandatoryField(c,state.type));if(!remaining.length)return;state.removed.push(...remaining);state.dirty=true;closeTransformLab();renderFieldMappings();setDraftStatus('Mapping changes not saved')};
     $('add-field-mapping').onclick=()=>{const state=migrationState.mapping;if(!state)return;let n=state.canonicals.length+1,name='new_field_'+n;while(state.canonicals.includes(name)){n+=1;name='new_field_'+n}
       state.canonicals.push(name);state.dirty=true;$('field-search').value='';$('field-filter').value='all';renderFieldMappings();setDraftStatus('Mapping changes not saved');
       const input=document.querySelector('#field-map-rows tr[data-canonical="'+CSS.escape(name)+'"] .canonical');if(input){input.focus();input.select()}};
@@ -847,14 +904,23 @@ export function operationsHtml(): string {
       }catch(e){button.textContent='Save mappings';throw e}finally{button.disabled=false;hideProgressBar()}}
     $('save-field-map').onclick=()=>saveFieldMappings().catch(e=>setDraftStatus(e.message,'error'));
 
-    function blockedNaturalKeyField(type,field){const key=field.replace(/[^a-z0-9]/gi,'').toLowerCase();if(key.includes('external')&&key.endsWith('id'))return false;return key==='id'||['type','industry','website','annualrevenue','revenue'].includes(key)||/(modified|activity|created|updated|timestamp|description|notes?|ownerid|recordtype|status|stage|pipeline|amount|employee|count|isdeleted)/.test(key)}
-    function naturalKeyCandidates(type,sourceMeta,targetMeta,sourceRules,targetRules){const common=[...sourceRules.keys()].filter(field=>targetRules.has(field));return common.map(field=>{const source=sourceMeta.fields.find(item=>item.name===sourceRules.get(field)?.native),target=targetMeta.fields.find(item=>item.name===targetRules.get(field)?.native);return {field,source,target,risky:/^(name|phone|title|companyName)$/i.test(field)}}).filter(item=>item.source&&item.target&&!item.source.calculated&&!item.target.calculated&&!blockedNaturalKeyField(type,item.field))}
-    function naturalKeyPresets(type,candidates){const available=new Set(candidates.map(item=>item.field)),external=candidates.find(item=>/external.*id|externalid/i.test(item.field))?.field,definitions=[];if(external)definitions.push({fields:[external],label:'Shared external ID',description:'Best when both CRMs store the same immutable business identifier.',recommended:true});
-      if(available.has('email'))definitions.push({fields:['email'],label:'Email address',description:'Matches records with the same normalized email address.',recommended:!external});
-      else if(available.has('domain'))definitions.push({fields:['domain'],label:'Domain',description:'Matches records using their normalized website domain.',recommended:!external});
-      else if(available.has('website'))definitions.push({fields:['website'],label:'Website',description:'Matches records using their normalized website value.',recommended:!external});
+    function blockedNaturalKeyField(type,field){const key=field.replace(/[^a-z0-9]/gi,'').toLowerCase();if(key==='recordid'||key==='id'||key==='salesforceid'||(key.includes('external')&&key.endsWith('id')))return false;return ['type','industry','website','annualrevenue','revenue'].includes(key)||/(modified|activity|created|updated|timestamp|description|notes?|ownerid|recordtype|status|stage|pipeline|amount|employee|count|isdeleted)/.test(key)}
+    function naturalKeyCandidates(type,sourceMeta,targetMeta,sourceRules,targetRules){const common=[...sourceRules.keys()].filter(field=>targetRules.has(field));return common.map(field=>{const sNative=sourceRules.get(field)?.native||'';const tNative=targetRules.get(field)?.native||'';const source=sourceMeta.fields.find(item=>item.name===sNative||item.name.toLowerCase()===sNative.toLowerCase());const target=targetMeta.fields.find(item=>item.name===tNative||item.name.toLowerCase()===tNative.toLowerCase());return {field,source,target,risky:/^(name|phone|title|companyName)$/i.test(field)}}).filter(item=>{const isRecId=/^(record_?id|salesforce_?id|id)$/i.test(item.field);if(isRecId)return true;return item.source&&item.target&&!item.source.calculated&&!item.target.calculated&&!blockedNaturalKeyField(type,item.field)})}
+    function naturalKeyPresets(type,candidates){const available=new Set(candidates.map(item=>item.field)),external=candidates.find(item=>/external.*id|externalid/i.test(item.field))?.field,recId=candidates.find(item=>/^(record_?id|salesforce_?id|id)$/i.test(item.field))?.field,definitions=[];
+      const t=String(type||'').toLowerCase();
+      if(t==='contact'||t==='contacts'){
+        if(available.has('email')&&recId){definitions.push({fields:['email',recId],label:'Email + Salesforce Record ID',description:'Unique identification using Email and Salesforce Record ID.',recommended:true})}
+        if(recId&&!available.has('email')){definitions.push({fields:[recId],label:'Salesforce Record ID',description:'Unique identification using Salesforce Record ID.',recommended:true})}
+        if(available.has('email')&&!recId){definitions.push({fields:['email'],label:'Email address',description:'Matches records with the same normalized email address.',recommended:true})}
+      }else if(t==='account'||t==='company'||t==='deal'||t==='deals'){
+        if(recId){definitions.push({fields:[recId],label:'Salesforce Record ID',description:'Unique identification using Salesforce Record ID.',recommended:true})}
+      }
+      if(external&&!definitions.some(d=>d.fields.includes(external)))definitions.push({fields:[external],label:'Shared external ID',description:'Best when both CRMs store the same immutable business identifier.',recommended:definitions.length===0});
+      if(available.has('email')&&!definitions.some(d=>d.fields.includes('email')))definitions.push({fields:['email'],label:'Email address',description:'Matches records with the same normalized email address.',recommended:definitions.length===0});
+      else if(available.has('domain')&&!definitions.some(d=>d.fields.includes('domain')))definitions.push({fields:['domain'],label:'Domain',description:'Matches records using their normalized website domain.',recommended:definitions.length===0});
+      else if(available.has('website')&&!definitions.some(d=>d.fields.includes('website')))definitions.push({fields:['website'],label:'Website',description:'Matches records using their normalized website value.',recommended:definitions.length===0});
       const nameField=['name','dealname'].find(field=>available.has(field)),dateField=[...available].find(field=>/date$/i.test(field));
-      if(!definitions.length&&nameField&&dateField)definitions.push({fields:[nameField,dateField],label:nameField+' + '+dateField,description:'Fallback when no shared external ID or unique field exists. Review duplicates carefully.',recommended:!external,risky:true});
+      if(!definitions.length&&nameField&&dateField)definitions.push({fields:[nameField,dateField],label:nameField+' + '+dateField,description:'Fallback when no shared external ID or unique field exists. Review duplicates carefully.',recommended:true,risky:true});
       return definitions}
     function sameFields(a,b){return a.length===b.length&&a.every((field,index)=>field===b[index])}
     function renderNaturalKeyOptions(type,keyData,candidates){const presets=naturalKeyPresets(type,candidates),current=keyData.naturalKeyFields,matched=presets.findIndex(item=>sameFields(item.fields,current)),advancedValid=current.length&&current.every(field=>candidates.some(item=>item.field===field));$('natural-key-options').innerHTML=presets.length?presets.map((preset,index)=>'<label class="identity-option"><input type="radio" name="natural-key-mode" value="preset-'+index+'" '+(index===(matched>=0?matched:advancedValid?-1:0)?'checked':'')+'><span><b>'+esc(preset.label)+(preset.recommended?'<em class="recommended-badge">Recommended</em>':'')+'</b><small>'+esc(preset.description)+'</small></span></label>').join(''):'<div class="empty">No recommended identity is mapped in both CRMs.</div>';$('natural-key-fields').innerHTML=candidates.length?candidates.map(item=>'<label class="advanced-key-field"><input type="checkbox" data-natural-key-field="'+esc(item.field)+'" '+(advancedValid&&current.includes(item.field)?'checked':'')+'>'+esc(item.field)+(item.risky?' · mutable':'')+'</label>').join(''):'<div class="empty">Map a stable field in both CRMs first.</div>';const advancedRadio=document.querySelector('input[name="natural-key-mode"][value="advanced"]');advancedRadio.checked=matched<0&&advancedValid;$('natural-key-advanced').open=advancedRadio.checked||matched<0&&current.length>0;migrationState.valueContext.keyPresets=presets;migrationState.valueContext.keyCandidates=candidates;migrationState.valueContext.previousKeyUnsafe=Boolean(current.length&&matched<0&&!advancedValid);document.querySelectorAll('input[name="natural-key-mode"],[data-natural-key-field]').forEach(input=>input.onchange=()=>{if(input.dataset.naturalKeyField)advancedRadio.checked=true;updateNaturalKeyChoice()});updateNaturalKeyChoice()}

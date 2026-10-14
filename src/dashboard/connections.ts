@@ -247,6 +247,17 @@ ${dashboardHeader('connections')}
               '<span>Custom Event Tracking IDs (Timeline Activity)</span>'+
             '</summary>'+
             '<div style="padding:10px 0 4px;">'+
+              '<details class="guide" style="margin-bottom:12px;">'+
+                '<summary style="cursor:pointer;font-size:12px;font-weight:600;color:var(--text);padding:8px 0;">Guide: Creating Custom Events &amp; Custom Objects in HubSpot</summary>'+
+                '<ol class="steps" style="padding-bottom:8px;">'+
+                  '<li>In HubSpot, navigate to <b>Settings</b> (gear icon) → <b>Data Management</b> → <b>Custom Events</b>.</li>'+
+                  '<li>Click <b>Create custom event</b> and select the CRM <b>Object</b> (e.g. Contact, Company, Deal, Ticket, or a Custom Object).</li>'+
+                  '<li class="tip">To create a new custom object first, go to <b>Settings</b> → <b>Data Management</b> → <b>Objects</b> → <b>Custom Objects</b>. Once created, it will automatically show in the dropdown here.</li>'+
+                  '<li>Enter an event name (e.g. <code>Contact CRM Sync</code>) and finish creating the event.</li>'+
+                  '<li>Copy the generated <b>Tracking ID</b> (starts with <code>pe...</code>) from the event details.</li>'+
+                  '<li>Select the object in the dropdown below, paste your Tracking ID, and click <b>Save Event IDs</b>.</li>'+
+                '</ol>'+
+              '</details>'+
               '<p style="font-size:12px;color:var(--text-2);margin:0 0 12px;line-height:1.45;">'+
                 'Automatically create an activity timeline event on the HubSpot record with timestamp and sync details whenever a record syncs. Enter your Event Tracking IDs below:'+
               '</p>'+
