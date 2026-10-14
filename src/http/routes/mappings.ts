@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { requireRole } from '../../security/access.js';
 import type { CanonicalType, SystemId } from '../../core/types.js';
 import { isAllowedNaturalKeyField } from '../../core/idMap.js';
+import { isLiteralNative } from '../../core/mapping.js';
 import { isSystem, type RouteContext } from '../context.js';
 
 /** Mapping Studio: field/value/object mappings, native-object re-pointing, and schema/preflight. */
@@ -141,8 +142,8 @@ export function mappingRoutes(ctx: RouteContext): Router {
       Promise.resolve(app.mappingStore.get('salesforce', type)),
       Promise.resolve(app.mappingStore.get('hubspot', type)),
     ]);
-    const salesforceFields = new Set(salesforceRules.map((rule) => rule.canonical));
-    const hubspotFields = new Set(hubspotRules.map((rule) => rule.canonical));
+    const salesforceFields = new Set(salesforceRules.filter((rule) => !isLiteralNative(rule.native)).map((rule) => rule.canonical));
+    const hubspotFields = new Set(hubspotRules.filter((rule) => !isLiteralNative(rule.native)).map((rule) => rule.canonical));
     const invalid = normalizedFields.find((field) =>
       !salesforceFields.has(field) ||
       !hubspotFields.has(field) ||

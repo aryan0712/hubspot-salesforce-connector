@@ -286,6 +286,12 @@ export async function createApp(
     // only a source for that object.
     syncWriteScope: (type) =>
       syncConfigStore.get().objects[type]?.direction === 'bidirectional' ? 'bidirectional' : 'destination-only',
+    hubspotCustomEventId: (type: CanonicalType) => {
+      const events = syncConfigStore.get().hubspotCustomEvents;
+      if (!events) return undefined;
+      const lower = type.toLowerCase();
+      return events[type] || events[lower] || (lower === 'ticket' ? events.ticket_sf : undefined) || (lower === 'ticket_sf' ? events.ticket : undefined);
+    },
   });
   const associationStore =
     mock || !db || !tenantId

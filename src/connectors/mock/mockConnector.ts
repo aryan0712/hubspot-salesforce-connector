@@ -277,6 +277,23 @@ export class MockConnector implements CRMConnector {
   /** Test helper: every exact-payload write this connector received, in order. */
   readonly writes: { type: CanonicalType; targetId?: string; payload: Record<string, FieldValue> }[] = [];
 
+  /** Test helper: every custom/timeline event sent to this connector. */
+  readonly customEventsSent: Array<{
+    eventName: string;
+    objectId?: string;
+    occurredAt?: string;
+    properties?: Record<string, unknown>;
+  }> = [];
+
+  async sendCustomEvent(event: {
+    eventName: string;
+    objectId?: string;
+    occurredAt?: string;
+    properties?: Record<string, unknown>;
+  }): Promise<void> {
+    this.customEventsSent.push({ ...event });
+  }
+
   private async writeNative(
     type: CanonicalType,
     native: Record<string, FieldValue>,

@@ -224,6 +224,8 @@ export class Reconciler {
       locks?: IdentityLock;
       /** How long a created record may be invisible to vendor search (recovery lookups). */
       searchVisibilityMs?: number;
+      /** Resolves a HubSpot Custom Event tracking ID for an object type, to log activity cards. */
+      hubspotCustomEventId?: (type: CanonicalType) => string | undefined;
     } = {},
   ) {}
 
@@ -926,6 +928,29 @@ export class Reconciler {
       kind: 'sync',
       message: `${from} → ${to}: ${source.type} ${operation ? `${operation}d` : 'linked'}`,
     });
+
+    // Custom timeline activity event: emit to HubSpot when configured
+    const hsTargetId = link.ids.hubspot ?? (to === 'hubspot' ? targetId : undefined);
+    const hsEventId = this.opts.hubspotCustomEventId?.(source.type);
+    const hsWrite = plan.writes?.find((w) => w.system === 'hubspot');
+    if (hsTargetId && hsEventId && hsWrite && this.connectors.hubspot?.sendCustomEvent) {
+      const op = hsWrite.operation === 'create' ? 'Created' : 'Updated';
+      const properties: Record<string, unknown> = {
+        sync_status: 'Success',
+        operation: op,
+        source_system: from,
+        source_id: source.meta.sourceId,
+      };
+      this.connectors.hubspot.sendCustomEvent({
+        eventName: hsEventId,
+        objectId: hsTargetId,
+        occurredAt: new Date().toISOString(),
+        properties,
+      }).catch((err) => {
+        logger.warn({ err, canonicalId: link.canonicalId, hsEventId }, 'could not emit HubSpot custom event');
+      });
+    }
+
     return applied;
   }
 

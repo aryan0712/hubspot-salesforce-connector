@@ -321,6 +321,16 @@ describe('operations dashboard', () => {
     expect(html).not.toContain('id="feed"');
   });
 
+  it('ships syntactically valid inline JavaScript for connections including custom events handlers', () => {
+    const html = connectionsHtml();
+    const script = html.match(/<script>([\s\S]*)<\/script>/)?.[1];
+    expect(script).toBeTruthy();
+    expect(() => new Function(script!)).not.toThrow();
+    expect(html).toContain('Custom Event Tracking IDs');
+    expect(html).toContain('data-action="saveHsEvents"');
+    expect(html).toContain('data-action="addHsEventRow"');
+  });
+
   it('gives live sync a dedicated operational home', () => {
     const html = operationsHtml();
     expect(html).toContain('id="view-sync"');

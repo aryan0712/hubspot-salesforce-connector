@@ -66,4 +66,38 @@ describe('field mapping', () => {
     expect(config.nativeFields('hubspot', 'deal')).toContain('dealname');
     expect(config.nativeFields('salesforce', 'deal')).toContain('StageName');
   });
+
+  it('supports literal text and picklist values as source rules without querying or writing them as native field names', () => {
+    const customConfig = createDefaultConfigContext('literal-test');
+    customConfig.configureFieldRules('salesforce', 'contact', [
+      ...customConfig.fieldRules('salesforce', 'contact'),
+      { canonical: 'leadSource', native: 'literal:Warm' },
+      { canonical: 'campaignTag', native: '"2026 Website"' },
+    ]);
+    customConfig.configureFieldRules('hubspot', 'contact', [
+      ...customConfig.fieldRules('hubspot', 'contact'),
+      { canonical: 'leadSource', native: 'hs_lead_status' },
+      { canonical: 'campaignTag', native: 'campaign_tag' },
+    ]);
+
+    expect(customConfig.nativeFields('salesforce', 'contact')).not.toContain('literal:Warm');
+    expect(customConfig.nativeFields('salesforce', 'contact')).not.toContain('"2026 Website"');
+    expect(customConfig.nativeField('salesforce', 'contact', 'leadSource')).toBeUndefined();
+
+    const canonical = customConfig.toCanonicalFields('salesforce', 'contact', {
+      FirstName: 'Ada',
+      Email: 'ada@analytical.co',
+    });
+    expect(canonical.leadSource).toBe('Warm');
+    expect(canonical.campaignTag).toBe('2026 Website');
+
+    const hsPayload = customConfig.fromCanonicalFields('hubspot', 'contact', canonical);
+    expect(hsPayload.hs_lead_status).toBe('Warm');
+    expect(hsPayload.campaign_tag).toBe('2026 Website');
+
+    const sfPayload = customConfig.fromCanonicalFields('salesforce', 'contact', canonical);
+    expect(sfPayload).not.toHaveProperty('literal:Warm');
+    expect(sfPayload).not.toHaveProperty('"2026 Website"');
+  });
 });
+

@@ -284,4 +284,28 @@ describe('Org -> Object -> Field level conflict resolution hierarchy', () => {
     expect(finalSf!.fields.phone).toBe('+1-SF-PHONE');
     expect(finalHs!.fields.phone).toBe('+1-SF-PHONE');
   });
+
+  it('emits a custom event when a record is synced to HubSpot', async () => {
+    const config = createDefaultConfigContext('reconciler-events-test');
+    const sf = new MockConnector('salesforce', config);
+    const hs = new MockConnector('hubspot', config);
+    const connectors: Record<SystemId, CRMConnector> = { salesforce: sf, hubspot: hs };
+    const idMap = new FileIdMapStore(path.join(os.tmpdir(), `idmap-events-${crypto.randomUUID()}.json`));
+    await idMap.init();
+
+    const reconciler = new Reconciler(connectors, idMap, config, {
+      hubspotCustomEventId: (type) => type === 'contact' ? 'pe246451036_contact_crm_sync' : undefined,
+    });
+
+    const sfId = sf.seed('contact', ada);
+    const sfRecord = (await sf.read('contact', sfId))!;
+    await reconciler.reconcile(sfRecord);
+
+    expect(hs.customEventsSent).toHaveLength(1);
+    expect(hs.customEventsSent[0]!.eventName).toBe('pe246451036_contact_crm_sync');
+    expect(hs.customEventsSent[0]!.properties?.operation).toBe('Created');
+    expect(hs.customEventsSent[0]!.properties?.sync_status).toBe('Success');
+    expect(hs.customEventsSent[0]!.properties?.source_id).toBe(sfId);
+  });
 });
+

@@ -8,6 +8,7 @@ import type {
 } from './types.js';
 import {
   applyFieldRules,
+  isLiteralNative,
   readFieldRules,
   translateFromCanonical,
   translateToCanonical,
@@ -229,6 +230,7 @@ export class ConfigContext {
     const seen = new Set<string>();
     const out: string[] = [];
     for (const rule of this.snapshot.fieldRules[system][type] ?? []) {
+      if (isLiteralNative(rule.native)) continue;
       const key = rule.native.toLowerCase();
       if (seen.has(key)) continue;
       seen.add(key);
@@ -238,7 +240,8 @@ export class ConfigContext {
   }
 
   nativeField(system: SystemId, type: CanonicalType, canonical: string): string | undefined {
-    return (this.snapshot.fieldRules[system][type] ?? []).find((rule) => rule.canonical === canonical)?.native;
+    const native = (this.snapshot.fieldRules[system][type] ?? []).find((rule) => rule.canonical === canonical)?.native;
+    return native && !isLiteralNative(native) ? native : undefined;
   }
 
   valueMappings(type?: CanonicalType, field?: string): ValueMapping[] {

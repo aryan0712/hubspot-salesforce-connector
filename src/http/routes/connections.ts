@@ -37,6 +37,38 @@ export function connectionRoutes(ctx: RouteContext): Router {
     res.json({ ok: true });
   });
 
+  // ---------------- HubSpot Custom Events (Timeline Activity) ----------------
+  router.get('/api/connections/hubspot/custom-events', async (_req, res) => {
+    const syncConfig = app.syncConfig.get();
+    res.json({ events: syncConfig.hubspotCustomEvents ?? {} });
+  });
+
+  router.post('/api/connections/hubspot/custom-events', requireRole('admin'), async (req, res) => {
+    const rawEvents = req.body?.events;
+    if (!rawEvents || typeof rawEvents !== 'object' || Array.isArray(rawEvents)) {
+      return res.status(400).json({ error: 'events object required' });
+    }
+    const events: Record<string, string> = {};
+    for (const [key, value] of Object.entries(rawEvents as Record<string, unknown>)) {
+      const k = String(key).trim().toLowerCase();
+      const v = String(value ?? '').trim();
+      if (k) events[k] = v;
+    }
+    const current = app.syncConfig.get();
+    const updated = await app.syncConfig.update({
+      ...current,
+      hubspotCustomEvents: events,
+    });
+    await app.operations?.recordAudit({
+      actorId: res.locals.auth?.actorId,
+      action: 'connections.hubspot_custom_events.updated',
+      resourceType: 'sync_config',
+      resourceId: 'hubspot',
+      detail: { count: Object.keys(events).length },
+    });
+    res.json({ ok: true, events: updated.hubspotCustomEvents ?? {} });
+  });
+
   // ---------------- App credentials (entered from the browser) ----------------
   // Never returns secrets — only the client id and whether a secret is stored.
   router.get('/api/settings', async (_req, res) => {

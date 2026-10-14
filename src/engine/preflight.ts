@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import type { CRMConnector } from '../core/connector.js';
 import type { ConfigContext } from '../core/configContext.js';
 import { isWeakNaturalKey } from '../core/idMap.js';
-import type { FieldRule } from '../core/mapping.js';
+import { isLiteralNative, type FieldRule } from '../core/mapping.js';
 import type { CanonicalRecord, CanonicalType, SchemaField, SystemId } from '../core/types.js';
 
 export type PreflightSeverity = 'error' | 'warning' | 'info';
@@ -49,6 +49,7 @@ export class PreflightService {
     const issues: PreflightIssue[] = [];
 
     for (const rule of sourceMap) {
+      if (isLiteralNative(rule.native)) continue;
       const root = rule.native.split('.')[0]!;
       if (!sourceByName.has(rule.native) && !sourceByName.has(root)) {
         issues.push({
@@ -85,7 +86,7 @@ export class PreflightService {
         });
       }
       const sourceRule = sourceMap.find((item) => item.canonical === rule.canonical);
-      const source = sourceRule
+      const source = sourceRule && !isLiteralNative(sourceRule.native)
         ? sourceByName.get(sourceRule.native) ?? sourceByName.get(sourceRule.native.split('.')[0]!)
         : undefined;
       // A transform configured on only one side (or one direction) still gets flagged, just

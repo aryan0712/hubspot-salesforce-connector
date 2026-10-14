@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import type { FieldOwner } from '../core/conflict.js';
 import type { CanonicalRecord, ChangeEvent, FieldValue, SystemId } from '../core/types.js';
 
 export interface ConflictRecord {
@@ -12,7 +13,7 @@ export interface ConflictRecord {
   decision?: {
     winner: SystemId | 'merged';
     keptDestinationFields: string[];
-    fieldOwners?: Record<string, SystemId>;
+    fieldOwners?: Record<string, FieldOwner>;
   };
 }
 

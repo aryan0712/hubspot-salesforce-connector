@@ -78,6 +78,11 @@ export interface SyncConfig {
   sourceOfTruth: SystemId;
   objects: Record<CanonicalType, SyncObjectConfig>;
   polling: Record<CanonicalType, PollingConfig>;
+  /**
+   * HubSpot Custom Event tracking IDs keyed by canonical type (e.g. contact, company, deal, ticket).
+   * When configured, syncing a record to HubSpot emits an activity timeline event on that record.
+   */
+  hubspotCustomEvents?: Record<string, string>;
 }
 
 export const MIN_POLLING_INTERVAL_MINUTES = 1;
@@ -113,6 +118,13 @@ export function defaultSyncConfig(
     polling: Object.fromEntries(
       objects.map((type) => [type, { enabled: false, intervalMinutes: 30 } as PollingConfig]),
     ),
+    hubspotCustomEvents: {
+      contact: 'pe246451036_contact_crm_sync',
+      company: 'pe246451036_company_crm_sync',
+      deal: 'pe246451036_deal_crm_sync',
+      ticket: 'pe246451036_ticket_crm_sync',
+      ticket_sf: 'pe246451036_ticket_crm_sync',
+    },
   };
 }
 

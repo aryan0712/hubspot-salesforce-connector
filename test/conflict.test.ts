@@ -59,10 +59,10 @@ describe('conflict.resolve', () => {
     const r = resolve(sfRecord, hsRecord, {
       strategy: 'source-of-truth',
       sourceOfTruth: 'hubspot',
-      fieldOwners: { phone: 'salesforce' },
+      fieldOwners: { phone: 'salesforce', email: 'last-write-wins' },
     });
     expect(r.winner.fields.firstName).toBe('HS Name');
-    expect(r.winner.fields.email).toBe('hs@example.com');
+    expect(r.winner.fields.email).toBe('sf@example.com');
     expect(r.winner.fields.phone).toBe('+1-sf-phone');
   });
 });

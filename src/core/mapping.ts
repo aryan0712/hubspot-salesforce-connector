@@ -29,6 +29,8 @@ export type TransformId =
   | 'epoch-millis'
   | 'phone';
 
+export type FieldSourceOfTruth = SystemId | 'last-write-wins';
+
 export interface FieldRule {
   /** Canonical (neutral) field name. */
   canonical: string;
@@ -40,8 +42,8 @@ export interface FieldRule {
   fromCanonical?: TransformId;
   /** If true, never write this field back to this system (read-only source field). */
   readOnly?: boolean;
-  /** Optional owner used when both systems change this field concurrently. */
-  sourceOfTruth?: SystemId;
+  /** Optional owner or conflict strategy used when both systems change this field concurrently. */
+  sourceOfTruth?: FieldSourceOfTruth;
 }
 
 export interface ValueMapping {
@@ -61,6 +63,38 @@ export interface TranslationConfig {
 }
 
 const identity = (v: FieldValue): FieldValue => v;
+
+export const LITERAL_FIELD_PREFIX = 'literal:';
+
+/** True when `native` encodes a literal text or picklist/dropdown value rather than a CRM field API name. */
+export function isLiteralNative(native: string): boolean {
+  if (native.startsWith(LITERAL_FIELD_PREFIX)) return true;
+  const trimmed = native.trim();
+  return (
+    (trimmed.length >= 2 && trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+    (trimmed.length >= 2 && trimmed.startsWith("'") && trimmed.endsWith("'"))
+  );
+}
+
+/** Extracts the literal string value when `isLiteralNative(native)` is true, or undefined for a normal field name. */
+export function parseLiteralNative(native: string): string | undefined {
+  if (native.startsWith(LITERAL_FIELD_PREFIX)) {
+    return native.slice(LITERAL_FIELD_PREFIX.length);
+  }
+  const trimmed = native.trim();
+  if (
+    (trimmed.length >= 2 && trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+    (trimmed.length >= 2 && trimmed.startsWith("'") && trimmed.endsWith("'"))
+  ) {
+    return trimmed.slice(1, -1);
+  }
+  return undefined;
+}
+
+/** Encodes a literal text or picklist/dropdown value for storage in `FieldRule.native`. */
+export function toLiteralNative(value: string): string {
+  return `${LITERAL_FIELD_PREFIX}${value}`;
+}
 
 export function validateFieldRules(rules: FieldRule[]): void {
   const seen = new Set<string>();
@@ -100,7 +134,8 @@ export function translateToCanonical(
 ): Record<string, FieldValue> {
   const out: Record<string, FieldValue> = {};
   for (const rule of config.fieldRules[system][type] ?? []) {
-    const raw = getPath(native, rule.native);
+    const literal = parseLiteralNative(rule.native);
+    const raw = literal !== undefined ? literal : getPath(native, rule.native);
     const value = coerce(raw);
     out[rule.canonical] = toCanonicalValue(
       config.valueMappings,
@@ -122,7 +157,7 @@ export function translateFromCanonical(
 ): Record<string, FieldValue> {
   const out: Record<string, FieldValue> = {};
   for (const rule of config.fieldRules[system][type] ?? []) {
-    if (rule.readOnly) continue;
+    if (rule.readOnly || isLiteralNative(rule.native)) continue;
     if (!(rule.canonical in fields)) continue;
     // Native field can be a dotted path on read; on write we only support flat props.
     if (rule.native.includes('.')) continue;

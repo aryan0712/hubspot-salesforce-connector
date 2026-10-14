@@ -239,11 +239,33 @@ ${dashboardHeader('connections')}
 
     if(conn && !editing[sys]){
       st.textContent = 'Connected';
+      let extraHtml = '';
+      if(sys === 'hubspot'){
+        extraHtml =
+          '<details class="guide" id="hs-events-details" style="margin-top:16px;">'+
+            '<summary style="cursor:pointer;font-weight:600;font-size:13px;display:flex;align-items:center;gap:6px;">'+
+              '<span>Custom Event Tracking IDs (Timeline Activity)</span>'+
+            '</summary>'+
+            '<div style="padding:10px 0 4px;">'+
+              '<p style="font-size:12px;color:var(--text-2);margin:0 0 12px;line-height:1.45;">'+
+                'Automatically create an activity timeline event on the HubSpot record with timestamp and sync details whenever a record syncs. Enter your Event Tracking IDs below:'+
+              '</p>'+
+              '<div id="hs-events-list" style="display:flex;flex-direction:column;gap:8px;margin-bottom:12px;"></div>'+
+              '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">'+
+                '<button type="button" class="secondary" data-action="addHsEventRow" style="width:auto;padding:6px 12px;font-size:12px;">+ Add Object</button>'+
+                '<button type="button" data-action="saveHsEvents" style="width:auto;padding:6px 16px;font-size:12px;" id="btn-save-hs-events">Save Event IDs</button>'+
+                '<span id="hs-events-status" style="font-size:12px;font-weight:600;color:var(--success);"></span>'+
+              '</div>'+
+            '</div>'+
+          '</details>';
+      }
       body.innerHTML =
         '<div class="connected"><span class="check">✓</span> Connected</div>'+
         '<div class="kv"><b>'+esc(conn.accountLabel||'account')+'</b></div>'+
         '<div class="kv">Environment: <span class="envbadge '+(conn.environment==='sandbox'?'sandbox':'')+'">'+conn.environment+'</span></div>'+
+        extraHtml+
         '<button class="danger" style="margin-top:14px" data-action="disconnect" data-arg="'+sys+'">Disconnect</button>';
+      if(sys === 'hubspot') loadHsEvents();
       return;
     }
     if(configured && !editing[sys]){
@@ -278,8 +300,103 @@ ${dashboardHeader('connections')}
     else { const t=document.createElement('textarea'); t.value=text; document.body.appendChild(t); t.select();
       try{ document.execCommand('copy'); }catch(e){} t.remove(); done(); }
   }
+
+  async function loadHsEvents(){
+    const listEl = $('hs-events-list');
+    if(!listEl) return;
+    try {
+      const res = await j('/api/connections/hubspot/custom-events');
+      listEl.innerHTML = '';
+      const events = res.events || {};
+      const entries = Object.entries(events);
+      if(entries.length === 0){
+        createHsEventRow('contact', '');
+        createHsEventRow('company', '');
+        createHsEventRow('deal', '');
+      } else {
+        for(const [obj, id] of entries){
+          createHsEventRow(obj, id);
+        }
+      }
+    } catch(err){
+      if(listEl) listEl.innerHTML = '<div style="color:var(--text-3);font-size:12px;">Could not load custom event IDs</div>';
+    }
+  }
+
+  function createHsEventRow(obj, id){
+    const listEl = $('hs-events-list');
+    if(!listEl) return;
+    const row = document.createElement('div');
+    row.className = 'hs-event-row';
+    row.style.cssText = 'display:flex;gap:8px;align-items:center;';
+    row.innerHTML =
+      '<input class="inp hs-event-obj" style="width:110px;text-transform:lowercase;font-size:12px;padding:6px 8px;" placeholder="object" value="'+esc(obj)+'" />'+
+      '<input class="inp hs-event-id" style="flex:1;font-size:12px;padding:6px 8px;" placeholder="Event Tracking ID (e.g. pe246451036_contact_crm_sync)" value="'+esc(id)+'" />'+
+      '<button type="button" class="linkbtn" data-action="deleteHsEventRow" style="color:var(--text-3);padding:4px 6px;font-size:16px;line-height:1;" title="Remove">&times;</button>';
+    listEl.appendChild(row);
+  }
+
+  function addHsEventRow(){
+    createHsEventRow('', '');
+  }
+
+  function deleteHsEventRow(_arg, btn){
+    if(btn){
+      const row = btn.closest('.hs-event-row');
+      if(row) row.remove();
+    }
+  }
+
+  async function saveHsEvents(_arg, btn){
+    const listEl = $('hs-events-list');
+    const statusEl = $('hs-events-status');
+    const saveBtn = btn || $('btn-save-hs-events');
+    if(!listEl) return;
+    const rows = listEl.querySelectorAll('.hs-event-row');
+    const events = {};
+    rows.forEach(r => {
+      const objInput = r.querySelector('.hs-event-obj');
+      const idInput = r.querySelector('.hs-event-id');
+      const obj = objInput ? objInput.value.trim().toLowerCase() : '';
+      const id = idInput ? idInput.value.trim() : '';
+      if(obj) events[obj] = id;
+    });
+    if(saveBtn) saveBtn.disabled = true;
+    if(statusEl){
+      statusEl.style.color = 'var(--text-2)';
+      statusEl.textContent = 'Saving…';
+    }
+    try {
+      const res = await j('/api/connections/hubspot/custom-events', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ events })
+      });
+      if(res.ok){
+        if(statusEl){
+          statusEl.style.color = 'var(--success)';
+          statusEl.textContent = 'Saved ✓';
+          setTimeout(() => { if(statusEl && statusEl.textContent === 'Saved ✓') statusEl.textContent = ''; }, 2500);
+        }
+      } else {
+        if(statusEl){
+          statusEl.style.color = '#d94c53';
+          statusEl.textContent = res.error || 'Failed to save';
+        }
+      }
+    } catch(err){
+      if(statusEl){
+        statusEl.style.color = '#d94c53';
+        statusEl.textContent = 'Failed to save';
+      }
+    } finally {
+      if(saveBtn) saveBtn.disabled = false;
+    }
+  }
+
   window.connect=connect; window.disconnect=disconnect;
   window.edit=edit; window.cancelEdit=cancelEdit; window.saveCreds=saveCreds; window.copyCb=copyCb;
+  window.loadHsEvents=loadHsEvents; window.addHsEventRow=addHsEventRow; window.deleteHsEventRow=deleteHsEventRow; window.saveHsEvents=saveHsEvents;
 
   function esc(s){ return String(s??'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
 

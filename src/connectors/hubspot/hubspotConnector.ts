@@ -474,6 +474,49 @@ export class HubSpotConnector implements CRMConnector {
     };
   }
 
+  /**
+   * Emits a custom timeline event via HubSpot Events v3 API (`POST /events/v3/send`).
+   * Silently retries without custom properties if HubSpot returns 400 validation error (e.g. undeclared properties).
+   * Safe and non-blocking: catches and logs any vendor errors so sync never fails.
+   */
+  async sendCustomEvent(event: {
+    eventName: string;
+    objectId?: string;
+    occurredAt?: string;
+    properties?: Record<string, unknown>;
+  }): Promise<void> {
+    if (!this.http || !event.eventName || !event.objectId) return;
+    const payload: Record<string, unknown> = {
+      eventName: event.eventName,
+      objectId: event.objectId,
+      occurredAt: event.occurredAt ?? new Date().toISOString(),
+    };
+    if (event.properties && Object.keys(event.properties).length > 0) {
+      payload.properties = event.properties;
+    }
+    try {
+      await this.http.post('/events/v3/send', payload);
+    } catch (err: unknown) {
+      if (axios.isAxiosError(err) && err.response?.status === 400 && payload.properties) {
+        try {
+          delete payload.properties;
+          await this.http.post('/events/v3/send', payload);
+          return;
+        } catch (retryErr) {
+          logger.warn(
+            { err: retryErr, eventName: event.eventName, objectId: event.objectId },
+            'HubSpot custom event retry without properties failed',
+          );
+          return;
+        }
+      }
+      logger.warn(
+        { err, eventName: event.eventName, objectId: event.objectId },
+        'could not send HubSpot custom event',
+      );
+    }
+  }
+
   // ----------------- internals -----------------
 
   private canonicalize(type: CanonicalType, native: HsObject): CanonicalRecord {

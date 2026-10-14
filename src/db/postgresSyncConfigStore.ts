@@ -71,5 +71,9 @@ function mergeConfig(defaults: SyncConfig, saved: Partial<SyncConfig>): SyncConf
     sourceOfTruth: saved.sourceOfTruth ?? defaults.sourceOfTruth,
     objects,
     polling,
+    hubspotCustomEvents: {
+      ...(defaults.hubspotCustomEvents ?? {}),
+      ...(saved.hubspotCustomEvents ?? {}),
+    },
   };
 }

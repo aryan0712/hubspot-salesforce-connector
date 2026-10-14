@@ -198,4 +198,16 @@ export interface CRMConnector {
     event: NativeWebhookEvent,
     resolveType?: (nativeObjectId: string, sourceId: string) => Promise<CanonicalType | undefined>,
   ): Promise<ChangeEvent | null>;
+
+  /**
+   * Optionally send a timeline / custom event to this system (e.g. HubSpot Events v3 API).
+   * Implemented by connectors that support activity timeline events.
+   */
+  sendCustomEvent?(event: {
+    eventName: string;
+    objectId?: string;
+    occurredAt?: string;
+    properties?: Record<string, unknown>;
+  }): Promise<void>;
 }
+

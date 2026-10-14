@@ -3,6 +3,7 @@ import {
   applyFieldRules,
   validateFieldRules,
   type FieldRule,
+  type FieldSourceOfTruth,
   type TransformId,
 } from '../core/mapping.js';
 import type { ConfigContext } from '../core/configContext.js';
@@ -15,7 +16,7 @@ interface MappingRow {
   to_canonical_transform: TransformId | null;
   from_canonical_transform: TransformId | null;
   read_only: boolean;
-  source_of_truth: SystemId | null;
+  source_of_truth: FieldSourceOfTruth | null;
 }
 
 export class PostgresMappingStore implements MappingStore {

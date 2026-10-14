@@ -127,4 +127,31 @@ describe('R14 health and alerts', () => {
     expect(await ready.json()).toMatchObject({ ready: false, problems: ['shutting_down'] });
     expect((await fetch(`${base}/health/live`)).status).toBe(200);
   });
+
+  it('reads and updates HubSpot custom event tracking IDs via API', async () => {
+    const getRes = await fetch(`${base}/api/connections/hubspot/custom-events`);
+    expect(getRes.status).toBe(200);
+    const initial = (await getRes.json()) as { events: Record<string, string> };
+    expect(initial.events.contact).toBe('pe246451036_contact_crm_sync');
+
+    const postRes = await fetch(`${base}/api/connections/hubspot/custom-events`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        events: {
+          contact: 'pe246451036_contact_crm_sync',
+          company: 'pe246451036_company_crm_sync',
+          custom_obj: 'pe_custom_123',
+        },
+      }),
+    });
+    expect(postRes.status).toBe(200);
+    const updated = (await postRes.json()) as { ok: boolean; events: Record<string, string> };
+    expect(updated.ok).toBe(true);
+    expect(updated.events.custom_obj).toBe('pe_custom_123');
+
+    const verifyRes = await fetch(`${base}/api/connections/hubspot/custom-events`);
+    const verified = (await verifyRes.json()) as { events: Record<string, string> };
+    expect(verified.events.custom_obj).toBe('pe_custom_123');
+  });
 });

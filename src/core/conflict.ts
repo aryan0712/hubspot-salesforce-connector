@@ -22,10 +22,12 @@ export interface Resolution {
 
 export type ConflictStrategy = 'source-of-truth' | 'last-write-wins' | 'field-merge';
 
+export type FieldOwner = SystemId | 'last-write-wins';
+
 export interface ResolveOptions {
   strategy?: ConflictStrategy;
   sourceOfTruth?: SystemId;
-  fieldOwners?: Record<string, SystemId>;
+  fieldOwners?: Record<string, FieldOwner>;
 }
 
 /**
@@ -50,7 +52,10 @@ export function resolve(
       return { winner, reason: `source-of-truth:${sourceOfTruth}` };
     }
     case 'last-write-wins': {
-      if (opts.fieldOwners && Object.keys(opts.fieldOwners).length) {
+      const hasSystemOwners =
+        opts.fieldOwners &&
+        Object.values(opts.fieldOwners).some((owner) => owner === 'salesforce' || owner === 'hubspot');
+      if (hasSystemOwners) {
         return { winner: fieldMerge(a, b, opts.fieldOwners), reason: 'last-write-wins' };
       }
       const winner = newer(a, b);
@@ -72,7 +77,7 @@ function sourceOfTruthMerge(
   a: CanonicalRecord,
   b: CanonicalRecord,
   sourceOfTruth: SystemId,
-  fieldOwners: Record<string, SystemId> = {},
+  fieldOwners: Record<string, FieldOwner> = {},
 ): CanonicalRecord {
   const hasOverrides = Object.keys(fieldOwners).some(
     (k) => fieldOwners[k] && fieldOwners[k] !== sourceOfTruth,
@@ -81,10 +86,18 @@ function sourceOfTruthMerge(
     return pickBySystem(a, b, sourceOfTruth);
   }
   const defaultWinner = pickBySystem(a, b, sourceOfTruth);
+  const primaryNewer = newer(a, b);
+  const secondaryOlder = primaryNewer === a ? b : a;
   const fields: Record<string, FieldValue> = {};
   const keys = new Set([...Object.keys(a.fields), ...Object.keys(b.fields)]);
   for (const key of keys) {
     const owner = fieldOwners[key] || sourceOfTruth;
+    if (owner === 'last-write-wins') {
+      const pv = primaryNewer.fields[key] ?? null;
+      const sv = secondaryOlder.fields[key] ?? null;
+      fields[key] = pv !== null ? pv : sv;
+      continue;
+    }
     const owned = a.meta.source === owner ? a : b;
     const fallback = owned === a ? b : a;
     fields[key] = owned.fields[key] ?? fallback.fields[key] ?? null;
@@ -104,7 +117,7 @@ function newer(a: CanonicalRecord, b: CanonicalRecord): CanonicalRecord {
 function fieldMerge(
   a: CanonicalRecord,
   b: CanonicalRecord,
-  fieldOwners: Record<string, SystemId> = {},
+  fieldOwners: Record<string, FieldOwner> = {},
 ): CanonicalRecord {
   const primary = newer(a, b);
   const secondary = primary === a ? b : a;
@@ -112,7 +125,7 @@ function fieldMerge(
   const keys = new Set([...Object.keys(a.fields), ...Object.keys(b.fields)]);
   for (const key of keys) {
     const owner = fieldOwners[key];
-    if (owner) {
+    if (owner === 'salesforce' || owner === 'hubspot') {
       const owned = a.meta.source === owner ? a : b;
       const fallback = owned === a ? b : a;
       fields[key] = owned.fields[key] ?? fallback.fields[key] ?? null;
