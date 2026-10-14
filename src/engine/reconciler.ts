@@ -1270,7 +1270,18 @@ function nativeToNaturalKeyField(
   // Only a single-field key is strong enough: a duplicate on one component of a composite
   // key (e.g. a deal name without its close date) does not prove it is the same record.
   const keyFields = config.naturalKeyFields(type);
-  return keyFields.length === 1 && keyFields[0] === rule.canonical ? rule.canonical : undefined;
+  if (keyFields.length === 1 && keyFields[0] === rule.canonical) {
+    return rule.canonical;
+  }
+  // Also recognize unique external IDs and migrated record ID properties
+  const isExternalOrRecordId =
+    /^(record_?id|salesforce_?id|migrated_?record_?id|id)$/i.test(rule.canonical) ||
+    /^(record_?id|salesforce_?id|migrated_record_id)$/i.test(rule.native) ||
+    (rule.canonical.toLowerCase().includes('external') && rule.canonical.toLowerCase().endsWith('id'));
+  if (isExternalOrRecordId) {
+    return rule.canonical;
+  }
+  return undefined;
 }
 
 function diffFields(

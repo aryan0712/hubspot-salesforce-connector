@@ -526,6 +526,34 @@ export function migrationWorkspaceHtml(): string {
               </aside>
               <div class="field-workspace-main">
                 <div class="field-current-head"><div><span>Current object</span><b id="field-current-name">Choose an object</b></div><span id="field-object-position" class="object-position"></span><select id="field-object" aria-hidden="true"></select></div>
+
+                <div class="card identity-card" id="field-workspace-natural-key" style="margin-bottom:14px">
+                  <div class="card-body">
+                    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:10px">
+                      <div>
+                        <div class="step-eyebrow" id="field-natural-key-eyebrow">Unique record identity (matching rule)</div>
+                        <h3 style="margin:2px 0 4px;font-size:14px">How should existing records be recognized?</h3>
+                        <p class="subcopy" style="margin:0;font-size:12px;color:var(--muted)">Choose a stable field shared by both CRMs. When this field matches, the existing record is updated instead of duplicated.</p>
+                      </div>
+                      <div id="field-natural-key-badge" style="flex-shrink:0"></div>
+                    </div>
+                    <div class="identity-options" id="field-natural-key-options"></div>
+                    <details class="advanced-key" id="field-natural-key-advanced">
+                      <summary>Advanced: build a composite key</summary>
+                      <div class="advanced-key-body">
+                        <p>Only fields mapped in both CRMs are available. Avoid values that can change over time.</p>
+                        <label class="identity-option"><input type="radio" name="field-natural-key-mode" value="advanced"><span><b>Custom composite key</b><small>Require every selected field to match the same destination record.</small></span></label>
+                        <div class="advanced-key-fields" id="field-natural-key-fields"></div>
+                      </div>
+                    </details>
+                    <div class="identity-warning" id="field-natural-key-warning"></div>
+                    <div class="identity-actions">
+                      <span id="field-natural-key-summary"></span>
+                      <button id="save-field-natural-key" type="button">Save matching rule</button>
+                    </div>
+                  </div>
+                </div>
+
                 <div class="mapping-tools">
                   <input id="field-search" type="search" placeholder="Search source, canonical, or target">
                   <select id="field-filter"><option value="all">All mappings</option><option value="review">Needs review</option><option value="transformed">Has transforms</option></select>

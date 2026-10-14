@@ -307,5 +307,65 @@ describe('Org -> Object -> Field level conflict resolution hierarchy', () => {
     expect(hs.customEventsSent[0]!.properties?.sync_status).toBe('Success');
     expect(hs.customEventsSent[0]!.properties?.source_id).toBe(sfId);
   });
+
+  it('self-heals and updates existing record when a write collides on unique migrated_record_id', async () => {
+    const config = createDefaultConfigContext('reconciler-self-heal-test');
+    config.configureFieldRules('salesforce', 'company', [
+      { canonical: 'name', native: 'Name' },
+      { canonical: 'migrated_record_id', native: 'Id' },
+    ]);
+    config.configureFieldRules('hubspot', 'company', [
+      { canonical: 'name', native: 'name' },
+      { canonical: 'migrated_record_id', native: 'migrated_record_id' },
+    ]);
+
+    const sf = new MockConnector('salesforce', config);
+    const hs = new MockConnector('hubspot', config);
+    const connectors: Record<SystemId, CRMConnector> = { salesforce: sf, hubspot: hs };
+    const idMap = new FileIdMapStore(path.join(os.tmpdir(), `idmap-heal-${crypto.randomUUID()}.json`));
+    await idMap.init();
+
+    const reconciler = new Reconciler(connectors, idMap, config);
+    const sfId = sf.seed('company', { name: 'Acme Corp', migrated_record_id: '001E100001PQLpwIAH' });
+
+    // Seed existing company in HubSpot with id '335979968208'
+    hs.seed('company', { name: 'Acme Corp Old' }, '335979968208');
+
+    // Make initial write without targetId fail with HubSpot duplicate collision error
+    const originalWrite = hs.write.bind(hs);
+    let attempts = 0;
+    hs.write = async (type, payload, targetId, options) => {
+      attempts++;
+      if (!targetId) {
+        const err = new AxiosError(
+          'Request failed with status code 400',
+          'ERR_BAD_REQUEST',
+          undefined,
+          undefined,
+          {
+            status: 400,
+            statusText: 'Bad Request',
+            headers: {},
+            config: {} as any,
+            data: {
+              message: 'Cannot set PropertyValueCoordinates{propertyName=migrated_record_id, value=001E100001PQLpwIAH} on 0. 335979968208 already has that value.',
+            },
+          },
+        );
+        throw err;
+      }
+      return originalWrite(type, payload, targetId, options);
+    };
+
+    const sfRecord = (await sf.read('company', sfId))!;
+    await reconciler.reconcile(sfRecord);
+
+    expect(attempts).toBe(2); // First failed, second retried on 335979968208
+    const link = await idMap.bySource('salesforce', sfId);
+    expect(link?.ids.hubspot).toBe('335979968208');
+
+    const updatedHs = await hs.read('company', '335979968208');
+    expect(updatedHs?.fields.name).toBe('Acme Corp');
+  });
 });
 

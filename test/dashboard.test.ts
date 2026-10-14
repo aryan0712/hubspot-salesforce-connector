@@ -502,6 +502,10 @@ describe('operations dashboard', () => {
     expect(html).toContain('Mandatory field (cannot be removed)');
     expect(html).toContain('Locked');
     expect(html).toContain('!isMandatoryField(c,state.type)');
+    expect(html).toContain("addField('recordId','Id','migrated_record_id')");
+    expect(html).toContain("name:'migrated_record_id'");
+    expect(html).toContain("label:'Record Id Salesforce'");
+    expect(html).toContain('ensureHubSpotMigratedRecordId');
   });
 
   it('defaults unique identification to Salesforce Record ID for Account and Deal, and Email + Record ID for Contact', () => {
@@ -511,6 +515,10 @@ describe('operations dashboard', () => {
     expect(html).toContain('Salesforce Record ID');
     expect(html).toContain('naturalKeyCandidates');
     expect(html).toContain('blockedNaturalKeyField');
+    expect(html).toContain('id="field-workspace-natural-key"');
+    expect(html).toContain('id="save-field-natural-key"');
+    expect(html).toContain('id="field-natural-key-badge"');
+    expect(html).toContain('renderFieldWorkspaceNaturalKey');
   });
 
   it('uses responsive header and page-heading styles consistently across all pages with a dropdown menu on narrow viewports', () => {
