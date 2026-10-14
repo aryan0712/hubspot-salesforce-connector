@@ -471,7 +471,7 @@ describe('operations dashboard', () => {
     expect(html).toContain('buildSourcePickerGroups');
     expect(html).toContain('openSourcePicker');
     expect(html).toContain("'Field list ('+sysLabel+')'");
-    expect(html).toContain("(sys==='salesforce'?'Picklist values':'Dropdown values')+' ('+sysLabel+')'");
+    expect(html).toContain("(toSys==='salesforce'?'Picklist values':'Dropdown values')+' ('+toSysLabel+')'");
     expect(html).toContain('sourceDatalistOptions');
     expect(html).toContain('picklistOptionLabel');
     expect(html).toContain("'Picklist (Salesforce)'");

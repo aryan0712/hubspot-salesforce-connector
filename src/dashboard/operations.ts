@@ -605,12 +605,14 @@ export function operationsHtml(): string {
       const kind=system==='salesforce'?'Picklist (Salesforce)':'Dropdown (HubSpot)';
       return kind+' · '+fieldLabel+': '+opt.label+(opt.value!==opt.label?' · '+opt.value:'');
     }
-    function buildSourcePickerGroups(state){
-      if(!state?.sourceMeta?.fields)return {sysLabel:'Salesforce',fieldHeading:'Field list (Salesforce)',picklistHeading:'Picklist values (Salesforce)',fields:[],picklists:[]};
+    function buildSourcePickerGroups(state,targetFieldNative){
+      if(!state?.sourceMeta?.fields)return {sysLabel:'Salesforce',toSysLabel:'HubSpot',fieldHeading:'Field list (Salesforce)',picklistHeading:'Dropdown values (HubSpot)',fields:[],picklists:[]};
       const sys=state.from==='hubspot'?'hubspot':'salesforce';
+      const toSys=state.to==='salesforce'?'salesforce':'hubspot';
       const sysLabel=sys==='salesforce'?'Salesforce':'HubSpot';
+      const toSysLabel=toSys==='salesforce'?'Salesforce':'HubSpot';
       const fieldHeading='Field list ('+sysLabel+')';
-      const picklistHeading=(sys==='salesforce'?'Picklist values':'Dropdown values')+' ('+sysLabel+')';
+      let picklistHeading=(toSys==='salesforce'?'Picklist values':'Dropdown values')+' ('+toSysLabel+')';
       const fieldNames=new Set(state.sourceMeta.fields.map(f=>f.name));
       const fields=state.sourceMeta.fields.map(field=>({
         value:field.name,
@@ -619,36 +621,33 @@ export function operationsHtml(): string {
         search:(field.name+' '+field.label).toLowerCase(),
       }));
       const picklists=[];
-      const seenValues=new Set();
-      for(const field of state.sourceMeta.fields){
-        if(!field.options?.length)continue;
-        for(const opt of field.options){
-          if(!opt?.value)continue;
-          const val=fieldNames.has(opt.value)?'"'+opt.value+'"':opt.value;
-          const key=field.name+':'+val;
-          if(seenValues.has(key)||picklists.length>=800)continue;
-          seenValues.add(key);
-          const subtitle=picklistOptionLabel(sys,field.label,opt);
-          picklists.push({
-            value:val,
-            title:opt.value,
-            subtitle,
-            search:(opt.value+' '+opt.label+' '+field.label+' '+field.name+' '+subtitle).toLowerCase(),
-          });
+      if(targetFieldNative&&state.targetMeta?.fields?.length){
+        const norm=String(targetFieldNative).trim().toLowerCase();
+        const targetField=state.targetMeta.fields.find(f=>f.name.toLowerCase()===norm||f.label.toLowerCase()===norm);
+        if(targetField?.options?.length){
+          picklistHeading=(toSys==='salesforce'?'Picklist values':'Dropdown values')+' ('+toSysLabel+')'+(targetField.label?' · '+targetField.label:'');
+          const seenValues=new Set();
+          for(const opt of targetField.options){
+            if(!opt?.value)continue;
+            const val=fieldNames.has(opt.value)?'"'+opt.value+'"':opt.value;
+            const key=targetField.name+':'+val;
+            if(seenValues.has(key))continue;
+            seenValues.add(key);
+            const subtitle=picklistOptionLabel(toSys,targetField.label,opt);
+            picklists.push({
+              value:val,
+              title:opt.value,
+              subtitle,
+              search:(opt.value+' '+opt.label+' '+targetField.label+' '+targetField.name+' '+subtitle).toLowerCase(),
+            });
+          }
         }
       }
-      return {sysLabel,fieldHeading,picklistHeading,fields,picklists};
+      return {sysLabel,toSysLabel,fieldHeading,picklistHeading,fields,picklists};
     }
     function sourceDatalistOptions(state){
-      const {fieldHeading,picklistHeading,fields,picklists}=buildSourcePickerGroups(state);
-      const out=[];
-      if(fields.length){
-        out.push('<optgroup label="'+esc(fieldHeading)+'">'+fields.map(item=>'<option value="'+esc(item.value)+'">'+esc(item.subtitle)+'</option>').join('')+'</optgroup>');
-      }
-      if(picklists.length){
-        out.push('<optgroup label="'+esc(picklistHeading)+'">'+picklists.map(item=>'<option value="'+esc(item.value)+'">'+esc(item.subtitle)+'</option>').join('')+'</optgroup>');
-      }
-      return out.join('');
+      const {fieldHeading,fields}=buildSourcePickerGroups(state);
+      return fields.length?'<optgroup label="'+esc(fieldHeading)+'">'+fields.map(item=>'<option value="'+esc(item.value)+'">'+esc(item.subtitle)+'</option>').join('')+'</optgroup>':'';
     }
     let activeSourceInput=null;
     function positionSourcePickerMenu(input){

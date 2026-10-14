@@ -301,11 +301,14 @@ ${dashboardHeader('connections')}
       try{ document.execCommand('copy'); }catch(e){} t.remove(); done(); }
   }
 
+  let HS_OBJECTS = [];
+
   async function loadHsEvents(){
     const listEl = $('hs-events-list');
     if(!listEl) return;
     try {
       const res = await j('/api/connections/hubspot/custom-events');
+      HS_OBJECTS = res.objects || [];
       listEl.innerHTML = '';
       const events = res.events || {};
       const entries = Object.entries(events);
@@ -323,16 +326,55 @@ ${dashboardHeader('connections')}
     }
   }
 
-  function createHsEventRow(obj, id){
+  function createHsEventRow(selectedObj, id){
     const listEl = $('hs-events-list');
     if(!listEl) return;
     const row = document.createElement('div');
     row.className = 'hs-event-row';
     row.style.cssText = 'display:flex;gap:8px;align-items:center;';
+
+    const selVal = String(selectedObj || '').trim().toLowerCase();
+    let optionsHtml = '';
+    let found = false;
+    if(!selVal) {
+      optionsHtml += '<option value="" disabled selected>Select object…</option>';
+    }
+
+    const objects = (HS_OBJECTS && HS_OBJECTS.length) ? HS_OBJECTS : [
+      { id: 'contact', label: 'Contact' },
+      { id: 'company', label: 'Company' },
+      { id: 'deal', label: 'Deal' },
+      { id: 'ticket', label: 'Ticket' },
+      { id: 'ticket_sf', label: 'Ticket_SF' },
+    ];
+
+    for(const obj of objects){
+      const val = String(obj.id || obj.name || '').toLowerCase();
+      const isSelected = Boolean(
+        selVal && (
+          val === selVal ||
+          String(obj.name || '').toLowerCase() === selVal ||
+          String(obj.label || '').toLowerCase() === selVal ||
+          (selVal === 'ticket' && (val === 'tickets' || val === 'ticket')) ||
+          (selVal === 'ticket_sf' && (val === 'ticket_sf' || val.includes('ticket_sf')))
+        )
+      );
+      if(isSelected) found = true;
+      const displayLabel = obj.label || val;
+      optionsHtml += '<option value="'+esc(val)+'" '+(isSelected ? 'selected' : '')+'>'+esc(displayLabel)+'</option>';
+    }
+
+    // If the saved object is not among the fetched objects, add it as an option so it is preserved
+    if(selVal && !found){
+      optionsHtml += '<option value="'+esc(selVal)+'" selected>'+esc(selectedObj)+'</option>';
+    }
+
     row.innerHTML =
-      '<input class="inp hs-event-obj" style="width:110px;text-transform:lowercase;font-size:12px;padding:6px 8px;" placeholder="object" value="'+esc(obj)+'" />'+
-      '<input class="inp hs-event-id" style="flex:1;font-size:12px;padding:6px 8px;" placeholder="Event Tracking ID (e.g. pe246451036_contact_crm_sync)" value="'+esc(id)+'" />'+
-      '<button type="button" class="linkbtn" data-action="deleteHsEventRow" style="color:var(--text-3);padding:4px 6px;font-size:16px;line-height:1;" title="Remove">&times;</button>';
+      '<select class="inp hs-event-obj" style="width:130px;min-width:120px;font-size:12px;padding:6px 24px 6px 8px;margin:0;min-height:34px;height:34px;">'+
+        optionsHtml+
+      '</select>'+
+      '<input class="inp hs-event-id" style="flex:1;font-size:12px;padding:6px 8px;margin:0;min-height:34px;height:34px;" placeholder="Event Tracking ID (e.g. pe246451036_contact_crm_sync)" value="'+esc(id)+'" />'+
+      '<button type="button" class="linkbtn" data-action="deleteHsEventRow" style="color:var(--text-3);padding:4px 6px;font-size:16px;line-height:1;margin:0;" title="Remove">&times;</button>';
     listEl.appendChild(row);
   }
 
@@ -355,9 +397,9 @@ ${dashboardHeader('connections')}
     const rows = listEl.querySelectorAll('.hs-event-row');
     const events = {};
     rows.forEach(r => {
-      const objInput = r.querySelector('.hs-event-obj');
+      const objSelect = r.querySelector('.hs-event-obj');
       const idInput = r.querySelector('.hs-event-id');
-      const obj = objInput ? objInput.value.trim().toLowerCase() : '';
+      const obj = objSelect ? objSelect.value.trim().toLowerCase() : '';
       const id = idInput ? idInput.value.trim() : '';
       if(obj) events[obj] = id;
     });

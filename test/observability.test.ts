@@ -131,8 +131,10 @@ describe('R14 health and alerts', () => {
   it('reads and updates HubSpot custom event tracking IDs via API', async () => {
     const getRes = await fetch(`${base}/api/connections/hubspot/custom-events`);
     expect(getRes.status).toBe(200);
-    const initial = (await getRes.json()) as { events: Record<string, string> };
+    const initial = (await getRes.json()) as { events: Record<string, string>; objects: Array<{ id: string; label: string }> };
     expect(initial.events.contact).toBe('pe246451036_contact_crm_sync');
+    expect(initial.objects.length).toBeGreaterThan(0);
+    expect(initial.objects.some((o) => o.id === 'contact')).toBe(true);
 
     const postRes = await fetch(`${base}/api/connections/hubspot/custom-events`, {
       method: 'POST',

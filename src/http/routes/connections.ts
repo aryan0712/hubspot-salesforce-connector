@@ -38,9 +38,111 @@ export function connectionRoutes(ctx: RouteContext): Router {
   });
 
   // ---------------- HubSpot Custom Events (Timeline Activity) ----------------
+  router.get('/api/connections/hubspot/objects', async (_req, res) => {
+    let objects: Array<{ id: string; name: string; label: string; custom: boolean }> = [];
+    try {
+      await ctx.ensureLiveInit();
+      const raw = await app.connectors.hubspot.listObjects();
+      objects = raw.map((obj) => ({
+        id: obj.canonicalType || (obj.id === 'contacts' ? 'contact' : obj.id === 'companies' ? 'company' : obj.id === 'deals' ? 'deal' : obj.id === 'tickets' ? 'ticket' : obj.id),
+        name: obj.id,
+        label: obj.label || obj.pluralLabel || obj.id,
+        custom: Boolean(obj.custom),
+      }));
+    } catch {
+      objects = [
+        { id: 'contact', name: 'contacts', label: 'Contact', custom: false },
+        { id: 'company', name: 'companies', label: 'Company', custom: false },
+        { id: 'deal', name: 'deals', label: 'Deal', custom: false },
+        { id: 'ticket', name: 'tickets', label: 'Ticket', custom: false },
+        { id: 'ticket_sf', name: 'ticket_sf', label: 'Ticket_SF', custom: true },
+      ];
+    }
+    for (const reg of app.config.listCanonicalObjects()) {
+      if (!objects.some((o) => o.id.toLowerCase() === reg.canonicalObject.toLowerCase())) {
+        objects.push({
+          id: reg.canonicalObject,
+          name: reg.hubspotObject || reg.canonicalObject,
+          label: reg.label || reg.canonicalObject,
+          custom: false,
+        });
+      }
+    }
+    const seen = new Set<string>();
+    const deduped: typeof objects = [];
+    for (const obj of objects) {
+      const key = obj.id.toLowerCase();
+      if (!seen.has(key)) {
+        seen.add(key);
+        deduped.push(obj);
+      }
+    }
+    const PRIORITY = ['contact', 'company', 'deal', 'ticket', 'ticket_sf'];
+    deduped.sort((a, b) => {
+      const aIdx = PRIORITY.indexOf(a.id.toLowerCase());
+      const bIdx = PRIORITY.indexOf(b.id.toLowerCase());
+      if (aIdx !== -1 && bIdx !== -1) return aIdx - bIdx;
+      if (aIdx !== -1) return -1;
+      if (bIdx !== -1) return 1;
+      return a.label.localeCompare(b.label);
+    });
+    res.json({ objects: deduped });
+  });
+
   router.get('/api/connections/hubspot/custom-events', async (_req, res) => {
     const syncConfig = app.syncConfig.get();
-    res.json({ events: syncConfig.hubspotCustomEvents ?? {} });
+    let objects: Array<{ id: string; name: string; label: string; custom: boolean }> = [];
+    try {
+      await ctx.ensureLiveInit();
+      const raw = await app.connectors.hubspot.listObjects();
+      objects = raw.map((obj) => ({
+        id: obj.canonicalType || (obj.id === 'contacts' ? 'contact' : obj.id === 'companies' ? 'company' : obj.id === 'deals' ? 'deal' : obj.id === 'tickets' ? 'ticket' : obj.id),
+        name: obj.id,
+        label: obj.label || obj.pluralLabel || obj.id,
+        custom: Boolean(obj.custom),
+      }));
+    } catch {
+      objects = [
+        { id: 'contact', name: 'contacts', label: 'Contact', custom: false },
+        { id: 'company', name: 'companies', label: 'Company', custom: false },
+        { id: 'deal', name: 'deals', label: 'Deal', custom: false },
+        { id: 'ticket', name: 'tickets', label: 'Ticket', custom: false },
+        { id: 'ticket_sf', name: 'ticket_sf', label: 'Ticket_SF', custom: true },
+      ];
+    }
+    for (const reg of app.config.listCanonicalObjects()) {
+      if (!objects.some((o) => o.id.toLowerCase() === reg.canonicalObject.toLowerCase())) {
+        objects.push({
+          id: reg.canonicalObject,
+          name: reg.hubspotObject || reg.canonicalObject,
+          label: reg.label || reg.canonicalObject,
+          custom: false,
+        });
+      }
+    }
+    const seen = new Set<string>();
+    const deduped: typeof objects = [];
+    for (const obj of objects) {
+      const key = obj.id.toLowerCase();
+      if (!seen.has(key)) {
+        seen.add(key);
+        deduped.push(obj);
+      }
+    }
+    const PRIORITY = ['contact', 'company', 'deal', 'ticket', 'ticket_sf'];
+    deduped.sort((a, b) => {
+      const aIdx = PRIORITY.indexOf(a.id.toLowerCase());
+      const bIdx = PRIORITY.indexOf(b.id.toLowerCase());
+      if (aIdx !== -1 && bIdx !== -1) return aIdx - bIdx;
+      if (aIdx !== -1) return -1;
+      if (bIdx !== -1) return 1;
+      return a.label.localeCompare(b.label);
+    });
+
+    res.json({
+      events: syncConfig.hubspotCustomEvents ?? {},
+      objects: deduped,
+    });
   });
 
   router.post('/api/connections/hubspot/custom-events', requireRole('admin'), async (req, res) => {
