@@ -371,10 +371,10 @@ export class MockConnector implements CRMConnector {
   }
 
   /** Test helper: seed a native record directly (simulating data already in the CRM). */
-  seed(type: CanonicalType, fields: Record<string, FieldValue>): string {
+  seed(type: CanonicalType, fields: Record<string, FieldValue>, customId?: string): string {
     const rec = { ...fields } as unknown as CanonicalRecord['fields'];
     const native = this.config.fromCanonicalFields(this.system, type, rec);
-    const id = `${this.system}-${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
+    const id = customId ?? `${this.system}-${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
     this.bucket(type).set(id, { ...native, __id: id, __modifiedAt: new Date().toISOString() });
     this.reindex(type, id);
     return id;
