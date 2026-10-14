@@ -327,7 +327,7 @@ describe('operations dashboard', () => {
     expect(script).toBeTruthy();
     expect(() => new Function(script!)).not.toThrow();
     expect(html).toContain('Custom Event Tracking IDs');
-    expect(html).toContain('Guide: Creating Custom Events &amp; Custom Objects in HubSpot');
+    expect(html).toContain('Guide: Creating Custom Events in HubSpot');
     expect(html).toContain('data-action="saveHsEvents"');
     expect(html).toContain('data-action="addHsEventRow"');
   });
@@ -465,12 +465,13 @@ describe('operations dashboard', () => {
     expect(html).toContain("dir==='hubspot_to_salesforce'?'hubspot':'salesforce'");
   });
 
-  it('allows entering text values and selecting Picklist (Salesforce) or Dropdown (HubSpot) values in the Source field list with section headings', () => {
+  it('places Target field before Source field in mapping headers and rows, and scopes picklist/dropdown values to the populated target field', () => {
     const html = operationsHtml();
     expect(html).toContain('id="source-picker-menu"');
     expect(html).toContain('source-picker-heading');
     expect(html).toContain('buildSourcePickerGroups');
     expect(html).toContain('openSourcePicker');
+    expect(html).toContain('buildSourcePickerGroups(state,targetNative)');
     expect(html).toContain("'Field list ('+sysLabel+')'");
     expect(html).toContain("(toSys==='salesforce'?'Picklist values':'Dropdown values')+' ('+toSysLabel+')'");
     expect(html).toContain('sourceDatalistOptions');
@@ -480,6 +481,36 @@ describe('operations dashboard', () => {
     expect(html).toContain('encodeSourceNative');
     expect(html).toContain('displaySourceNative');
     expect(html).toContain('placeholder="Select field, picklist value, or enter text…"');
+    // Header order: Action -> Target field -> Canonical field -> Transform -> Source field -> Source of truth
+    const thTargetIdx = html.indexOf('data-sort="target"');
+    const thSourceIdx = html.indexOf('data-sort="source"');
+    expect(thTargetIdx).toBeGreaterThan(0);
+    expect(thSourceIdx).toBeGreaterThan(thTargetIdx);
+    // Row order: mapping-action -> target-native -> canonical -> mapping-transform -> source-native -> field-sot
+    expect(html).toContain('<td><input class="target-native" list="target-native-datalist"');
+    expect(html).toContain('<td><input class="source-native" autocomplete="off"');
+    const tdTargetIdx = html.indexOf('class="target-native"');
+    const tdSourceIdx = html.indexOf('class="source-native"');
+    expect(tdTargetIdx).toBeGreaterThan(0);
+    expect(tdSourceIdx).toBeGreaterThan(tdTargetIdx);
+  });
+
+  it('marks recordId and contact email as mandatory non-removable fields with locked status and auto-maps default fields', () => {
+    const html = operationsHtml();
+    expect(html).toContain('isMandatoryField');
+    expect(html).toContain('ensureAutoMappedFields');
+    expect(html).toContain('Mandatory field (cannot be removed)');
+    expect(html).toContain('Locked');
+    expect(html).toContain('!isMandatoryField(c,state.type)');
+  });
+
+  it('defaults unique identification to Salesforce Record ID for Account and Deal, and Email + Record ID for Contact', () => {
+    const html = operationsHtml();
+    expect(html).toContain('naturalKeyPresets');
+    expect(html).toContain('Email + Salesforce Record ID');
+    expect(html).toContain('Salesforce Record ID');
+    expect(html).toContain('naturalKeyCandidates');
+    expect(html).toContain('blockedNaturalKeyField');
   });
 
   it('uses responsive header and page-heading styles consistently across all pages with a dropdown menu on narrow viewports', () => {
