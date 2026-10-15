@@ -174,6 +174,49 @@ describe('field mapping', () => {
     const multiHs = customConfig.fromCanonicalFields('hubspot', 'contact', multiSf);
     expect(multiHs.hs_lead_status).toBe('Contact Active;Discontinued');
   });
+
+  it('correctly transforms boolean to yes-no enumeration without returning boolean false even with double transform', () => {
+    const customConfig = createDefaultConfigContext('yes-no-test');
+    // Salesforce: boolean checkbox
+    customConfig.configureFieldRules('salesforce', 'company', [
+      { canonical: 'emailOptOut', native: 'PersonHasOptedOutOfEmail', toCanonical: 'yes-no', fromCanonical: 'identity' },
+      { canonical: 'isPartner', native: 'IsPartner', toCanonical: 'identity', fromCanonical: 'identity' },
+    ]);
+    // HubSpot: enumeration with [yes, no]
+    customConfig.configureFieldRules('hubspot', 'company', [
+      { canonical: 'emailOptOut', native: 'migrated_personhasoptedoutofemail', toCanonical: 'yes-no', fromCanonical: 'yes-no' },
+      { canonical: 'isPartner', native: 'migrated_ispartner', toCanonical: 'yes-no', fromCanonical: 'yes-no' },
+    ]);
+
+    // 1. Salesforce sends boolean false
+    const sfRecord = { PersonHasOptedOutOfEmail: false, IsPartner: false };
+    const canonical = customConfig.toCanonicalFields('salesforce', 'company', sfRecord);
+    // emailOptOut had toCanonical: 'yes-no' on boolean false -> stays boolean false in canonical
+    expect(canonical.emailOptOut).toBe(false);
+    expect(canonical.isPartner).toBe(false);
+
+    // 2. HubSpot fromCanonical: 'yes-no' must format boolean false as 'no', NEVER boolean false
+    const hsPayload = customConfig.fromCanonicalFields('hubspot', 'company', canonical);
+    expect(hsPayload.migrated_personhasoptedoutofemail).toBe('no');
+    expect(hsPayload.migrated_ispartner).toBe('no');
+
+    // 3. Even if canonical held string "no" or "false", HubSpot fromCanonical: 'yes-no' produces 'no'
+    const hsFromString = customConfig.fromCanonicalFields('hubspot', 'company', { emailOptOut: 'no', isPartner: 'false' });
+    expect(hsFromString.migrated_personhasoptedoutofemail).toBe('no');
+    expect(hsFromString.migrated_ispartner).toBe('no');
+
+    // 4. Reverse: HubSpot sends "yes" and "no" strings
+    const hsRecord = { migrated_personhasoptedoutofemail: 'yes', migrated_ispartner: 'no' };
+    const canonicalReverse = customConfig.toCanonicalFields('hubspot', 'company', hsRecord);
+    expect(canonicalReverse.emailOptOut).toBe(true);
+    expect(canonicalReverse.isPartner).toBe(false);
+
+    // Salesforce fromCanonical receives boolean values
+    const sfPayload = customConfig.fromCanonicalFields('salesforce', 'company', canonicalReverse);
+    expect(sfPayload.PersonHasOptedOutOfEmail).toBe(true);
+    expect(sfPayload.IsPartner).toBe(false);
+  });
 });
+
 
 

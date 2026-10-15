@@ -142,7 +142,7 @@ export function translateToCanonical(
       system,
       type,
       rule.canonical,
-      transform(rule.toCanonical, value),
+      transform(rule.toCanonical, value, 'toCanonical'),
     );
   }
   return out;
@@ -164,6 +164,7 @@ export function translateFromCanonical(
     out[rule.native] = transform(
       rule.fromCanonical,
       fromCanonicalValue(config.valueMappings, system, type, rule.canonical, fields[rule.canonical] ?? null),
+      'fromCanonical',
     );
   }
   return out;
@@ -200,7 +201,11 @@ function toDomain(v: FieldValue): FieldValue {
  * Deal/opportunity stages differ per portal. This is a placeholder that lower-cases; in
  * practice you'd map each portal's picklist to a shared pipeline model. See ARCHITECTURE.md.
  */
-function transform(id: TransformId | undefined, value: FieldValue): FieldValue {
+export function transform(
+  id: TransformId | undefined,
+  value: FieldValue,
+  direction?: 'toCanonical' | 'fromCanonical',
+): FieldValue {
   if (!id || id === 'identity') return identity(value);
   if (id === 'domain') return toDomain(value);
   if (id === 'lowercase') return typeof value === 'string' ? value.trim().toLowerCase() : value;
@@ -214,24 +219,65 @@ function transform(id: TransformId | undefined, value: FieldValue): FieldValue {
     return Number.isFinite(parsed) ? parsed : null;
   }
   if (id === 'boolean') {
-    if (typeof value === 'boolean' || value === null) return value;
-    if (typeof value === 'string') return ['true', '1', 'yes'].includes(value.toLowerCase());
+    if (value === null || value === undefined || value === '') return null;
+    if (typeof value === 'boolean') return value;
+    if (typeof value === 'string') return ['true', '1', 'yes'].includes(value.trim().toLowerCase());
     return Boolean(value);
   }
   if (id === 'yes-no') {
-    // Same transform id works in both directions -- the input's own type tells us which way
-    // we're going: a native "yes"/"no" string coming in becomes a canonical boolean, and a
-    // canonical boolean going out becomes the literal "yes"/"no" string the field expects
-    // (e.g. a HubSpot custom property defined as an enumeration with options [yes, no]).
+    if (value === null || value === undefined || value === '') return null;
+    if (direction === 'fromCanonical') {
+      // Outgoing to target CRM: native field expects string "yes" or "no" (e.g. HubSpot enumeration)
+      if (typeof value === 'boolean') return value ? 'yes' : 'no';
+      if (typeof value === 'string') {
+        const lower = value.trim().toLowerCase();
+        if (['yes', 'true', '1'].includes(lower)) return 'yes';
+        if (['no', 'false', '0'].includes(lower)) return 'no';
+        return value;
+      }
+      return value ? 'yes' : 'no';
+    }
+    if (direction === 'toCanonical') {
+      // Incoming from native field: normalize "yes"/"no" strings into canonical boolean
+      if (typeof value === 'boolean') return value;
+      if (typeof value === 'string') {
+        const lower = value.trim().toLowerCase();
+        if (['yes', 'true', '1'].includes(lower)) return true;
+        if (['no', 'false', '0'].includes(lower)) return false;
+      }
+      return Boolean(value);
+    }
+    // Direction unspecified fallback
     if (typeof value === 'boolean') return value ? 'yes' : 'no';
-    if (typeof value === 'string') return ['yes', 'true', '1'].includes(value.toLowerCase());
+    if (typeof value === 'string') return ['yes', 'true', '1'].includes(value.trim().toLowerCase());
     return value;
   }
   if (id === 'true-false') {
-    // Same shape as yes-no, for the other common enumeration encoding: a dropdown/checkbox
-    // property whose option values are the literal strings "true"/"false" rather than "yes"/"no".
+    if (value === null || value === undefined || value === '') return null;
+    if (direction === 'fromCanonical') {
+      // Outgoing to target CRM: native field expects literal string "true" or "false"
+      if (typeof value === 'boolean') return value ? 'true' : 'false';
+      if (typeof value === 'string') {
+        const lower = value.trim().toLowerCase();
+        if (['true', '1', 'yes'].includes(lower)) return 'true';
+        if (['false', '0', 'no'].includes(lower)) return 'false';
+        return value;
+      }
+      return value ? 'true' : 'false';
+    }
+    if (direction === 'toCanonical') {
+      // Incoming from native field: normalize "true"/"false" strings into canonical boolean
+      if (typeof value === 'boolean') return value;
+      if (typeof value === 'string') {
+        const lower = value.trim().toLowerCase();
+        if (['true', '1', 'yes'].includes(lower)) return true;
+        if (['false', '0', 'no'].includes(lower)) return false;
+      }
+      return Boolean(value);
+    }
+    // Direction unspecified fallback
     if (typeof value === 'boolean') return value ? 'true' : 'false';
-    if (typeof value === 'string') return value.toLowerCase() === 'true';
+    if (typeof value === 'string') return value.trim().toLowerCase() === 'true';
     return value;
   }
   if (id === 'iso-date') {
@@ -240,9 +286,21 @@ function transform(id: TransformId | undefined, value: FieldValue): FieldValue {
     return Number.isNaN(parsed.getTime()) ? value : parsed.toISOString();
   }
   if (id === 'epoch-millis') {
-    // Bidirectional by input type, like yes-no/true-false: a native epoch-ms number becomes
-    // a canonical ISO string, and a canonical ISO string becomes a native epoch-ms number --
-    // for the (uncommon) custom date property that stores a long instead of an ISO datetime.
+    if (direction === 'fromCanonical') {
+      if (typeof value === 'number') return value;
+      if (typeof value === 'string') {
+        const parsed = new Date(value);
+        return Number.isNaN(parsed.getTime()) ? value : parsed.getTime();
+      }
+      return value;
+    }
+    if (direction === 'toCanonical') {
+      if (typeof value === 'number' || typeof value === 'string') {
+        const parsed = new Date(value);
+        return Number.isNaN(parsed.getTime()) ? value : parsed.toISOString();
+      }
+      return value;
+    }
     if (typeof value === 'number') {
       const parsed = new Date(value);
       return Number.isNaN(parsed.getTime()) ? value : parsed.toISOString();
