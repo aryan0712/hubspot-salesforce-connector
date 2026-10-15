@@ -1289,8 +1289,12 @@ export function operationsHtml(): string {
             if(!sRule||!tRule){skipped.push(target.field+' ('+type+')');continue}
             const sField=sourceFields.get(sRule.native.split('.')[0]),tField=targetFields.get(tRule.native);
             const isBool=f=>f&&/^bool/i.test(f.type),isEnum=f=>f&&/(enum|picklist)/i.test(f.type);
-            if(isBool(sField)&&isEnum(tField)){tRule.toCanonical='yes-no';tRule.fromCanonical='yes-no';targetChanged=true;fixed.push(target.field+' ('+type+')')}
-            else if(isBool(tField)&&isEnum(sField)){sRule.toCanonical='yes-no';sRule.fromCanonical='yes-no';sourceChanged=true;fixed.push(target.field+' ('+type+')')}
+            const enumTransform=f=>{
+              const opts=(f?.options||[]).map(o=>(o.value||'').toLowerCase());
+              return (opts.includes('true')&&opts.includes('false'))?'true-false':'yes-no';
+            };
+            if(isBool(sField)&&isEnum(tField)){const tr=enumTransform(tField);tRule.toCanonical=tr;tRule.fromCanonical=tr;targetChanged=true;fixed.push(target.field+' ('+type+')')}
+            else if(isBool(tField)&&isEnum(sField)){const tr=enumTransform(sField);sRule.toCanonical=tr;sRule.fromCanonical=tr;sourceChanged=true;fixed.push(target.field+' ('+type+')')}
             else skipped.push(target.field+' ('+type+')');
           }
           if(sourceChanged)await api('/api/mappings/'+from+'/'+type,{method:'PUT',body:JSON.stringify({rules:sourceMap.rules})});
